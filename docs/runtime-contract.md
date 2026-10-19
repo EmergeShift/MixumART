@@ -55,6 +55,8 @@ pub trait RuntimeBackend: Send + Sync {
 
 幂等约定的目的：UI 重试与并发点击不应产生用户无法理解的错误。
 
+WSL 2 的字段映射、写操作超时与额外的幂等细节见 §9。
+
 ## 4. 外部命令规则
 
 统一走 `mixum_env_core::process::run`：
@@ -64,7 +66,8 @@ process::run("docker", &["ps", "-a", "--no-trunc", "--format", "{{json .}}"], LI
 ```
 
 - 只传 argv，**不经过 shell**；命令里不允许出现用户输入拼接的字符串；
-- 超时：探测 5s，列举 10s；超时返回 `EnvError::Timeout`；
+- 超时：探测 5s，列举 10s；WSL 2 写操作 create 10min（rootfs tar 可达 GB 级）、
+  start/stop/remove 30s；超时返回 `EnvError::Timeout`；
 - `stdin` 一律关闭，避免子进程等待输入；
 - 可执行文件找不到时统一返回 `NotInstalled`，安装提示由后端补充；
 - **编码**：`process::run` 按 UTF-8 解码；wsl.exe 等控制台工具输出
@@ -136,4 +139,42 @@ process::run("docker", &["ps", "-a", "--no-trunc", "--format", "{{json .}}"], LI
 cargo test --workspace
 cargo test -p mixum-env-runtime-apple -- --ignored   # 需要本机 container 服务
 cargo test -p mixum-env-runtime-docker -- --ignored  # 需要本机 docker daemon
+cargo test -p mixum-env-runtime-wsl2 -- --ignored    # 需要本机 WSL
 ```
+
+## 9. WSL 2 写操作（并行组，2026-10-19）
+
+WSL 2 没有「容器」这一层：一个 mixumOS 节点 = 一个 `mixum-*` 发行版，由
+`wsl --import` 从 rootfs tar 导入。所以写操作的字段映射和 Docker 不同，
+**语义以本节为准**。
+
+| 方法 | 等价 CLI | 超时 |
+|------|----------|------|
+| `create_container` | `wsl --import <name> <installDir> <rootfs.tar>` | 10 分钟 |
+| `start_container` | `wsl -d <id> -e /bin/true` | 30s |
+| `stop_container` | `wsl --terminate <id>` | 30s |
+| `remove_container` | `wsl --unregister <id>` | 30s |
+
+`CreateSpec` 在 WSL 2 下的字段映射：
+
+| 字段 | 含义 |
+|------|------|
+| `name` | 发行版名，**必须** `mixum-` 前缀（与列表过滤一致，不区分大小写） |
+| `image` | **本地 rootfs tar 路径**——WSL 没有镜像仓库，节点来自 mixumOS `dist/` 产物 |
+| `ports` / `mounts` / `env` / `command` | 无对应物，**非空即报错**，不静默忽略 |
+
+安装位置：`%MIXUM_WSL_INSTALL_ROOT%\<name>`；未设置时
+`%LOCALAPPDATA%\mixum\wsl\<name>`，目录不存在则创建。
+
+硬性要求：
+
+- **只动 `mixum-` 前缀的发行版**：`start` / `stop` / `remove` 收到其它名字直接拒绝，
+  避免把宿主自己的 `Ubuntu-24.04` / `docker-desktop` terminate 或 unregister 掉；
+- `remove` 会删掉 `ext4.vhdx`，**不可逆**，UI 层必须二次确认；
+- 幂等：`stop` / `remove` 遇到不存在的发行版视为成功；`create` 重名视为失败；
+  `start` 遇到不存在的发行版是错误（调用方本来就知道自己要点哪个）；
+- `start` 只把发行版实例拉起。**WSL 在无进程约 15s 后自动回到 `Stopped`**，
+  `Running` 仅表示「当前有活动会话」；mixumOS 常驻服务（`mixumd` / entrypoint）
+  的启动语义在后续里程碑以新契约补充；
+- 是否「存在」以 `wsl --list --verbose` 的解析结果为准，不去猜错误文案；
+- 「一个发行版都没有」不是错误：`list_containers` 返回空 `Vec`。
