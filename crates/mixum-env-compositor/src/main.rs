@@ -67,7 +67,8 @@ mod linux {
             output::OutputHandler,
             selection::{
                 data_device::{
-                    ClientDndGrabHandler, DataDeviceHandler, DataDeviceState, ServerDndGrabHandler,
+                    set_data_device_focus, ClientDndGrabHandler, DataDeviceHandler,
+                    DataDeviceState, ServerDndGrabHandler,
                 },
                 SelectionHandler,
             },
@@ -254,6 +255,7 @@ mod linux {
 
     struct Art {
         start: Instant,
+        display_handle: DisplayHandle,
         compositor_state: CompositorState,
         xdg_shell_state: XdgShellState,
         shm_state: ShmState,
@@ -320,6 +322,7 @@ mod linux {
 
             Self {
                 start: Instant::now(),
+                display_handle: display_handle.clone(),
                 compositor_state,
                 xdg_shell_state,
                 shm_state,
@@ -929,6 +932,12 @@ mod linux {
                 state.states.set(xdg_toplevel::State::Activated);
             });
             surface.send_configure();
+            // Focus the newly mapped toplevel so clipboard owners can set a
+            // selection (data_device requires keyboard focus on the source).
+            self.serial = self.serial.wrapping_add(1);
+            if let Some(keyboard) = self.seat.get_keyboard() {
+                keyboard.set_focus(self, Some(wl_surface.clone()), self.serial.into());
+            }
             self.surfaces.insert(
                 id,
                 SurfaceEntry {
@@ -1016,7 +1025,10 @@ mod linux {
             &mut self.seat_state
         }
 
-        fn focus_changed(&mut self, _seat: &Seat<Self>, _focused: Option<&WlSurface>) {}
+        fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&WlSurface>) {
+            let client = focused.and_then(|surface| surface.client());
+            set_data_device_focus(&self.display_handle, seat, client);
+        }
 
         fn cursor_image(
             &mut self,
