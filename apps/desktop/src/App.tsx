@@ -3,9 +3,10 @@ import { useCallback, useEffect, useState } from 'react'
 import { errorText, hostInfo, runtimeStatus } from './api'
 import { Containers } from './views/Containers'
 import { Environments } from './views/Environments'
+import { Surfaces } from './views/Surfaces'
 import type { BackendStatus, HostInfo } from './types'
 
-type Tab = 'environments' | 'containers'
+type Tab = 'environments' | 'containers' | 'surfaces'
 
 const OS_LABELS: Record<string, string> = {
   macos: 'macOS',
@@ -38,7 +39,8 @@ export default function App() {
     void refresh()
   }, [refresh])
 
-  const title = tab === 'environments' ? '宿主机环境' : '容器'
+  const title =
+    tab === 'environments' ? '宿主机环境' : tab === 'containers' ? '容器' : '窗口'
   const hostMeta = host
     ? [OS_LABELS[host.os] ?? host.os, host.arch, `v${host.appVersion}`].join(' · ')
     : '正在读取宿主信息…'
@@ -62,6 +64,12 @@ export default function App() {
           >
             容器
           </button>
+          <button
+            className={tab === 'surfaces' ? 'active' : ''}
+            onClick={() => setTab('surfaces')}
+          >
+            窗口
+          </button>
         </nav>
         <div className="sidebar-foot">{host ? `v${host.appVersion}` : '—'}</div>
       </aside>
@@ -80,8 +88,10 @@ export default function App() {
               refreshing={refreshing}
               onRefresh={() => void refresh()}
             />
-          ) : (
+          ) : tab === 'containers' ? (
             <Containers backends={backends} />
+          ) : (
+            <Surfaces />
           )}
         </main>
       </div>

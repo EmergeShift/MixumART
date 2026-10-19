@@ -2008,9 +2008,11 @@ name = "mixum-env-desktop"
 version = "0.1.0"
 dependencies = [
  "mixum-env-core",
+ "mixum-env-display",
  "mixum-env-runtime-apple",
  "mixum-env-runtime-docker",
  "mixum-env-runtime-wsl2",
+ "mixum-env-surface",
  "serde",
  "serde_json",
  "tauri",
