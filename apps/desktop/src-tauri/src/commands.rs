@@ -6,6 +6,8 @@
 //! 3. `lib.rs` 的 `generate_handler!` 注册；
 //! 4. 前端 `src/api.ts` 包一层带类型的 invoke。
 
+use std::sync::Arc;
+
 use mixum_env_core::{BackendStatus, Container, RuntimeKind};
 use serde::Serialize;
 use tauri::State;
@@ -186,6 +188,15 @@ pub fn open_surface_window(app: AppHandle, request: OpenSurfaceRequest) -> Resul
                 return;
             }
         };
+        let client = Arc::new(client);
+        {
+            let state = app_for_session.state::<AppState>();
+            let mut clients = state
+                .surface_clients
+                .lock()
+                .expect("surface clients lock");
+            clients.insert(surface, client.clone());
+        }
         // 先订阅再 attach：stream.start 触发的全量重放不能丢。
         let mut frames = client.frames();
         if let Err(error) = client.attach(surface).await {
@@ -267,6 +278,9 @@ pub fn open_surface_window(app: AppHandle, request: OpenSurfaceRequest) -> Resul
                     let _ = close.send(());
                 }
             }
+            if let Ok(mut clients) = app_for_close.state::<AppState>().surface_clients.lock() {
+                clients.remove(&surface);
+            }
             #[cfg(target_os = "macos")]
             crate::macos::detach(&app_for_close, surface);
         }
@@ -286,4 +300,20 @@ pub fn surface_input(app: AppHandle, surface: u32, event: InputEvent) -> Result<
         .get(&surface)
         .ok_or_else(|| format!("surface {surface} 没有打开的窗口"))?;
     sender.send(event).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn remote_clipboard(app: AppHandle, surface: u32) -> Result<String, String> {
+    let client = {
+        let state = app.state::<AppState>();
+        let clients = state
+            .surface_clients
+            .lock()
+            .map_err(|error| error.to_string())?;
+        clients.get(&surface).cloned()
+    };
+    let Some(client) = client else {
+        return Err(format!("surface {surface} 没有打开的窗口"));
+    };
+    client.clipboard().await.map_err(|error| error.to_string())
 }

@@ -176,6 +176,10 @@ B 收 17.6KB 全量 + 补丁，互不串流。
 > Tauri 已切到 MAP（`mixum-env-map`）；macOS 已有 MTKView/Metal 原生叠加层，
 > 非 macOS 或 `MIXUM_NATIVE_METAL=0` 时回退 WebView canvas。
 >
+> **B2 远端剪贴板（拉取）**：`Cmd/Ctrl+Alt+V` 通过 MAP
+> `display.clipboard` 拉取 B compositor 当前 selection 并写入宿主剪贴板；
+> host→remote 仍是 `Cmd/Ctrl+V` 粘贴（ASCII）。
+>
 > **B3 A 回退（手动）**：agentd 多 comp 下 mixcomp 的窗口和 B compositor 的
 > surface 会同时出现在 `display.list`；Tauri「窗口」页以 A/B 标签区分，
 > 可手动打开 A 窗口。XWayland 尚未实现，所以 X11 应用仍不能直接跑在 B
