@@ -1,0 +1,554 @@
+//! MixumART MAP client: WSS + TOFU, display.list/attach/input and PNG frames.
+//!
+//! This is the host side of the B route. It deliberately mirrors the small
+//! subset of MAP that the Tauri surface windows need; the protocol source of
+//! truth remains Mixum-Agent-Protocol.
+
+use std::{
+    collections::HashMap,
+    fmt,
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex},
+    time::Duration,
+};
+
+use futures_util::{SinkExt, StreamExt};
+use mixum_env_surface::{Frame, SurfaceInfo, FORMAT_PNG};
+use rustls::{
+    client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
+    crypto::{verify_tls12_signature, verify_tls13_signature, WebPkiSupportedAlgorithms},
+    pki_types::{CertificateDer, ServerName, UnixTime},
+    DigitallySignedStruct, Error as RustlsError, SignatureScheme,
+};
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
+use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio_tungstenite::{
+    connect_async_tls_with_config,
+    tungstenite::{client::IntoClientRequest, http::HeaderValue, Message},
+    Connector,
+};
+use ulid::Ulid;
+
+const CLIENT_NAME: &str = "mixumart/0.1";
+const CLIENT_TIMEOUT: Duration = Duration::from_secs(30);
+
+#[derive(Debug, thiserror::Error)]
+pub enum MapError {
+    #[error("连接地址无效: {0}")]
+    Url(#[from] url::ParseError),
+    #[error("WebSocket: {0}")]
+    WebSocket(String),
+    #[error("协议: {0}")]
+    Protocol(String),
+    #[error("服务器错误 {code}: {message}")]
+    Remote { code: String, message: String },
+    #[error("请求超时: {0}")]
+    Timeout(String),
+    #[error("配置: {0}")]
+    Config(String),
+    #[error("IO: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("JSON: {0}")]
+    Json(#[from] serde_json::Error),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Envelope {
+    v: u32,
+    id: String,
+    op: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    seq: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reply_to: Option<String>,
+    ts: i64,
+    #[serde(default)]
+    payload: Value,
+}
+
+impl Envelope {
+    fn request(op: &str, payload: Value) -> Self {
+        Self {
+            v: 1,
+            id: Ulid::new().to_string(),
+            op: op.to_owned(),
+            seq: None,
+            reply_to: None,
+            ts: now_ms(),
+            payload,
+        }
+    }
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WindowInfo {
+    id: u32,
+    #[serde(default)]
+    app_id: String,
+    #[serde(default)]
+    title: String,
+    width: u32,
+    height: u32,
+}
+
+#[derive(Debug, Deserialize)]
+struct ListResponse {
+    #[serde(default)]
+    windows: Vec<WindowInfo>,
+}
+
+#[derive(Clone)]
+pub struct MapClient {
+    tx: mpsc::Sender<Message>,
+    pending: Arc<Mutex<HashMap<String, oneshot::Sender<Envelope>>>>,
+    frames: broadcast::Sender<Frame>,
+    pub fingerprint: String,
+}
+
+impl fmt::Debug for MapClient {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MapClient")
+            .field("fingerprint", &self.fingerprint)
+            .finish_non_exhaustive()
+    }
+}
+
+impl MapClient {
+    /// Connect, pin/verify the server certificate, then perform session.hello.
+    pub async fn connect(
+        addr: &str,
+        token: &str,
+        fingerprint: Option<&str>,
+    ) -> Result<Self, MapError> {
+        let address = ws_addr(addr)?;
+        let known_path = known_hosts_path();
+        let known = load_known(&known_path)?;
+        let explicit_fingerprint = fingerprint.is_some();
+        let expected = fingerprint
+            .map(ToOwned::to_owned)
+            .or_else(|| known.get(addr).cloned());
+        let first_connection = expected.is_none();
+        let observed = Arc::new(Mutex::new(None));
+        let provider = rustls::crypto::ring::default_provider();
+        let verifier = PinVerifier {
+            expected,
+            observed: Arc::clone(&observed),
+            supported_algorithms: provider.signature_verification_algorithms,
+        };
+        let config = rustls::ClientConfig::builder_with_provider(Arc::new(provider))
+            .with_protocol_versions(&[&rustls::version::TLS13])
+            .map_err(|error| MapError::Config(error.to_string()))?
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(verifier))
+            .with_no_client_auth();
+        let connector = Connector::Rustls(Arc::new(config));
+        let mut request = address
+            .into_client_request()
+            .map_err(|error| MapError::WebSocket(error.to_string()))?;
+        request.headers_mut().insert(
+            "Sec-WebSocket-Protocol",
+            HeaderValue::from_static("mixum.v1"),
+        );
+        let (stream, _) = connect_async_tls_with_config(request, None, false, Some(connector))
+            .await
+            .map_err(|error| MapError::WebSocket(error.to_string()))?;
+        let fingerprint = observed
+            .lock()
+            .expect("fingerprint lock")
+            .clone()
+            .ok_or_else(|| MapError::Config("TLS 未返回服务器证书".into()))?;
+        if first_connection {
+            eprintln!("首次连接 {addr}，服务器证书指纹：{fingerprint}");
+        }
+        if !known.contains_key(addr) || explicit_fingerprint {
+            save_known(&known_path, addr, &fingerprint)?;
+        }
+
+        let (mut write, mut read) = stream.split();
+        let (tx, mut outgoing) = mpsc::channel::<Message>(64);
+        let (frame_tx, _) = broadcast::channel(128);
+        let pending: Arc<Mutex<HashMap<String, oneshot::Sender<Envelope>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let reader_pending = Arc::clone(&pending);
+        let reader_frames = frame_tx.clone();
+        tokio::spawn(async move {
+            while let Some(message) = read.next().await {
+                match message {
+                    Ok(Message::Text(text)) => {
+                        let Ok(envelope) = serde_json::from_str::<Envelope>(&text) else {
+                            continue;
+                        };
+                        if let Some(reply_to) = envelope.reply_to.clone() {
+                            if let Some(sender) = reader_pending
+                                .lock()
+                                .expect("pending lock")
+                                .remove(&reply_to)
+                            {
+                                let _ = sender.send(envelope);
+                                continue;
+                            }
+                        }
+                    }
+                    Ok(Message::Binary(data)) => {
+                        if let Some(frame) = parse_video(&data) {
+                            let _ = reader_frames.send(frame);
+                        }
+                    }
+                    Ok(Message::Close(_)) => break,
+                    Err(_) => break,
+                    _ => {}
+                }
+            }
+        });
+        tokio::spawn(async move {
+            while let Some(message) = outgoing.recv().await {
+                if write.send(message).await.is_err() {
+                    break;
+                }
+            }
+        });
+
+        let client = Self {
+            tx,
+            pending,
+            frames: frame_tx,
+            fingerprint,
+        };
+        let hello = client
+            .call(
+                "session.hello",
+                json!({ "token": token, "client": CLIENT_NAME }),
+            )
+            .await?;
+        if hello.op != "session.hello.ok" {
+            return Err(MapError::Protocol(format!("handshake: {}", hello.op)));
+        }
+        Ok(client)
+    }
+
+    pub fn frames(&self) -> broadcast::Receiver<Frame> {
+        self.frames.subscribe()
+    }
+
+    pub async fn list(&self) -> Result<Vec<SurfaceInfo>, MapError> {
+        let reply = self.call("display.list", json!({})).await?;
+        let response: ListResponse = serde_json::from_value(reply.payload)?;
+        Ok(response
+            .windows
+            .into_iter()
+            .map(|window| SurfaceInfo {
+                id: window.id,
+                app_id: window.app_id,
+                title: window.title,
+                width: window.width,
+                height: window.height,
+            })
+            .collect())
+    }
+
+    pub async fn attach(&self, surface: u32) -> Result<(), MapError> {
+        self.call(
+            "display.attach",
+            json!({ "window": surface, "fps": 10, "codec": "png" }),
+        )
+        .await?;
+        Ok(())
+    }
+
+    pub async fn input(
+        &self,
+        surface: u32,
+        event: &mixum_env_surface::InputEvent,
+    ) -> Result<(), MapError> {
+        let mut payload = serde_json::to_value(event)?;
+        if let Value::Object(map) = &mut payload {
+            map.insert("window".into(), json!(surface));
+        }
+        self.call("display.input", payload).await?;
+        Ok(())
+    }
+
+    async fn call(&self, op: &str, payload: Value) -> Result<Envelope, MapError> {
+        let request = Envelope::request(op, payload);
+        let (sender, receiver) = oneshot::channel();
+        self.pending
+            .lock()
+            .expect("pending lock")
+            .insert(request.id.clone(), sender);
+        let text = serde_json::to_string(&request)?;
+        if self.tx.send(Message::Text(text.into())).await.is_err() {
+            self.pending
+                .lock()
+                .expect("pending lock")
+                .remove(&request.id);
+            return Err(MapError::WebSocket("发送失败，连接已关闭".into()));
+        }
+        let reply = tokio::time::timeout(CLIENT_TIMEOUT, receiver)
+            .await
+            .map_err(|_| MapError::Timeout(op.to_owned()))?
+            .map_err(|_| MapError::WebSocket("连接在应答前关闭".into()))?;
+        if reply.op.ends_with(".err") {
+            let code = reply
+                .payload
+                .get("code")
+                .and_then(Value::as_str)
+                .unwrap_or("error")
+                .to_owned();
+            let message = reply
+                .payload
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_owned();
+            return Err(MapError::Remote { code, message });
+        }
+        Ok(reply)
+    }
+}
+
+fn parse_video(data: &[u8]) -> Option<Frame> {
+    if data.len() < 27 || data[0] != 0x01 {
+        return None;
+    }
+    let read_u32 = |offset: usize| {
+        u32::from_le_bytes([
+            data[offset],
+            data[offset + 1],
+            data[offset + 2],
+            data[offset + 3],
+        ])
+    };
+    let surface = read_u32(1);
+    let full_w = read_u32(5);
+    let full_h = read_u32(9);
+    let size = read_u32(13) as usize;
+    let flags = u16::from_le_bytes([data[17], data[18]]);
+    if 27 + size > data.len() {
+        return None;
+    }
+    let patch = flags & 0x0004 != 0;
+    let (x, y, w, h, format, start) = if patch {
+        if data.len() < 47 || size < 20 {
+            return None;
+        }
+        let x = read_u32(27);
+        let y = read_u32(31);
+        let w = read_u32(35);
+        let h = read_u32(39);
+        let format = read_u32(43);
+        (x, y, w, h, format, 47)
+    } else {
+        (0, 0, full_w, full_h, FORMAT_PNG as u32, 27)
+    };
+    if format != FORMAT_PNG as u32 || start > 27 + size {
+        return None;
+    }
+    Some(Frame {
+        surface,
+        full_w,
+        full_h,
+        x,
+        y,
+        w,
+        h,
+        format: format as u8,
+        data: data[start..27 + size].to_vec(),
+    })
+}
+
+fn ws_addr(addr: &str) -> Result<String, MapError> {
+    let raw = if addr.contains("://") {
+        addr.to_owned()
+    } else {
+        format!("wss://{addr}")
+    };
+    let mut url = url::Url::parse(&raw)?;
+    if url.path().is_empty() || url.path() == "/" {
+        url.set_path("/ws");
+    }
+    Ok(url.to_string())
+}
+
+fn known_hosts_path() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".mixum/known-hosts")
+}
+
+fn load_known(path: &Path) -> Result<HashMap<String, String>, MapError> {
+    if !path.exists() {
+        return Ok(HashMap::new());
+    }
+    let text = std::fs::read_to_string(path)?;
+    serde_json::from_str(&text).map_err(MapError::from)
+}
+
+fn save_known(path: &Path, addr: &str, fingerprint: &str) -> Result<(), MapError> {
+    let mut known = load_known(path)?;
+    known.insert(addr.to_owned(), fingerprint.to_owned());
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, serde_json::to_vec_pretty(&known)?)?;
+    Ok(())
+}
+
+fn normalize_fingerprint(value: &str) -> String {
+    value
+        .chars()
+        .filter(|c| c.is_ascii_hexdigit())
+        .flat_map(|c| c.to_lowercase())
+        .collect()
+}
+
+#[derive(Debug)]
+struct PinVerifier {
+    expected: Option<String>,
+    observed: Arc<Mutex<Option<String>>>,
+    supported_algorithms: WebPkiSupportedAlgorithms,
+}
+
+impl PinVerifier {
+    fn format(der: &[u8]) -> String {
+        Sha256::digest(der)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<Vec<_>>()
+            .join(":")
+    }
+}
+
+impl ServerCertVerifier for PinVerifier {
+    fn verify_server_cert(
+        &self,
+        end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _server_name: &ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: UnixTime,
+    ) -> Result<ServerCertVerified, RustlsError> {
+        let got = Self::format(end_entity.as_ref());
+        *self.observed.lock().expect("observed lock") = Some(got.clone());
+        if let Some(want) = &self.expected {
+            if normalize_fingerprint(want) != normalize_fingerprint(&got) {
+                return Err(RustlsError::General(format!(
+                    "证书指纹不匹配: got {got} want {want}"
+                )));
+            }
+        }
+        Ok(ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, RustlsError> {
+        verify_tls12_signature(message, cert, dss, &self.supported_algorithms)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, RustlsError> {
+        verify_tls13_signature(message, cert, dss, &self.supported_algorithms)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        vec![
+            SignatureScheme::ECDSA_NISTP256_SHA256,
+            SignatureScheme::ED25519,
+            SignatureScheme::RSA_PSS_SHA256,
+        ]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_full_png_frame() {
+        let mut data = vec![0u8; 27 + 4];
+        data[0] = 1;
+        data[1..5].copy_from_slice(&7u32.to_le_bytes());
+        data[5..9].copy_from_slice(&100u32.to_le_bytes());
+        data[9..13].copy_from_slice(&50u32.to_le_bytes());
+        data[13..17].copy_from_slice(&4u32.to_le_bytes());
+        data[17..19].copy_from_slice(&1u16.to_le_bytes());
+        data[27..].copy_from_slice(b"PNG!");
+        let frame = parse_video(&data).unwrap();
+        assert_eq!(frame.surface, 7);
+        assert_eq!((frame.full_w, frame.full_h), (100, 50));
+        assert_eq!((frame.x, frame.y, frame.w, frame.h), (0, 0, 100, 50));
+        assert_eq!(frame.data, b"PNG!");
+    }
+
+    #[test]
+    fn parses_patch_frame() {
+        let payload = b"PNG!";
+        let mut data = vec![0u8; 47 + payload.len()];
+        data[0] = 1;
+        data[1..5].copy_from_slice(&7u32.to_le_bytes());
+        data[5..9].copy_from_slice(&100u32.to_le_bytes());
+        data[9..13].copy_from_slice(&50u32.to_le_bytes());
+        data[13..17].copy_from_slice(&(20u32 + payload.len() as u32).to_le_bytes());
+        data[17..19].copy_from_slice(&4u16.to_le_bytes());
+        data[27..31].copy_from_slice(&10u32.to_le_bytes());
+        data[31..35].copy_from_slice(&20u32.to_le_bytes());
+        data[35..39].copy_from_slice(&30u32.to_le_bytes());
+        data[39..43].copy_from_slice(&40u32.to_le_bytes());
+        data[43..47].copy_from_slice(&(FORMAT_PNG as u32).to_le_bytes());
+        data[47..].copy_from_slice(payload);
+        let frame = parse_video(&data).unwrap();
+        assert_eq!((frame.x, frame.y, frame.w, frame.h), (10, 20, 30, 40));
+        assert_eq!(frame.data, payload);
+    }
+
+    #[tokio::test]
+    #[ignore = "需要运行中的 MAP 节点：MAP_URL/MAP_TOKEN/MAP_FP"]
+    async fn live_list_and_first_frame() {
+        let url = std::env::var("MAP_URL").expect("MAP_URL");
+        let token = std::env::var("MAP_TOKEN").expect("MAP_TOKEN");
+        let fingerprint = std::env::var("MAP_FP").ok();
+        let client = MapClient::connect(&url, &token, fingerprint.as_deref())
+            .await
+            .expect("connect");
+        let surfaces = client.list().await.expect("list");
+        eprintln!("surfaces: {surfaces:?}");
+        assert!(!surfaces.is_empty(), "至少一个 surface");
+        let surface = surfaces.last().unwrap().id;
+        let mut frames = client.frames();
+        client.attach(surface).await.expect("attach");
+        let frame = tokio::time::timeout(Duration::from_secs(5), frames.recv())
+            .await
+            .expect("frame timeout")
+            .expect("frame channel");
+        eprintln!(
+            "first frame {}x{} patch {}x{}@{}",
+            frame.full_w, frame.full_h, frame.w, frame.h, frame.x
+        );
+    }
+
+    #[test]
+    fn normalizes_fingerprint() {
+        assert_eq!(
+            normalize_fingerprint("AA:bb:01"),
+            normalize_fingerprint("aa:BB:01")
+        );
+    }
+}

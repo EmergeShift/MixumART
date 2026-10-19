@@ -121,7 +121,8 @@ surface.frame {
 |-------|------|
 | `crates/mixum-env-surface` | 共享 wire 协议：surface 元数据、frame/patch、input |
 | `crates/mixum-env-compositor` | 容器内 Smithay headless 合成器（Linux） |
-| `crates/mixum-env-display` | 宿主 `mixum-art-viewer`（minifb 窗口 + 输入） |
+| `crates/mixum-env-display` | 宿主 `mixum-art-viewer`（minifb 窗口 + 输入，直连 TCP 调试） |
+| `crates/mixum-env-map` | 宿主 MAP WSS 客户端（TOFU + display.list/attach/input） |
 
 当前 wire：
 
@@ -136,18 +137,28 @@ frame 头：`surface, full_w, full_h, x, y, w, h`（7×u32）、
 `format u8`（0=仅光标、2=PNG）、`data_len u32`。首帧/尺寸变化为全量，
 之后只发脏区；静止不发帧。
 
-运行（直连 TCP 模式，Tauri 当前走这条）：
+运行（Tauri 走 MAP，推荐）：
 
 ```sh
 # 宿主（Tauri 应用）
 cd apps/desktop && npm run tauri dev
-# 「窗口」页填入 <container-ip>:7603，扫描后打开 surface
+# 「窗口」页填入：
+#   MAP 地址  wss://<node>:<port>/ws（或 host:port，客户端补 /ws）
+#   令牌      map1.…
+#   指纹      可选；留空走 TOFU，首次连接会记录到 ~/.mixum/known-hosts
 
-# 宿主（独立 minifb 调试查看器）
+# 容器内：agentd 只有一个 comp 槽位，先停 mixcomp
+pkill -9 mixcomp
+XDG_RUNTIME_DIR=/run/mixum mixum-env-compositor \
+  --map-socket /run/mixum/display.sock
+XDG_RUNTIME_DIR=/run/mixum WAYLAND_DISPLAY=mixum-art-0 foot
+```
+
+直连 TCP 仍保留给独立 minifb 调试查看器：
+
+```sh
 cargo run -p mixum-env-display --release -- --addr <container-ip>:7603
-
-# 容器内
-XDG_RUNTIME_DIR=/run/mixum mixum-env-compositor
+XDG_RUNTIME_DIR=/run/mixum mixum-env-compositor   # 不带 --map-socket
 XDG_RUNTIME_DIR=/run/mixum WAYLAND_DISPLAY=mixum-art-0 foot
 ```
 
@@ -173,8 +184,7 @@ MAP 模式实测：`display.list` 看到 B surface（id 从 1000 起），attach
 
 > 当前 agentd 只维护一个 comp 连接，B compositor 和 mixcomp 不能同时
 > 作为 display 源；MAP 模式下要先停 mixcomp。多 comp 源/命名空间是后续项。
-> Tauri 宿主目前仍走直连 TCP，接 MAP 客户端（复用 mixum-ctl 的 TOFU/令牌）
-> 是下一步。
+> Tauri 已切到 MAP（`mixum-env-map`）；原生 Metal 纹理仍是下一步。
 
 实测（0.1.2 节点，foot 996×663）：全量 17KB，时钟补丁 48×26 约 1.5KB；
 TCP 注入 `a` + `Return` 后 foot shell 输出 `got:`/`a`。宿主查看器同时
@@ -187,7 +197,7 @@ surface 各自一个窗口，关闭 `art-b` 后收到 `surface.destroy` 且 `art
 | 阶段 | 内容 | 完成标准 |
 |------|------|----------|
 | **B0 ✅** | `mixum-env-compositor` Smithay headless + 单 toplevel surface 转发；宿主单窗口 PNG 全量 | 容器内 foot/Chromium 起窗，宿主查看器显示 |
-| **B1 ✅** | damage 补丁、焦点/指针/键盘；多窗口；Tauri 宿主 | 每个 surface 独立窗口；Tauri「窗口」页扫描/打开；关闭 surface 时窗口销毁 |
+| **B1 ✅** | damage 补丁、焦点/指针/键盘；多窗口；Tauri + MAP | 每个 surface 独立窗口；Tauri 通过 MAP WSS 扫描/打开/输入 |
 | **B2** | subsurface/popup、剪贴板、IME、缩放 | Chromium 菜单/弹窗/中文输入正常 |
 | **B3** | XWayland（或保留 A 作为 X11 回退）、拖拽 | 常见 X11 应用可用 |
 | **B4** | GPU/dmabuf 零拷贝、远端自适应（视频回退） | 等 virtio-gpu/venus、宿主 GPU 导入成熟 |

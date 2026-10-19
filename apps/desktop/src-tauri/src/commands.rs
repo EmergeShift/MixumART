@@ -52,95 +52,68 @@ pub async fn list_containers(
 }
 
 // ---------------------------------------------------------------------------
-// B 路线：surface 窗口（Tauri webview + canvas）
+// B 路线：surface 窗口（MAP WSS + Tauri webview canvas）
 // ---------------------------------------------------------------------------
 
-use std::{
-    net::TcpStream,
-    sync::{mpsc, Arc, Mutex},
-    time::{Duration, Instant},
-};
+use std::time::Duration;
 
-use mixum_env_display::{send_input, spawn_reader, Event};
-use mixum_env_surface::{read_message, InputEvent, SurfaceInfo, MSG_SURFACE_CREATE};
+use mixum_env_map::MapClient;
+use mixum_env_surface::{InputEvent, SurfaceInfo};
 use tauri::{
     webview::PageLoadEvent, AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder,
 };
+use tokio::sync::{mpsc as tokio_mpsc, oneshot, watch};
 
-/// 扫描一个 art compositor，返回当前 surface 表。
-///
-/// compositor 对新连接会重放 surface.create（以及最后一帧全量），所以连接后
-/// 读取一小段时间即可拿到完整列表。
+/// 扫描一个 MAP 节点的窗口（surface）表。
 #[tauri::command]
-pub async fn list_surfaces(addr: String) -> Result<Vec<SurfaceInfo>, String> {
-    tauri::async_runtime::spawn_blocking(move || scan_surfaces(&addr))
-        .await
-        .map_err(|error| error.to_string())?
-}
-
-fn scan_surfaces(addr: &str) -> Result<Vec<SurfaceInfo>, String> {
-    let mut stream =
-        TcpStream::connect(addr).map_err(|error| format!("连接 {addr} 失败：{error}"))?;
-    stream
-        .set_read_timeout(Some(Duration::from_millis(700)))
-        .ok();
-    let deadline = Instant::now() + Duration::from_millis(700);
-    let mut surfaces = Vec::new();
-    while Instant::now() < deadline {
-        match read_message(&mut stream) {
-            Ok((MSG_SURFACE_CREATE, payload)) => {
-                if let Ok(info) = serde_json::from_slice::<SurfaceInfo>(&payload) {
-                    if !surfaces
-                        .iter()
-                        .any(|known: &SurfaceInfo| known.id == info.id)
-                    {
-                        surfaces.push(info);
-                    }
-                }
-            }
-            Ok(_) => {}
-            Err(_) => break,
-        }
-    }
-    Ok(surfaces)
-}
-
-/// 为一个 surface 打开 Tauri 窗口。窗口加载完成后才开始读帧，避免首帧
-/// 比 React 监听器更早到达。
-#[tauri::command]
-pub fn open_surface_window(
-    app: AppHandle,
+pub async fn list_surfaces(
     addr: String,
-    surface: u32,
-    title: String,
-    width: u32,
-    height: u32,
-) -> Result<(), String> {
+    token: String,
+    fingerprint: Option<String>,
+) -> Result<Vec<SurfaceInfo>, String> {
+    let client = MapClient::connect(&addr, &token, fingerprint.as_deref())
+        .await
+        .map_err(|error| error.to_string())?;
+    client.list().await.map_err(|error| error.to_string())
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenSurfaceRequest {
+    pub addr: String,
+    pub token: String,
+    #[serde(default)]
+    pub fingerprint: Option<String>,
+    pub surface: u32,
+    #[serde(default)]
+    pub title: String,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// 为一个 surface 打开 Tauri 窗口。窗口加载完成后才连 MAP/attach，避免
+/// 首帧比 React 监听器更早到达。
+#[tauri::command]
+pub fn open_surface_window(app: AppHandle, request: OpenSurfaceRequest) -> Result<(), String> {
+    let OpenSurfaceRequest {
+        addr,
+        token,
+        fingerprint,
+        surface,
+        title,
+        width,
+        height,
+    } = request;
     let label = format!("surface-{surface}");
     if let Some(existing) = app.get_webview_window(&label) {
         let _ = existing.set_focus();
         return Ok(());
     }
 
-    let stream = TcpStream::connect(&addr).map_err(|error| format!("连接 {addr} 失败：{error}"))?;
-    stream.set_nodelay(true).ok();
-    let writer = Arc::new(Mutex::new(
-        stream
-            .try_clone()
-            .map_err(|error| format!("复制 socket 失败：{error}"))?,
-    ));
-    let (input_tx, input_rx) = mpsc::channel::<InputEvent>();
-    let writer_for_input = writer.clone();
-    std::thread::spawn(move || {
-        while let Ok(event) = input_rx.recv() {
-            send_input(&writer_for_input, &event);
-        }
-    });
-
     let addr_json = serde_json::to_string(&addr).map_err(|error| error.to_string())?;
     let init_script =
         format!("window.__MIXUM_SURFACE__ = {{ surface: {surface}, addr: {addr_json} }};");
-    let (ready_tx, ready_rx) = mpsc::channel();
+    let (ready_tx, mut ready_rx) = watch::channel(false);
     let window = WebviewWindowBuilder::new(&app, &label, WebviewUrl::App("index.html".into()))
         .title(if title.is_empty() {
             "MixumART surface".to_string()
@@ -151,60 +124,109 @@ pub fn open_surface_window(
         .initialization_script(init_script)
         .on_page_load(move |_window, payload| {
             if payload.event() == PageLoadEvent::Finished {
-                let _ = ready_tx.send(());
+                let _ = ready_tx.send(true);
             }
         })
         .build()
         .map_err(|error| format!("创建窗口失败：{error}"))?;
 
-    app.state::<AppState>()
-        .surface_inputs
-        .lock()
-        .map_err(|error| error.to_string())?
-        .insert(surface, input_tx);
+    let (input_tx, input_rx) = tokio_mpsc::unbounded_channel::<InputEvent>();
+    let (close_tx, close_rx) = oneshot::channel::<()>();
+    {
+        let state = app.state::<AppState>();
+        let mut inputs = state
+            .surface_inputs
+            .lock()
+            .map_err(|error| error.to_string())?;
+        inputs.insert(surface, input_tx);
+        let mut closes = state
+            .surface_closes
+            .lock()
+            .map_err(|error| error.to_string())?;
+        closes.insert(surface, close_tx);
+    }
 
     let app_for_session = app.clone();
     let label_for_session = label.clone();
-    std::thread::spawn(move || {
-        let _ = ready_rx.recv_timeout(Duration::from_secs(10));
-        std::thread::sleep(Duration::from_millis(300));
-        eprintln!("surface {surface} session ready");
-        let (event_tx, event_rx) = mpsc::channel();
-        spawn_reader(stream, event_tx);
+    tauri::async_runtime::spawn(async move {
+        let _ = ready_rx.wait_for(|ready| *ready).await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        eprintln!("surface {surface} MAP session ready");
+        let client = match MapClient::connect(&addr, &token, fingerprint.as_deref()).await {
+            Ok(client) => client,
+            Err(error) => {
+                let _ = app_for_session.emit_to(
+                    &label_for_session,
+                    "surface-disconnected",
+                    error.to_string(),
+                );
+                return;
+            }
+        };
+        // 先订阅再 attach：stream.start 触发的全量重放不能丢。
+        let mut frames = client.frames();
+        if let Err(error) = client.attach(surface).await {
+            let _ = app_for_session.emit_to(
+                &label_for_session,
+                "surface-disconnected",
+                error.to_string(),
+            );
+            return;
+        }
+        let info = SurfaceInfo {
+            id: surface,
+            app_id: String::new(),
+            title,
+            width,
+            height,
+        };
+        let _ = app_for_session.emit_to(&label_for_session, "surface-info", &info);
+
+        let mut input_rx = input_rx;
+        let mut close_rx = close_rx;
         let mut first_frame = true;
-        while let Ok(event) = event_rx.recv() {
-            match event {
-                Event::Surface(info) if info.id == surface => {
-                    eprintln!(
-                        "surface {surface} info {}x{} ({})",
-                        info.width, info.height, info.title
-                    );
-                    let _ = app_for_session.emit_to(&label_for_session, "surface-info", &info);
-                }
-                Event::Frame(frame) if frame.surface == surface => {
-                    if first_frame {
-                        eprintln!(
-                            "surface {surface} first frame {}x{}",
-                            frame.full_w, frame.full_h
+        loop {
+            tokio::select! {
+                _ = &mut close_rx => break,
+                Some(event) = input_rx.recv() => {
+                    if let Err(error) = client.input(surface, &event).await {
+                        let _ = app_for_session.emit_to(
+                            &label_for_session,
+                            "surface-input-error",
+                            error.to_string(),
                         );
-                        first_frame = false;
                     }
-                    let _ = app_for_session.emit_to(&label_for_session, "surface-frame", &frame);
                 }
-                Event::Destroy(id) if id == surface => {
-                    let _ = app_for_session.emit_to(
-                        &label_for_session,
-                        "surface-destroyed",
-                        serde_json::json!({ "surface": id }),
-                    );
-                    break;
+                result = frames.recv() => {
+                    match result {
+                        Ok(frame) if frame.surface == surface => {
+                            if first_frame {
+                                eprintln!(
+                                    "surface {surface} first frame {}x{}",
+                                    frame.full_w, frame.full_h
+                                );
+                                first_frame = false;
+                            }
+                            let _ = app_for_session.emit_to(
+                                &label_for_session,
+                                "surface-frame",
+                                &frame,
+                            );
+                        }
+                        Ok(_) => {}
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                            eprintln!("surface {surface} 帧积压，丢弃 {skipped}");
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                            let _ = app_for_session.emit_to(
+                                &label_for_session,
+                                "surface-disconnected",
+                                "MAP 连接已关闭",
+                            );
+                            break;
+                        }
+                    }
                 }
-                Event::Disconnected(reason) => {
-                    let _ =
-                        app_for_session.emit_to(&label_for_session, "surface-disconnected", reason);
-                    break;
-                }
-                _ => {}
             }
         }
     });
@@ -214,6 +236,11 @@ pub fn open_surface_window(
         if let tauri::WindowEvent::CloseRequested { .. } = event {
             if let Ok(mut inputs) = app_for_close.state::<AppState>().surface_inputs.lock() {
                 inputs.remove(&surface);
+            }
+            if let Ok(mut closes) = app_for_close.state::<AppState>().surface_closes.lock() {
+                if let Some(close) = closes.remove(&surface) {
+                    let _ = close.send(());
+                }
             }
         }
     });
@@ -232,19 +259,4 @@ pub fn surface_input(app: AppHandle, surface: u32, event: InputEvent) -> Result<
         .get(&surface)
         .ok_or_else(|| format!("surface {surface} 没有打开的窗口"))?;
     sender.send(event).map_err(|error| error.to_string())
-}
-
-#[cfg(test)]
-mod display_tests {
-    use super::scan_surfaces;
-
-    /// 需要本机运行中的 art compositor；默认跳过。
-    /// `cargo test -p mixum-env-desktop -- --ignored live_scan_surfaces`
-    #[test]
-    #[ignore = "需要运行中的 art compositor"]
-    fn live_scan_surfaces() {
-        let surfaces = scan_surfaces("192.168.64.32:7603").expect("scan");
-        assert!(!surfaces.is_empty(), "应至少发现一个 surface");
-        eprintln!("surfaces: {surfaces:?}");
-    }
 }

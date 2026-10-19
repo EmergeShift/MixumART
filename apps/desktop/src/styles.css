@@ -436,3 +436,14 @@ p {
   color: var(--text);
   font-size: 12px;
 }
+
+.surface-token,
+.surface-fp {
+  min-width: 220px;
+  padding: 5px 9px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 12px;
+}
