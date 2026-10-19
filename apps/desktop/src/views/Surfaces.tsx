@@ -3,22 +3,32 @@ import { useState } from 'react'
 import { errorText, listSurfaces, openSurfaceWindow } from '../api'
 import type { SurfaceInfo } from '../types'
 
-const DEFAULT_ADDR = '127.0.0.1:7603'
+const DEFAULT_ADDR = '127.0.0.1:7601'
 
 export function Surfaces() {
   const [addr, setAddr] = useState(
-    () => localStorage.getItem('mixum.art.addr') ?? DEFAULT_ADDR,
+    () => localStorage.getItem('mixum.map.addr') ?? DEFAULT_ADDR,
+  )
+  const [token, setToken] = useState(() => localStorage.getItem('mixum.map.token') ?? '')
+  const [fingerprint, setFingerprint] = useState(
+    () => localStorage.getItem('mixum.map.fp') ?? '',
   )
   const [surfaces, setSurfaces] = useState<SurfaceInfo[] | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const scan = async () => {
-    localStorage.setItem('mixum.art.addr', addr)
+    if (!token.trim()) {
+      setError('需要 MAP 令牌（map1.…）')
+      return
+    }
+    localStorage.setItem('mixum.map.addr', addr)
+    localStorage.setItem('mixum.map.token', token)
+    localStorage.setItem('mixum.map.fp', fingerprint)
     setLoading(true)
     setError(null)
     try {
-      setSurfaces(await listSurfaces(addr))
+      setSurfaces(await listSurfaces(addr, token, fingerprint || undefined))
     } catch (err) {
       setError(errorText(err))
       setSurfaces([])
@@ -30,7 +40,7 @@ export function Surfaces() {
   const open = async (surface: SurfaceInfo) => {
     setError(null)
     try {
-      await openSurfaceWindow(addr, surface)
+      await openSurfaceWindow(addr, token, fingerprint || undefined, surface)
     } catch (err) {
       setError(errorText(err))
     }
@@ -52,7 +62,22 @@ export function Surfaces() {
           className="mono surface-addr"
           value={addr}
           onChange={(event) => setAddr(event.target.value)}
-          placeholder="art compositor 地址，例如 192.168.64.32:7603"
+          placeholder="MAP 地址，例如 127.0.0.1:7601"
+          spellCheck={false}
+        />
+        <input
+          className="mono surface-token"
+          type="password"
+          value={token}
+          onChange={(event) => setToken(event.target.value)}
+          placeholder="MAP 令牌 map1.…"
+          spellCheck={false}
+        />
+        <input
+          className="mono surface-fp"
+          value={fingerprint}
+          onChange={(event) => setFingerprint(event.target.value)}
+          placeholder="证书指纹（可选，留空 TOFU）"
           spellCheck={false}
         />
       </div>

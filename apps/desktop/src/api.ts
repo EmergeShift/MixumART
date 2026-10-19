@@ -23,15 +23,29 @@ export function errorText(err: unknown): string {
   return JSON.stringify(err)
 }
 
-export const listSurfaces = (addr: string) => invoke<SurfaceInfo[]>('list_surfaces', { addr })
-
-export const openSurfaceWindow = (addr: string, surface: SurfaceInfo) =>
-  invoke<void>('open_surface_window', {
+export const listSurfaces = (addr: string, token: string, fingerprint?: string) =>
+  invoke<SurfaceInfo[]>('list_surfaces', {
     addr,
-    surface: surface.id,
-    title: surface.title,
-    width: surface.width,
-    height: surface.height,
+    token,
+    fingerprint: fingerprint || null,
+  })
+
+export const openSurfaceWindow = (
+  addr: string,
+  token: string,
+  fingerprint: string | undefined,
+  surface: SurfaceInfo,
+) =>
+  invoke<void>('open_surface_window', {
+    request: {
+      addr,
+      token,
+      fingerprint: fingerprint || null,
+      surface: surface.id,
+      title: surface.title,
+      width: surface.width,
+      height: surface.height,
+    },
   })
 
 export const surfaceInput = (surface: number, event: SurfaceInputEvent) =>
