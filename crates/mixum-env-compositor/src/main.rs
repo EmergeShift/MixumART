@@ -56,10 +56,13 @@ mod linux {
             Client, Display, DisplayHandle, ListeningSocket,
         },
         utils::{Point, Serial, Size, Transform},
+        desktop::{PopupKind, PopupManager},
         wayland::{
             buffer::BufferHandler,
             compositor::{
-                CompositorClientState, CompositorHandler, CompositorState, SurfaceAttributes,
+                get_parent, with_surface_tree_upward, CompositorClientState, CompositorHandler,
+                CompositorState, SubsurfaceCachedState, SurfaceAttributes, SurfaceData,
+                TraversalAction,
             },
             output::OutputHandler,
             selection::{
@@ -69,8 +72,8 @@ mod linux {
                 SelectionHandler,
             },
             shell::xdg::{
-                PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
-                XdgToplevelSurfaceData,
+                PopupSurface, PositionerState, ToplevelSurface, XdgPopupSurfaceData,
+                XdgShellHandler, XdgShellState, XdgToplevelSurfaceData,
             },
             shm::{with_buffer_contents, ShmHandler, ShmState},
         },
@@ -255,6 +258,8 @@ mod linux {
         xdg_shell_state: XdgShellState,
         shm_state: ShmState,
         data_device_state: DataDeviceState,
+        popup_manager: PopupManager,
+        popup_parents: std::collections::HashMap<WlSurface, WlSurface>,
         seat_state: SeatState<Self>,
         seat: Seat<Self>,
         _output: Output,
@@ -316,6 +321,8 @@ mod linux {
                 xdg_shell_state,
                 shm_state,
                 data_device_state,
+                popup_manager: PopupManager::default(),
+                popup_parents: std::collections::HashMap::new(),
                 seat_state,
                 seat,
                 _output: output,
@@ -483,7 +490,12 @@ mod linux {
                         return;
                     }
                 }
-                if let Some(png) = &entry.last_full {
+                if let Some(png) = entry
+                    .have_prev
+                    .then(|| encode_png(&entry.prev, entry.width, entry.height))
+                    .flatten()
+                    .or_else(|| entry.last_full.clone())
+                {
                     let frame = Frame {
                         surface: entry.id,
                         full_w: entry.width as u32,
@@ -493,7 +505,7 @@ mod linux {
                         w: entry.width as u32,
                         h: entry.height as u32,
                         format: FORMAT_PNG,
-                        data: png.clone(),
+                        data: png,
                     };
                     let message = encode_message(MSG_FRAME, &frame.encode());
                     if stream.write_all(&message).is_err() {
@@ -507,7 +519,15 @@ mod linux {
             let Some(entry) = self.surfaces.get(&id) else {
                 return;
             };
-            let Some(png) = &entry.last_full else {
+            // last_full is only refreshed on full frames; when a viewer
+            // attaches after patch-only commits, encode the current composite
+            // so subsurfaces/popups are present.
+            let Some(png) = entry
+                .have_prev
+                .then(|| encode_png(&entry.prev, entry.width, entry.height))
+                .flatten()
+                .or_else(|| entry.last_full.clone())
+            else {
                 return;
             };
             let Some(map) = &self.map else {
@@ -522,7 +542,7 @@ mod linux {
                 w: entry.width as u32,
                 h: entry.height as u32,
                 format: FORMAT_PNG,
-                data: png.clone(),
+                data: png,
             });
         }
 
@@ -540,26 +560,40 @@ mod linux {
             });
         }
 
-        fn on_commit(&mut self, surface: &WlSurface) {
-            let Some(id) = self.entry_for(surface) else {
-                return;
-            };
-            let time = self.start.elapsed().as_millis() as u32;
+        fn root_surface(&self, surface: &WlSurface) -> WlSurface {
+            let mut current = surface.clone();
+            for _ in 0..16 {
+                if let Some(parent) = get_parent(&current) {
+                    current = parent;
+                    continue;
+                }
+                if let Some(parent) = self.popup_parents.get(&current) {
+                    current = parent.clone();
+                    continue;
+                }
+                break;
+            }
+            current
+        }
 
-            // on_commit_buffer_handler moves the attached buffer into the
-            // renderer surface state; read it from there.
-            let buffer = smithay::wayland::compositor::with_states(surface, |states| {
-                states
-                    .data_map
-                    .get::<RendererSurfaceStateUserData>()
-                    .and_then(|data| data.lock().ok())
-                    .and_then(|data| data.buffer().map(|buffer| (**buffer).clone()))
-            });
-            let Some(buffer) = buffer else {
-                self.send_frame_callbacks(surface, time);
-                return;
-            };
+        fn offset_from_states(states: &SurfaceData) -> (i32, i32) {
+            if let Some(data) = states.data_map.get::<XdgPopupSurfaceData>() {
+                if let Ok(attributes) = data.lock() {
+                    let geometry = attributes.current_server_state().geometry;
+                    return (geometry.loc.x, geometry.loc.y);
+                }
+            }
+            let mut cached = states.cached_state.get::<SubsurfaceCachedState>();
+            let location = cached.current().location;
+            (location.x, location.y)
+        }
 
+        fn read_states_rgba(states: &SurfaceData) -> Option<(usize, usize, Vec<u8>)> {
+            let buffer = states
+                .data_map
+                .get::<RendererSurfaceStateUserData>()
+                .and_then(|data| data.lock().ok())
+                .and_then(|data| data.buffer().map(|buffer| (**buffer).clone()))?;
             let captured = with_buffer_contents(&buffer, |ptr, len, data| {
                 let width = data.width.max(0) as usize;
                 let height = data.height.max(0) as usize;
@@ -598,13 +632,133 @@ mod linux {
             .ok()
             .flatten();
             buffer.release();
+            captured
+        }
 
-            let Some((width, height, rgba)) = captured else {
+        fn read_surface_rgba(surface: &WlSurface) -> Option<(usize, usize, Vec<u8>)> {
+            smithay::wayland::compositor::with_states(surface, Self::read_states_rgba)
+        }
+
+        fn composite(root: &WlSurface, canvas_w: usize, canvas_h: usize) -> Option<Vec<u8>> {
+            let mut canvas = vec![0u8; canvas_w * canvas_h * 4];
+            let mut drew = false;
+            with_surface_tree_upward(
+                root,
+                (0i32, 0i32),
+                |_surface, states, location: &(i32, i32)| {
+                    let (ox, oy) = Self::offset_from_states(states);
+                    let loc = (location.0 + ox, location.1 + oy);
+                    TraversalAction::DoChildren(loc)
+                },
+                |_surface, states, location: &(i32, i32)| {
+                    let (ox, oy) = Self::offset_from_states(states);
+                    let (x, y) = (location.0 + ox, location.1 + oy);
+                    let Some((width, height, rgba)) = Self::read_states_rgba(states) else {
+                        return;
+                    };
+                    drew = true;
+                    for row in 0..height {
+                        let dy = y + row as i32;
+                        if dy < 0 || dy >= canvas_h as i32 {
+                            continue;
+                        }
+                        for col in 0..width {
+                            let dx = x + col as i32;
+                            if dx < 0 || dx >= canvas_w as i32 {
+                                continue;
+                            }
+                            let src = (row * width + col) * 4;
+                            let dst = (dy as usize * canvas_w + dx as usize) * 4;
+                            let alpha = rgba[src + 3] as u32;
+                            if alpha == 0 {
+                                continue;
+                            }
+                            if alpha == 255 {
+                                canvas[dst..dst + 4].copy_from_slice(&rgba[src..src + 4]);
+                            } else {
+                                let inv = 255 - alpha;
+                                for channel in 0..3 {
+                                    canvas[dst + channel] = ((rgba[src + channel] as u32 * alpha
+                                        + canvas[dst + channel] as u32 * inv)
+                                        / 255) as u8;
+                                }
+                                canvas[dst + 3] = 255;
+                            }
+                        }
+                    }
+                },
+                |_, _, _| true,
+            );
+            // Popups are not part of the compositor surface tree; Smithay's
+            // PopupManager tracks them with parent-relative locations.
+            for (popup, location) in PopupManager::popups_for_surface(root) {
+                let popup_surface = popup.wl_surface();
+                let Some((width, height, rgba)) = Self::read_surface_rgba(popup_surface) else {
+                    continue;
+                };
+                drew = true;
+                let (x, y) = (location.x, location.y);
+                for row in 0..height {
+                    let dy = y + row as i32;
+                    if dy < 0 || dy >= canvas_h as i32 {
+                        continue;
+                    }
+                    for col in 0..width {
+                        let dx = x + col as i32;
+                        if dx < 0 || dx >= canvas_w as i32 {
+                            continue;
+                        }
+                        let src = (row * width + col) * 4;
+                        let dst = (dy as usize * canvas_w + dx as usize) * 4;
+                        let alpha = rgba[src + 3] as u32;
+                        if alpha == 0 {
+                            continue;
+                        }
+                        if alpha == 255 {
+                            canvas[dst..dst + 4].copy_from_slice(&rgba[src..src + 4]);
+                        } else {
+                            let inv = 255 - alpha;
+                            for channel in 0..3 {
+                                canvas[dst + channel] = ((rgba[src + channel] as u32 * alpha
+                                    + canvas[dst + channel] as u32 * inv)
+                                    / 255) as u8;
+                            }
+                            canvas[dst + 3] = 255;
+                        }
+                    }
+                }
+            }
+            drew.then_some(canvas)
+        }
+
+        fn on_commit(&mut self, surface: &WlSurface) {
+            let time = self.start.elapsed().as_millis() as u32;
+            let root = self.root_surface(surface);
+            let Some(id) = self.entry_for(&root) else {
+                self.send_frame_callbacks(surface, time);
+                return;
+            };
+            let (mut width, mut height) = self
+                .surfaces
+                .get(&id)
+                .map(|entry| (entry.width, entry.height))
+                .unwrap_or((0, 0));
+            if width == 0 || height == 0 {
+                if let Some((w, h, _)) = Self::read_surface_rgba(&root) {
+                    width = w;
+                    height = h;
+                }
+            }
+            if width == 0 || height == 0 {
+                self.send_frame_callbacks(surface, time);
+                return;
+            }
+            let Some(rgba) = Self::composite(&root, width, height) else {
                 self.send_frame_callbacks(surface, time);
                 return;
             };
 
-            let (title, app_id) = toplevel_meta(surface);
+            let (title, app_id) = toplevel_meta(&root);
             let mut announce: Option<(u32, usize, usize, String, String)> = None;
             let mut outgoing: Option<(usize, usize, usize, usize, Vec<u8>)> = None;
             {
@@ -674,6 +828,7 @@ mod linux {
         }
 
         fn commit(&mut self, surface: &WlSurface) {
+            self.popup_manager.commit(surface);
             on_commit_buffer_handler::<Self>(surface);
             self.on_commit(surface);
         }
@@ -722,7 +877,16 @@ mod linux {
             );
         }
 
-        fn new_popup(&mut self, _surface: PopupSurface, _positioner: PositionerState) {}
+        fn new_popup(&mut self, surface: PopupSurface, _positioner: PositionerState) {
+            if let Some(parent) = surface.get_parent_surface() {
+                self.popup_parents
+                    .insert(surface.wl_surface().clone(), parent);
+            }
+            let _ = self
+                .popup_manager
+                .track_popup(PopupKind::Xdg(surface.clone()));
+            let _ = surface.send_configure();
+        }
 
         fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
             let id = self
