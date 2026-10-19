@@ -50,3 +50,6 @@ export const openSurfaceWindow = (
 
 export const surfaceInput = (surface: number, event: SurfaceInputEvent) =>
   invoke<void>('surface_input', { surface, event })
+
+export const remoteClipboard = (surface: number) =>
+  invoke<string>('remote_clipboard', { surface })
