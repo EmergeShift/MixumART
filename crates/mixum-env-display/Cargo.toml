@@ -1,0 +1,18 @@
+[package]
+name = "mixum-env-display"
+description = "MixumART host-side surface viewer (B0)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "mixum-art-viewer"
+path = "src/main.rs"
+
+[dependencies]
+mixum-env-surface = { workspace = true }
+serde_json.workspace = true
+anyhow = "1"
+minifb = "0.27"
+png = "0.17"
