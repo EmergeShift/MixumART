@@ -123,6 +123,7 @@ surface.frame {
 | `crates/mixum-env-compositor` | 容器内 Smithay headless 合成器（Linux） |
 | `crates/mixum-env-display` | 宿主 `mixum-art-viewer`（minifb 窗口 + 输入，直连 TCP 调试） |
 | `crates/mixum-env-map` | 宿主 MAP WSS 客户端（TOFU + display.list/attach/input） |
+| `apps/desktop/src-tauri/src/macos` | macOS MTKView/Metal 原生 surface 叠加层；WebView 负责输入 |
 
 当前 wire：
 
@@ -172,7 +173,8 @@ B 收 17.6KB 全量 + 补丁，互不串流。
 
 > agentd 现在支持多个 comp 连接：mixcomp（A）与 B compositor 可并存，
 > 窗口按 owner 路由 `stream.start/stop` 与 `display.input`，帧只接受 owner。
-> Tauri 已切到 MAP（`mixum-env-map`）；原生 Metal 纹理仍是下一步。
+> Tauri 已切到 MAP（`mixum-env-map`）；macOS 已有 MTKView/Metal 原生叠加层，
+> 非 macOS 或 `MIXUM_NATIVE_METAL=0` 时回退 WebView canvas。
 
 实测（0.1.2 节点，foot 996×663）：全量 17KB，时钟补丁 48×26 约 1.5KB；
 TCP 注入 `a` + `Return` 后 foot shell 输出 `got:`/`a`。宿主查看器同时
