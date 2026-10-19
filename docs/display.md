@@ -147,8 +147,7 @@ cd apps/desktop && npm run tauri dev
 #   令牌      map1.…
 #   指纹      可选；留空走 TOFU，首次连接会记录到 ~/.mixum/known-hosts
 
-# 容器内：agentd 只有一个 comp 槽位，先停 mixcomp
-pkill -9 mixcomp
+# 容器内：mixcomp（A）和 B compositor 可并存，agentd 按窗口 owner 路由
 XDG_RUNTIME_DIR=/run/mixum mixum-env-compositor \
   --map-socket /run/mixum/display.sock
 XDG_RUNTIME_DIR=/run/mixum WAYLAND_DISPLAY=mixum-art-0 foot
@@ -162,28 +161,17 @@ XDG_RUNTIME_DIR=/run/mixum mixum-env-compositor   # 不带 --map-socket
 XDG_RUNTIME_DIR=/run/mixum WAYLAND_DISPLAY=mixum-art-0 foot
 ```
 
-运行（MAP 模式，复用 A 的会话/令牌/接管）：
-
-```sh
-# 容器内：agentd 只有一个 comp 槽位，先停 mixcomp
-pkill -9 mixcomp
-XDG_RUNTIME_DIR=/run/mixum mixum-env-compositor \
-  --map-socket /run/mixum/display.sock
-XDG_RUNTIME_DIR=/run/mixum WAYLAND_DISPLAY=mixum-art-0 foot
-
-# 宿主：用 MAP 客户端（mixum-ctl / TS SDK）
-display.list
-display.attach { window: 1000, codec: "png" }
-display.input { window: 1000, type: "key", keysym: "a", action: "click" }
-```
-
 MAP 模式实测：`display.list` 看到 B surface（id 从 1000 起），attach 后
 `stream.start` 触发最后一帧全量重放，之后只收脏区补丁；键盘输入经
 `display.input` → agentd → B compositor seat → foot，补丁里出现
 `got:`/`a`。
 
-> 当前 agentd 只维护一个 comp 连接，B compositor 和 mixcomp 不能同时
-> 作为 display 源；MAP 模式下要先停 mixcomp。多 comp 源/命名空间是后续项。
+A/B 并存实测：agentd 多 comp 源下，`display.list` 同时有 mixcomp 的
+id=1（300×169）和 B 的 id=1000（996×663）；attach 后 A 收 5.3KB 全量、
+B 收 17.6KB 全量 + 补丁，互不串流。
+
+> agentd 现在支持多个 comp 连接：mixcomp（A）与 B compositor 可并存，
+> 窗口按 owner 路由 `stream.start/stop` 与 `display.input`，帧只接受 owner。
 > Tauri 已切到 MAP（`mixum-env-map`）；原生 Metal 纹理仍是下一步。
 
 实测（0.1.2 节点，foot 996×663）：全量 17KB，时钟补丁 48×26 约 1.5KB；
