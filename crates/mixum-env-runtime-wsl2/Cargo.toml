@@ -1,0 +1,12 @@
+[package]
+name = "mixum-env-runtime-wsl2"
+description = "WSL 2 运行时后端（Windows）——骨架占位，由并行小组接入"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+mixum-env-core.workspace = true
+async-trait.workspace = true
+tokio.workspace = true
