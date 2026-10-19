@@ -6,7 +6,6 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    io::Write,
     net::TcpStream,
     sync::{mpsc, Arc, Mutex},
     thread,
@@ -15,17 +14,8 @@ use std::{
 
 use anyhow::{bail, Context, Result};
 use minifb::{Key, MouseButton, MouseMode, Window, WindowOptions};
-use mixum_env_surface::{
-    encode_message, read_message, Frame, InputEvent, SurfaceDestroy, SurfaceInfo, FORMAT_NONE,
-    MSG_FRAME, MSG_INPUT, MSG_SURFACE_CREATE, MSG_SURFACE_DESTROY,
-};
-
-enum Event {
-    Surface(SurfaceInfo),
-    Frame(Frame),
-    Destroy(u32),
-    Disconnected(String),
-}
+use mixum_env_display::{send_input, spawn_reader, Event};
+use mixum_env_surface::{InputEvent, SurfaceInfo, FORMAT_NONE};
 
 struct Canvas {
     width: usize,
@@ -89,46 +79,7 @@ fn main() -> Result<()> {
     let writer = Arc::new(Mutex::new(stream.try_clone()?));
 
     let (tx, rx) = mpsc::channel();
-    thread::spawn(move || {
-        let mut stream = stream;
-        loop {
-            match read_message(&mut stream) {
-                Ok((MSG_SURFACE_CREATE, payload)) => {
-                    match serde_json::from_slice::<SurfaceInfo>(&payload) {
-                        Ok(info) => {
-                            if tx.send(Event::Surface(info)).is_err() {
-                                return;
-                            }
-                        }
-                        Err(error) => eprintln!("surface.create: {error}"),
-                    }
-                }
-                Ok((MSG_FRAME, payload)) => match Frame::decode(&payload) {
-                    Ok(frame) => {
-                        if tx.send(Event::Frame(frame)).is_err() {
-                            return;
-                        }
-                    }
-                    Err(error) => eprintln!("frame: {error}"),
-                },
-                Ok((MSG_SURFACE_DESTROY, payload)) => {
-                    match serde_json::from_slice::<SurfaceDestroy>(&payload) {
-                        Ok(destroy) => {
-                            if tx.send(Event::Destroy(destroy.id)).is_err() {
-                                return;
-                            }
-                        }
-                        Err(error) => eprintln!("surface.destroy: {error}"),
-                    }
-                }
-                Ok((kind, _)) => eprintln!("unknown message {kind}"),
-                Err(error) => {
-                    let _ = tx.send(Event::Disconnected(error.to_string()));
-                    return;
-                }
-            }
-        }
-    });
+    spawn_reader(stream, tx);
 
     let mut surfaces: HashMap<u32, SurfaceWindow> = HashMap::new();
     let mut cascade = 0usize;
@@ -298,15 +249,6 @@ fn pump_input(surface: &mut SurfaceWindow, writer: &Arc<Mutex<TcpStream>>) {
         }
     }
     surface.last_keys = pressed;
-}
-
-fn send_input(writer: &Arc<Mutex<TcpStream>>, event: &InputEvent) {
-    if let Ok(payload) = serde_json::to_vec(event) {
-        let message = encode_message(MSG_INPUT, &payload);
-        if let Ok(mut stream) = writer.lock() {
-            let _ = stream.write_all(&message);
-        }
-    }
 }
 
 fn key_name(key: Key) -> Option<&'static str> {
