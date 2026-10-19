@@ -24,3 +24,12 @@ mixum-env-runtime-docker.workspace = true
 mixum-env-runtime-wsl2.workspace = true
 mixum-env-surface.workspace = true
 mixum-env-map.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2_02 = { package = "objc2", version = "0.5.2", default-features = false, features = ["std"] }
+objc2_foundation_02 = { package = "objc2-foundation", version = "0.2.2", default-features = false, features = ["std", "NSGeometry", "NSString"] }
+objc2_app_kit_02 = { package = "objc2-app-kit", version = "0.2.2", default-features = false, features = ["std", "NSResponder", "NSView", "NSWindow"] }
+objc2_quartz_core_02 = { package = "objc2-quartz-core", version = "0.2.2", default-features = false, features = ["std", "CALayer", "CAMetalLayer", "objc2-metal"] }
+objc2_metal_02 = { package = "objc2-metal", version = "0.2.2", default-features = false, features = ["std", "MTLDevice", "MTLCommandQueue", "MTLCommandBuffer", "MTLCommandEncoder", "MTLRenderCommandEncoder", "MTLLibrary", "MTLRenderPipeline", "MTLRenderPass", "MTLTexture", "MTLSampler", "MTLResource", "MTLTypes", "MTLPixelFormat"] }
+objc2_metal_kit_02 = { package = "objc2-metal-kit", version = "0.2.2", default-features = false, features = ["std", "MTKView", "objc2-app-kit", "objc2-quartz-core"] }
+image = { version = "0.25", default-features = false, features = ["png"] }

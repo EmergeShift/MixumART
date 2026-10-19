@@ -130,6 +130,19 @@ pub fn open_surface_window(app: AppHandle, request: OpenSurfaceRequest) -> Resul
         .build()
         .map_err(|error| format!("创建窗口失败：{error}"))?;
 
+    #[cfg(target_os = "macos")]
+    let native_ptr = if std::env::var("MIXUM_NATIVE_METAL").as_deref() == Ok("0") {
+        None
+    } else {
+        match crate::macos::attach(&window, surface, width, height) {
+            Ok(pointer) => Some(pointer),
+            Err(error) => {
+                eprintln!("native metal overlay 不可用，回退 canvas：{error}");
+                None
+            }
+        }
+    };
+
     let (input_tx, input_rx) = tokio_mpsc::unbounded_channel::<InputEvent>();
     let (close_tx, close_rx) = oneshot::channel::<()>();
     {
@@ -144,6 +157,14 @@ pub fn open_surface_window(app: AppHandle, request: OpenSurfaceRequest) -> Resul
             .lock()
             .map_err(|error| error.to_string())?;
         closes.insert(surface, close_tx);
+        #[cfg(target_os = "macos")]
+        if let Some(pointer) = native_ptr {
+            state
+                .native_surfaces
+                .lock()
+                .map_err(|error| error.to_string())?
+                .insert(surface, pointer);
+        }
     }
 
     let app_for_session = app.clone();
@@ -209,6 +230,8 @@ pub fn open_surface_window(app: AppHandle, request: OpenSurfaceRequest) -> Resul
                                 );
                                 first_frame = false;
                             }
+                            #[cfg(target_os = "macos")]
+                            crate::macos::push_frame(&app_for_session, surface, &frame);
                             let _ = app_for_session.emit_to(
                                 &label_for_session,
                                 "surface-frame",
@@ -244,6 +267,8 @@ pub fn open_surface_window(app: AppHandle, request: OpenSurfaceRequest) -> Resul
                     let _ = close.send(());
                 }
             }
+            #[cfg(target_os = "macos")]
+            crate::macos::detach(&app_for_close, surface);
         }
     });
 

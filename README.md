@@ -13,6 +13,10 @@
 
 **显示原型（B0/B1）**：`crates/mixum-env-compositor` 在容器内跑 Smithay
 headless 合成器，把每个 toplevel 的 buffer+damage 经 TCP 发给宿主。
+macOS 上 Tauri surface 窗口默认使用 **MTKView + Metal** 原生叠加层渲染
+PNG 帧（WebView canvas 作为非 macOS/失败回退；输入/IME/剪贴板仍由
+WebView 处理）。`MIXUM_NATIVE_METAL=0` 可强制回退 canvas。
+
 Tauri 的「窗口」页现在通过 MAP WSS（`mixum-env-map`）连接 agentd：
 输入地址/令牌/可选指纹，扫描 surface、为每个 surface 开独立窗口
 （WebView canvas + 鼠标/键盘回传），令牌/接管复用 A。agentd 已支持多个
