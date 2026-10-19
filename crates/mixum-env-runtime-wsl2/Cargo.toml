@@ -1,6 +1,6 @@
 [package]
 name = "mixum-env-runtime-wsl2"
-description = "WSL 2 运行时后端（Windows）——骨架占位，由并行小组接入"
+description = "WSL 2 运行时后端（Windows）：mixum-* 发行版的探测、列举、导入与启停"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
