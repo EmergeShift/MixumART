@@ -90,6 +90,38 @@ export function SurfaceView({ surface, addr }: Props) {
   const button = (code: number): 'left' | 'right' | 'middle' =>
     code === 2 ? 'right' : code === 1 ? 'middle' : 'left'
 
+  // Map a text character to the keysyms the compositor's evdev table knows.
+  // Non-ASCII (CJK IME) is reported instead of silently typing the wrong key.
+  const charName = (ch: string): string | null => {
+    if (ch === '\n' || ch === '\r') return 'Return'
+    if (ch === ' ') return 'space'
+    if (/^[a-z0-9]$/.test(ch)) return ch
+    const punctuation: Record<string, string> = {
+      '-': 'minus',
+      '=': 'equal',
+      ',': 'comma',
+      '.': 'period',
+      '/': 'slash',
+      ';': 'semicolon',
+      "'": 'apostrophe',
+    }
+    return punctuation[ch] ?? null
+  }
+
+  const sendText = (text: string) => {
+    let skipped = false
+    for (const ch of text) {
+      const keysym = charName(ch)
+      if (!keysym) {
+        skipped = true
+        continue
+      }
+      send({ type: 'key', surface, keysym, action: 'press' })
+      send({ type: 'key', surface, keysym, action: 'release' })
+    }
+    if (skipped) setStatus('部分字符不是 ASCII，当前 B 输入通路仅支持 ASCII')
+  }
+
   const keyName = (event: React.KeyboardEvent): string | null => {
     if (event.key === ' ') return 'space'
     if (event.key.length === 1) return event.key.toLowerCase()
@@ -139,16 +171,27 @@ export function SurfaceView({ surface, addr }: Props) {
           })
         }}
         onKeyDown={(event) => {
+          if (event.nativeEvent.isComposing) return
           const keysym = keyName(event)
           if (!keysym) return
           event.preventDefault()
           send({ type: 'key', surface, keysym, action: 'press' })
         }}
         onKeyUp={(event) => {
+          if (event.nativeEvent.isComposing) return
           const keysym = keyName(event)
           if (!keysym) return
           event.preventDefault()
           send({ type: 'key', surface, keysym, action: 'release' })
+        }}
+        onPaste={(event) => {
+          const text = event.clipboardData.getData('text')
+          if (!text) return
+          event.preventDefault()
+          sendText(text)
+        }}
+        onCompositionEnd={(event) => {
+          if (event.data) sendText(event.data)
         }}
       />
       {status && <div className="surface-status">{status}</div>}
