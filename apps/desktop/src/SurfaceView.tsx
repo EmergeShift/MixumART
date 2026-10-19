@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { listen } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 
-import { surfaceInput } from './api'
+import { remoteClipboard, surfaceInput } from './api'
 import type { SurfaceFrame, SurfaceInfo, SurfaceInputEvent } from './types'
 
 type Props = {
@@ -171,6 +171,13 @@ export function SurfaceView({ surface, addr }: Props) {
           })
         }}
         onKeyDown={(event) => {
+          if ((event.metaKey || event.ctrlKey) && event.altKey && event.key.toLowerCase() === 'v') {
+            event.preventDefault()
+            void remoteClipboard(surface)
+              .then((text) => navigator.clipboard.writeText(text))
+              .catch((error: unknown) => setStatus(String(error)))
+            return
+          }
           if (event.nativeEvent.isComposing) return
           const keysym = keyName(event)
           if (!keysym) return

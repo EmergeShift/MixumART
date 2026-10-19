@@ -22,6 +22,7 @@ pub struct AppState {
     pub registry: Arc<BackendRegistry>,
     pub surface_inputs: Mutex<HashMap<u32, tokio::sync::mpsc::UnboundedSender<InputEvent>>>,
     pub surface_closes: Mutex<HashMap<u32, tokio::sync::oneshot::Sender<()>>>,
+    pub surface_clients: Mutex<HashMap<u32, Arc<mixum_env_map::MapClient>>>,
     #[cfg(target_os = "macos")]
     pub native_surfaces: Mutex<HashMap<u32, usize>>,
 }
@@ -32,6 +33,7 @@ impl AppState {
             registry: Arc::new(build_registry()),
             surface_inputs: Mutex::new(HashMap::new()),
             surface_closes: Mutex::new(HashMap::new()),
+            surface_clients: Mutex::new(HashMap::new()),
             #[cfg(target_os = "macos")]
             native_surfaces: Mutex::new(HashMap::new()),
         }
@@ -103,6 +105,7 @@ pub fn run() {
             commands::list_surfaces,
             commands::open_surface_window,
             commands::surface_input,
+            commands::remote_clipboard,
         ])
         .run(tauri::generate_context!())
         .expect("启动 mixum Agent Env 失败");

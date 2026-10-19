@@ -266,6 +266,18 @@ impl MapClient {
         Ok(())
     }
 
+    /// Pull the node's current clipboard text (B2 remote selection).
+    pub async fn clipboard(&self) -> Result<String, MapError> {
+        let reply = self.call("display.clipboard", json!({})).await?;
+        let text = reply
+            .payload
+            .get("text")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        Ok(text)
+    }
+
     pub async fn input(
         &self,
         surface: u32,
