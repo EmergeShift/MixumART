@@ -14,6 +14,7 @@ export function Surfaces() {
     () => localStorage.getItem('mixum.map.fp') ?? '',
   )
   const [surfaces, setSurfaces] = useState<SurfaceInfo[] | null>(null)
+  const [route, setRoute] = useState<'all' | 'a' | 'b'>('all')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -37,6 +38,11 @@ export function Surfaces() {
     }
   }
 
+  const kind = (surface: SurfaceInfo) => (surface.id >= 1000 ? 'B' : 'A')
+  const shown = (surfaces ?? []).filter(
+    (surface) => route === 'all' || kind(surface).toLowerCase() === route,
+  )
+
   const open = async (surface: SurfaceInfo) => {
     setError(null)
     try {
@@ -51,7 +57,10 @@ export function Surfaces() {
       <div className="section-head">
         <div>
           <h2>窗口</h2>
-          <p className="muted">连接 art compositor，每个 surface 打开一个独立窗口。</p>
+          <p className="muted">
+            连接 MAP 节点：A = mixcomp（X11/异常时的回退候选），B = MixumART
+            Wayland；每个 surface 打开独立窗口。
+          </p>
         </div>
         <button className="ghost" onClick={() => void scan()} disabled={loading}>
           {loading ? '扫描中…' : '扫描 surface'}
@@ -81,15 +90,29 @@ export function Surfaces() {
           spellCheck={false}
         />
       </div>
+      <div className="chips">
+        {(['all', 'a', 'b'] as const).map((value) => (
+          <button
+            key={value}
+            className={route === value ? 'chip active' : 'chip'}
+            onClick={() => setRoute(value)}
+          >
+            {value === 'all' ? '全部' : value === 'a' ? 'A 回退' : 'B Wayland'}
+          </button>
+        ))}
+      </div>
       {error && <div className="error">{error}</div>}
       {surfaces === null ? (
         <div className="empty">输入 art compositor 地址后扫描。</div>
       ) : surfaces.length === 0 ? (
-        <div className="empty">没有发现 surface。</div>
+        <div className="empty">
+          {surfaces.length === 0 ? '没有发现 surface。' : '当前筛选没有 surface。'}
+        </div>
       ) : (
         <table className="table">
           <thead>
             <tr>
+              <th>源</th>
               <th>ID</th>
               <th>标题</th>
               <th>应用</th>
@@ -98,8 +121,13 @@ export function Surfaces() {
             </tr>
           </thead>
           <tbody>
-            {surfaces.map((surface) => (
+            {shown.map((surface) => (
               <tr key={surface.id}>
+                <td>
+                  <span className={kind(surface) === 'A' ? 'tag tag-a' : 'tag tag-b'}>
+                    {kind(surface)}
+                  </span>
+                </td>
                 <td className="mono">{surface.id}</td>
                 <td>{surface.title || '—'}</td>
                 <td className="mono">{surface.appId || '—'}</td>

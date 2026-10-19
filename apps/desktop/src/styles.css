@@ -447,3 +447,21 @@ p {
   color: var(--text);
   font-size: 12px;
 }
+
+.tag {
+  display: inline-block;
+  min-width: 18px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  text-align: center;
+  font-size: 11px;
+  font-weight: 600;
+}
+.tag-a {
+  background: color-mix(in srgb, var(--warn, #b7791f) 22%, transparent);
+  color: var(--warn, #b7791f);
+}
+.tag-b {
+  background: color-mix(in srgb, var(--accent, #2b6cb0) 20%, transparent);
+  color: var(--accent, #2b6cb0);
+}
