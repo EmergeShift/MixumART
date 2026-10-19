@@ -55,7 +55,7 @@ mod linux {
             protocol::{wl_buffer, wl_shm, wl_surface::WlSurface},
             Client, Display, DisplayHandle, ListeningSocket,
         },
-        utils::{Point, Serial, Size, Transform},
+        utils::{Logical, Point, Rectangle, Serial, Size, Transform},
         desktop::{PopupKind, PopupManager},
         wayland::{
             buffer::BufferHandler,
@@ -77,6 +77,10 @@ mod linux {
                 XdgShellHandler, XdgShellState, XdgToplevelSurfaceData,
             },
             shm::{with_buffer_contents, ShmHandler, ShmState},
+            input_method::{
+                InputMethodHandler, InputMethodManagerState, PopupSurface as InputMethodPopup,
+            },
+            text_input::{TextInputManagerState, TextInputSeat},
         },
     };
 
@@ -233,6 +237,13 @@ mod linux {
                     .to_string(),
                 action: action.to_string(),
             },
+            "text" => InputEvent::Text {
+                surface: id,
+                text: value
+                    .get("text")
+                    .and_then(serde_json::Value::as_str)?
+                    .to_string(),
+            },
             _ => return None,
         };
         Some(MapEvent::Input(event))
@@ -265,6 +276,8 @@ mod linux {
         pointer_pos: (f64, f64),
         pointer_root: Option<WlSurface>,
         active_popup: Option<WlSurface>,
+        _text_input_state: TextInputManagerState,
+        _input_method_state: InputMethodManagerState,
         seat_state: SeatState<Self>,
         seat: Seat<Self>,
         _output: Output,
@@ -291,6 +304,9 @@ mod linux {
             let xdg_shell_state = XdgShellState::new::<Self>(display_handle);
             let shm_state = ShmState::new::<Self>(display_handle, vec![]);
             let data_device_state = DataDeviceState::new::<Self>(display_handle);
+            let text_input_state = TextInputManagerState::new::<Self>(display_handle);
+            let input_method_state =
+                InputMethodManagerState::new::<Self, _>(display_handle, |_client| true);
 
             let mut seat_state = SeatState::new();
             let mut seat = seat_state.new_wl_seat(display_handle, "mixum-art");
@@ -332,6 +348,8 @@ mod linux {
                 pointer_pos: (0.0, 0.0),
                 pointer_root: None,
                 active_popup: None,
+                _text_input_state: text_input_state,
+                _input_method_state: input_method_state,
                 seat_state,
                 seat,
                 _output: output,
@@ -412,11 +430,19 @@ mod linux {
             hit
         }
 
+        fn focus_text_input(&mut self, surface: &WlSurface, serial: Serial) {
+            let text_input = self.seat.text_input();
+            text_input.set_focus(Some(surface.clone()));
+            text_input.enter();
+            let _ = serial;
+        }
+
         fn handle_input(&mut self, event: InputEvent) {
             let id = match &event {
                 InputEvent::PointerMotion { surface, .. }
                 | InputEvent::PointerButton { surface, .. }
                 | InputEvent::Key { surface, .. }
+                | InputEvent::Text { surface, .. }
                 | InputEvent::Focus { surface } => *surface,
             };
             let surface = self
@@ -463,6 +489,7 @@ mod linux {
                     if let Some(keyboard) = self.seat.get_keyboard() {
                         keyboard.set_focus(self, Some(target.clone()), serial);
                     }
+                    self.focus_text_input(&target, serial);
                     if let Some(pointer) = self.seat.get_pointer() {
                         let location: Point<f64, smithay::utils::Logical> =
                             (local_x, local_y).into();
@@ -511,11 +538,9 @@ mod linux {
                         return;
                     };
                     if let Some(keyboard) = self.seat.get_keyboard() {
-                        keyboard.set_focus(
-                            self,
-                            Some(self.active_popup.clone().unwrap_or(surface)),
-                            serial,
-                        );
+                        let target = self.active_popup.clone().unwrap_or(surface);
+                        keyboard.set_focus(self, Some(target.clone()), serial);
+                        self.focus_text_input(&target, serial);
                         let mut send = |state| {
                             keyboard.input::<(), _>(
                                 self,
@@ -534,13 +559,21 @@ mod linux {
                         }
                     }
                 }
+                InputEvent::Text { text, .. } => {
+                    self.focus_text_input(&surface, serial);
+                    let text_input = self.seat.text_input();
+                    if !text.is_empty() {
+                        text_input.with_focused_text_input(|input, _| {
+                            input.commit_string(Some(text.clone()));
+                        });
+                        text_input.done(false);
+                    }
+                }
                 InputEvent::Focus { .. } => {
                     if let Some(keyboard) = self.seat.get_keyboard() {
-                        keyboard.set_focus(
-                            self,
-                            Some(self.active_popup.clone().unwrap_or(surface)),
-                            serial,
-                        );
+                        let target = self.active_popup.clone().unwrap_or(surface);
+                        keyboard.set_focus(self, Some(target.clone()), serial);
+                        self.focus_text_input(&target, serial);
                     }
                 }
             }
@@ -1001,6 +1034,15 @@ mod linux {
         }
     }
 
+    impl InputMethodHandler for Art {
+        fn new_popup(&mut self, _surface: InputMethodPopup) {}
+        fn dismiss_popup(&mut self, _surface: InputMethodPopup) {}
+        fn popup_repositioned(&mut self, _surface: InputMethodPopup) {}
+        fn parent_geometry(&self, _parent: &WlSurface) -> Rectangle<i32, Logical> {
+            Rectangle::default()
+        }
+    }
+
     impl OutputHandler for Art {}
 
     impl SelectionHandler for Art {
@@ -1226,6 +1268,109 @@ mod linux {
     smithay::delegate_output!(Art);
     smithay::delegate_data_device!(Art);
 
+    smithay::delegate_text_input_manager!(Art);
+    smithay::delegate_input_method_manager!(Art);
+
+    /// Minimal input-method v2 client. Smithay's text-input handler ignores
+    /// client enable/commit unless an input-method instance exists; this client
+    /// provides that instance so host IME commits can reach the focused app.
+    fn spawn_input_method() {
+        std::thread::spawn(|| {
+            use wayland_client::{
+                globals::{registry_queue_init, GlobalListContents},
+                protocol::{wl_registry, wl_seat},
+                Connection, Dispatch, QueueHandle,
+            };
+            use wayland_protocols_misc::zwp_input_method_v2::client::{
+                zwp_input_method_manager_v2::ZwpInputMethodManagerV2,
+                zwp_input_method_v2::{self, ZwpInputMethodV2},
+            };
+
+            struct State;
+            impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for State {
+                fn event(
+                    _: &mut Self,
+                    _: &wl_registry::WlRegistry,
+                    _: wl_registry::Event,
+                    _: &GlobalListContents,
+                    _: &Connection,
+                    _: &QueueHandle<Self>,
+                ) {
+                }
+            }
+            impl Dispatch<wl_seat::WlSeat, ()> for State {
+                fn event(
+                    _: &mut Self,
+                    _: &wl_seat::WlSeat,
+                    _: wl_seat::Event,
+                    _: &(),
+                    _: &Connection,
+                    _: &QueueHandle<Self>,
+                ) {
+                }
+            }
+            impl Dispatch<ZwpInputMethodManagerV2, ()> for State {
+                fn event(
+                    _: &mut Self,
+                    _: &ZwpInputMethodManagerV2,
+                    _: <ZwpInputMethodManagerV2 as wayland_client::Proxy>::Event,
+                    _: &(),
+                    _: &Connection,
+                    _: &QueueHandle<Self>,
+                ) {
+                }
+            }
+            impl Dispatch<ZwpInputMethodV2, ()> for State {
+                fn event(
+                    _: &mut Self,
+                    _: &ZwpInputMethodV2,
+                    _: zwp_input_method_v2::Event,
+                    _: &(),
+                    _: &Connection,
+                    _: &QueueHandle<Self>,
+                ) {
+                }
+            }
+
+            let connection = match Connection::connect_to_env() {
+                Ok(connection) => connection,
+                Err(error) => {
+                    eprintln!("input-method client connect: {error}");
+                    return;
+                }
+            };
+            let (globals, mut queue) = match registry_queue_init(&connection) {
+                Ok(value) => value,
+                Err(error) => {
+                    eprintln!("input-method registry: {error}");
+                    return;
+                }
+            };
+            let qh = queue.handle();
+            let seat: wl_seat::WlSeat = match globals.bind(&qh, 1..=9, ()) {
+                Ok(seat) => seat,
+                Err(error) => {
+                    eprintln!("input-method seat: {error}");
+                    return;
+                }
+            };
+            let manager: ZwpInputMethodManagerV2 = match globals.bind(&qh, 1..=1, ()) {
+                Ok(manager) => manager,
+                Err(error) => {
+                    eprintln!("input-method manager: {error}");
+                    return;
+                }
+            };
+            let _input_method = manager.get_input_method(&seat, &qh, ());
+            loop {
+                if let Err(error) = queue.blocking_dispatch(&mut State) {
+                    eprintln!("input-method dispatch: {error}");
+                    break;
+                }
+            }
+        });
+    }
+
     pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         let mut map_socket: Option<String> = None;
         let mut tcp_port = TCP_PORT;
@@ -1276,6 +1421,7 @@ mod linux {
         );
 
         let mut state = Art::new(&display_handle, clients, new_rx, input_rx, map, map_rx);
+        spawn_input_method();
         loop {
             while let Ok(event) = state.input_rx.try_recv() {
                 state.handle_input(event);
