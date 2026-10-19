@@ -927,15 +927,44 @@ mod linux {
             "apostrophe" => 40,
             value if value.len() == 1 => {
                 let ch = value.as_bytes()[0];
+                // Linux evdev keycodes are not alphabetical.
                 match ch {
-                    b'a'..=b'z' => 30 + (ch - b'a') as u32,
-                    b'0'..=b'9' => {
-                        if ch == b'0' {
-                            11
-                        } else {
-                            (ch - b'0') as u32 + 1
-                        }
-                    }
+                    b'a' => 30,
+                    b'b' => 48,
+                    b'c' => 46,
+                    b'd' => 32,
+                    b'e' => 18,
+                    b'f' => 33,
+                    b'g' => 34,
+                    b'h' => 35,
+                    b'i' => 23,
+                    b'j' => 36,
+                    b'k' => 37,
+                    b'l' => 38,
+                    b'm' => 50,
+                    b'n' => 49,
+                    b'o' => 24,
+                    b'p' => 25,
+                    b'q' => 16,
+                    b'r' => 19,
+                    b's' => 31,
+                    b't' => 20,
+                    b'u' => 22,
+                    b'v' => 47,
+                    b'w' => 17,
+                    b'x' => 45,
+                    b'y' => 21,
+                    b'z' => 44,
+                    b'0' => 11,
+                    b'1' => 2,
+                    b'2' => 3,
+                    b'3' => 4,
+                    b'4' => 5,
+                    b'5' => 6,
+                    b'6' => 7,
+                    b'7' => 8,
+                    b'8' => 9,
+                    b'9' => 10,
                     _ => return None,
                 }
             }
