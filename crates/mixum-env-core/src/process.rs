@@ -34,12 +34,35 @@ impl CommandOutput {
     }
 }
 
+/// 原始字节输出。wsl.exe 这类控制台工具输出 UTF-16LE，UTF-8 无损转换
+/// 会破坏后续解码——由调用方取原始字节自行解码（见 runtime-contract.md §4）。
+#[derive(Debug, Clone)]
+pub struct RawCommandOutput {
+    pub success: bool,
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+}
+
 /// 执行命令并收集输出；`program` 不存在时返回 NotInstalled，超时返回 Timeout。
 pub async fn run(
     program: &str,
     args: &[&str],
     timeout: Duration,
 ) -> Result<CommandOutput, EnvError> {
+    let raw = run_raw(program, args, timeout).await?;
+    Ok(CommandOutput {
+        success: raw.success,
+        stdout: String::from_utf8_lossy(&raw.stdout).trim().to_string(),
+        stderr: String::from_utf8_lossy(&raw.stderr).trim().to_string(),
+    })
+}
+
+/// 执行命令并收集原始字节输出；超时与缺程序的语义同 [`run`]。
+pub async fn run_raw(
+    program: &str,
+    args: &[&str],
+    timeout: Duration,
+) -> Result<RawCommandOutput, EnvError> {
     let display = display_command(program, args);
     let future = tokio::process::Command::new(program)
         .args(args)
@@ -63,10 +86,10 @@ pub async fn run(
         Ok(Ok(output)) => output,
     };
 
-    Ok(CommandOutput {
+    Ok(RawCommandOutput {
         success: output.status.success(),
-        stdout: String::from_utf8_lossy(&output.stdout).trim().to_string(),
-        stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        stdout: output.stdout,
+        stderr: output.stderr,
     })
 }
 
@@ -92,9 +115,12 @@ mod tests {
 
     #[tokio::test]
     async fn captures_stdout() {
-        let out = run("/bin/echo", &["hello"], Duration::from_secs(2))
-            .await
-            .unwrap();
+        let (program, args): (&str, Vec<&str>) = if cfg!(windows) {
+            ("cmd", vec!["/c", "echo", "hello"])
+        } else {
+            ("/bin/echo", vec!["hello"])
+        };
+        let out = run(program, &args, Duration::from_secs(2)).await.unwrap();
         assert!(out.success);
         assert_eq!(out.stdout, "hello");
     }
