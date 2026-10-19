@@ -159,22 +159,36 @@ WSL 2 没有「容器」这一层：一个 mixumOS 节点 = 一个 `mixum-*` 发
 
 | 字段 | 含义 |
 |------|------|
-| `name` | 发行版名，**必须** `mixum-` 前缀（与列表过滤一致，不区分大小写） |
-| `image` | **本地 rootfs tar 路径**——WSL 没有镜像仓库，节点来自 mixumOS `dist/` 产物 |
+| `name` | 发行版名，`mixum-` 前缀 + `[A-Za-z0-9._-]` 后缀（见下方命名规则） |
+| `image` | **本地 rootfs 路径**——WSL 没有镜像仓库，节点来自 mixumOS `dist/` 产物；`.tar` 与 `.tar.gz` 都支持 |
 | `ports` / `mounts` / `env` / `command` | 无对应物，**非空即报错**，不静默忽略 |
 
+命名规则（列表过滤、写操作保护、安装目录拼接共用同一份实现
+`validate_name`，避免「列得出来但点不动」）：
+
+- 前缀必须是 `mixum-`（不区分大小写），`mixum` / `mixumfoo` 都不算节点；
+- 后缀非空，只允许 `[A-Za-z0-9._-]`；含分隔符、`..` 或以 `.` 结尾一律拒绝——
+  这个名字会拼进安装目录，放开就等于允许路径穿越。
+
 安装位置：`%MIXUM_WSL_INSTALL_ROOT%\<name>`；未设置时
-`%LOCALAPPDATA%\mixum\wsl\<name>`，目录不存在则创建。
+`%LOCALAPPDATA%\mixum\wsl\<name>`，目录不存在则创建。导入失败会清掉这个
+目录，否则同名重试会被非空目录挡住；`remove` 成功后也会顺手清理。
 
 硬性要求：
 
 - **只动 `mixum-` 前缀的发行版**：`start` / `stop` / `remove` 收到其它名字直接拒绝，
   避免把宿主自己的 `Ubuntu-24.04` / `docker-desktop` terminate 或 unregister 掉；
+- 非 Windows 宿主：`probe` 返回 `Unsupported`，其余方法直接返回
+  `EnvError::Unsupported`，不要落到「找不到 wsl.exe」的 `NotInstalled`；
 - `remove` 会删掉 `ext4.vhdx`，**不可逆**，UI 层必须二次确认；
-- 幂等：`stop` / `remove` 遇到不存在的发行版视为成功；`create` 重名视为失败；
-  `start` 遇到不存在的发行版是错误（调用方本来就知道自己要点哪个）；
-- `start` 只把发行版实例拉起。**WSL 在无进程约 15s 后自动回到 `Stopped`**，
-  `Running` 仅表示「当前有活动会话」；mixumOS 常驻服务（`mixumd` / entrypoint）
-  的启动语义在后续里程碑以新契约补充；
+- 幂等：`stop` / `remove` 遇到不存在的发行版视为成功；`stop` 遇到**已存在但已停止**
+  的发行版同样视为成功（先看状态再决定要不要 `--terminate`）；
+  `create` 重名视为失败；`start` 遇到不存在的发行版是错误；
+- `start` 只把发行版实例拉起（`wsl -d <id> -e /bin/true`），是**临时拉起**。
+  **WSL 在无进程约 15s 后自动回到 `Stopped`**，`Running` 仅表示「当前有活动会话」；
+  常驻服务（`mixumd` / entrypoint）的启动语义在后续里程碑以新契约补充。
+  在常驻服务接入前，UI 上的「运行中」文案应说明这是临时状态；
 - 是否「存在」以 `wsl --list --verbose` 的解析结果为准，不去猜错误文案；
+- 解析以「最后一列是版本号」锚定，不写死 STATE 枚举：WSL 新增状态时
+  （如 `Uninstalling`）该行仍会列出，展示层降级为 `Unknown`；
 - 「一个发行版都没有」不是错误：`list_containers` 返回空 `Vec`。

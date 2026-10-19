@@ -2,8 +2,11 @@
 //!
 //! mixumOS 节点在 WSL 2 宿主上以「发行版」形式存在：由
 //! `wsl --import <name> <dir> <rootfs.tar>` 导入 mixumOS rootfs 生成。
-//! 命名约定 `mixum-<name>`，本后端只把匹配约定（不区分大小写）的发行版
-//! 当作 mixumOS 节点列出；其余发行版是宿主自己的环境，不在管理范围。
+//! 命名约定 `mixum-<name>`，本后端只把符合约定（不区分大小写）的发行版
+//! 当作 mixumOS 节点；其余发行版是宿主自己的环境，不在管理范围。
+//!
+//! 「符合约定」只有一份实现（[`validate_name`]）：列表过滤、写操作保护、
+//! 安装目录拼接共用它，避免出现「列得出来但点不动」的名字。
 //!
 //! 写操作的字段映射与幂等约定见 `docs/runtime-contract.md` §9：
 //! create = import、start = 拉起实例、stop = terminate、remove = unregister。
@@ -29,14 +32,7 @@ const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 const WSL: &str = "wsl.exe";
 
 /// mixumOS 节点发行版的命名前缀（不区分大小写）。
-const DISTRO_PREFIX: &str = "mixum";
-
-/// `create` 强制带连字符：列表过滤宽松到 `mixum`，创建严格到 `mixum-`，
-/// 否则导入出来的节点会叫 `mixumfoo` 这种读不出层级感的名字。
-const CREATE_PREFIX: &str = "mixum-";
-
-/// `wsl --list --verbose` 的 STATE 列枚举，不随界面语言变化。
-const KNOWN_STATES: [&str; 4] = ["Running", "Stopped", "Installing", "Converting"];
+const NODE_PREFIX: &str = "mixum-";
 
 /// 应用装配入口。
 pub fn backend() -> Arc<dyn RuntimeBackend> {
@@ -92,18 +88,17 @@ impl RuntimeBackend for Wsl2Backend {
     }
 
     async fn list_containers(&self) -> Result<Vec<Container>, EnvError> {
+        ensure_windows()?;
         Ok(list_distributions()
             .await?
             .into_iter()
-            .filter(Distro::is_mixum_node)
+            .filter(|distro| is_node_name(&distro.name))
             .map(Distro::into_container)
             .collect())
     }
 
     async fn create_container(&self, spec: CreateSpec) -> Result<Container, EnvError> {
-        if !cfg!(target_os = "windows") {
-            return Err(unsupported());
-        }
+        ensure_windows()?;
         validate_spec(&spec)?;
         if !Path::new(&spec.image).is_file() {
             return Err(invalid(
@@ -118,17 +113,28 @@ impl RuntimeBackend for Wsl2Backend {
             ));
         }
 
-        let install_dir = install_root().join(&spec.name);
+        let install_dir =
+            install_dir(&spec.name).map_err(|reason| invalid("create_container", reason))?;
         std::fs::create_dir_all(&install_dir)?;
-        let install_dir = install_dir.to_string_lossy().into_owned();
-        let args = ["--import", &spec.name, &install_dir, &spec.image];
-        run_wsl_checked(&args, CREATE_TIMEOUT).await?;
+        let install_dir_arg = install_dir.to_string_lossy().into_owned();
+        let args = ["--import", &spec.name, &install_dir_arg, &spec.image];
+        if let Err(err) = run_wsl_checked(&args, CREATE_TIMEOUT).await {
+            // 导入失败会留下半成品目录，不清掉的话同名重试会被非空目录挡住。
+            let _ = std::fs::remove_dir_all(&install_dir);
+            return Err(err);
+        }
 
         // WSL 没有 created 状态：导入完成就是一个 Stopped 的发行版。
         Ok(imported_container(spec.name))
     }
 
+    /// 只把发行版实例拉起来（`/bin/true` 跑完就退）。
+    ///
+    /// 这是**临时拉起**：WSL 在无进程约 15s 后自动回到 `Stopped`，
+    /// `Running` 只表示「当前有会话」。常驻服务（`mixumd` / entrypoint）
+    /// 的启动语义等后续契约（§9）。
     async fn start_container(&self, id: &str) -> Result<(), EnvError> {
+        ensure_windows()?;
         check_managed("start_container", id)?;
         let args = ["-d", id, "-e", "/bin/true"];
         let (success, stdout, stderr) = run_wsl(&args, WRITE_TIMEOUT).await?;
@@ -143,31 +149,42 @@ impl RuntimeBackend for Wsl2Backend {
     }
 
     async fn stop_container(&self, id: &str) -> Result<(), EnvError> {
+        ensure_windows()?;
         check_managed("stop_container", id)?;
+        // 契约 §3：已停止视为成功。先看状态，别把「本来就是停的」报成失败。
+        match find_distro(id).await? {
+            None => return Ok(()),
+            Some(distro) if distro.is_stopped() => return Ok(()),
+            Some(_) => {}
+        }
+
         let args = ["--terminate", id];
         let (success, stdout, stderr) = run_wsl(&args, WRITE_TIMEOUT).await?;
         if success {
             return Ok(());
         }
-        // 已经不在列表里 = 已经停了，幂等（契约 §3、§9）。
-        if !distro_exists(id).await? {
-            return Ok(());
+        // 竞态兜底：terminate 期间它可能已经自己停了。
+        match find_distro(id).await? {
+            None => Ok(()),
+            Some(distro) if distro.is_stopped() => Ok(()),
+            Some(_) => Err(failed(&args, &stdout, &stderr)),
         }
-        Err(failed(&args, &stdout, &stderr))
     }
 
     async fn remove_container(&self, id: &str) -> Result<(), EnvError> {
+        ensure_windows()?;
         check_managed("remove_container", id)?;
+        let existed = distro_exists(id).await?;
         let args = ["--unregister", id];
         let (success, stdout, stderr) = run_wsl(&args, WRITE_TIMEOUT).await?;
-        if success {
-            return Ok(());
+        if !success && existed {
+            return Err(failed(&args, &stdout, &stderr));
         }
-        // 不存在视为成功：重复点击删除不该报错（契约 §3、§9）。
-        if !distro_exists(id).await? {
-            return Ok(());
+        // 发行版已经没了，顺带清掉安装目录（不是本后端建的目录就不存在，忽略即可）。
+        if let Ok(dir) = install_dir(id) {
+            let _ = std::fs::remove_dir_all(dir);
         }
-        Err(failed(&args, &stdout, &stderr))
+        Ok(())
     }
 }
 
@@ -175,6 +192,15 @@ fn unsupported() -> EnvError {
     EnvError::Unsupported {
         runtime: RuntimeKind::Wsl2,
         reason: "WSL 2 仅在 Windows 宿主可用".to_string(),
+    }
+}
+
+/// 非 Windows 宿主上一律提前返回 `Unsupported`，不要落到「找不到 wsl.exe」。
+fn ensure_windows() -> Result<(), EnvError> {
+    if cfg!(target_os = "windows") {
+        Ok(())
+    } else {
+        Err(unsupported())
     }
 }
 
@@ -209,11 +235,15 @@ async fn list_distributions() -> Result<Vec<Distro>, EnvError> {
     Ok(parse_distributions(&stdout))
 }
 
-async fn distro_exists(name: &str) -> Result<bool, EnvError> {
+async fn find_distro(name: &str) -> Result<Option<Distro>, EnvError> {
     Ok(list_distributions()
         .await?
-        .iter()
-        .any(|distro| distro.name.eq_ignore_ascii_case(name)))
+        .into_iter()
+        .find(|distro| distro.name.eq_ignore_ascii_case(name)))
+}
+
+async fn distro_exists(name: &str) -> Result<bool, EnvError> {
+    Ok(find_distro(name).await?.is_some())
 }
 
 /// `wsl --version` 只在新版 WSL 存在；失败不影响 probe 结果。
@@ -260,26 +290,48 @@ fn invalid(what: &str, reason: impl Into<String>) -> EnvError {
     }
 }
 
+/// mixumOS 节点发行版名的唯一校验入口，列表过滤与写操作共用。
+///
+/// 除了前缀，后缀还必须是 `[A-Za-z0-9._-]`：这个名字会直接拼进安装目录
+/// （`install_root()/<name>`），放开分隔符或 `..` 就能写出安装根目录。
+fn validate_name(name: &str) -> Result<(), String> {
+    let lower = name.to_ascii_lowercase();
+    let Some(suffix) = lower.strip_prefix(NODE_PREFIX) else {
+        return Err(format!("发行版名必须以 {NODE_PREFIX} 开头：{name}"));
+    };
+    if suffix.is_empty() {
+        return Err(format!("{NODE_PREFIX} 之后不能为空：{name}"));
+    }
+    if suffix.contains("..") {
+        return Err(format!("发行版名不能包含 `..`：{name}"));
+    }
+    if suffix.ends_with('.') {
+        return Err(format!("发行版名不能以 `.` 结尾：{name}"));
+    }
+    if let Some(bad) = suffix
+        .chars()
+        .find(|c| !(c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')))
+    {
+        return Err(format!(
+            "发行版名只能包含字母、数字、`.`、`_`、`-`（非法字符 {bad:?}）：{name}"
+        ));
+    }
+    Ok(())
+}
+
+fn is_node_name(name: &str) -> bool {
+    validate_name(name).is_ok()
+}
+
 /// 写操作只允许碰 mixumOS 节点，避免把宿主自己的 Ubuntu / docker-desktop
 /// terminate 或 unregister 掉（契约 §9）。
 fn check_managed(what: &str, id: &str) -> Result<(), EnvError> {
-    if is_create_name(id) {
-        return Ok(());
-    }
-    Err(invalid(
-        what,
-        format!("{id} 不是 mixumOS 节点（需要 {CREATE_PREFIX} 前缀），拒绝操作"),
-    ))
+    validate_name(id).map_err(|reason| invalid(what, format!("{reason}，拒绝操作")))
 }
 
 /// `CreateSpec` → `wsl --import` 的可行性检查，纯函数便于单测。
 fn validate_spec(spec: &CreateSpec) -> Result<(), EnvError> {
-    if !is_create_name(&spec.name) {
-        return Err(invalid(
-            "create_container",
-            format!("发行版名必须以 {CREATE_PREFIX} 开头：{}", spec.name),
-        ));
-    }
+    validate_name(&spec.name).map_err(|reason| invalid("create_container", reason))?;
     let unsupported: Vec<&str> = [
         (!spec.ports.is_empty()).then_some("ports"),
         (!spec.mounts.is_empty()).then_some("mounts"),
@@ -301,10 +353,6 @@ fn validate_spec(spec: &CreateSpec) -> Result<(), EnvError> {
     Ok(())
 }
 
-fn is_create_name(name: &str) -> bool {
-    name.to_ascii_lowercase().starts_with(CREATE_PREFIX)
-}
-
 /// 发行版 vhdx 的落盘根目录：`%MIXUM_WSL_INSTALL_ROOT%`，缺省
 /// `%LOCALAPPDATA%\mixum\wsl`（C 盘紧张时用环境变量指到别的盘）。
 fn install_root() -> PathBuf {
@@ -320,6 +368,17 @@ fn install_root_from(root: Option<String>, local_appdata: Option<String>) -> Pat
     }
     let base = local_appdata.unwrap_or_else(|| r"C:\Users\Public\AppData\Local".to_string());
     PathBuf::from(base).join("mixum").join("wsl")
+}
+
+/// 单个发行版的安装目录。名字已过白名单（不含分隔符与 `..`），这里再确认
+/// 一次拼接结果没有跳出根目录，作为纵深防御。
+fn install_dir(name: &str) -> Result<PathBuf, String> {
+    let root = install_root();
+    let dir = root.join(name);
+    if !dir.starts_with(&root) {
+        return Err(format!("安装路径越界：{}", dir.display()));
+    }
+    Ok(dir)
 }
 
 fn imported_container(name: String) -> Container {
@@ -341,19 +400,21 @@ fn imported_container(name: String) -> Container {
 fn decode_console(raw: &[u8]) -> String {
     let body = raw.strip_prefix([0xFF, 0xFE].as_slice()).unwrap_or(raw);
     if body.contains(&0u8) {
-        let units: Vec<u16> = body
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .map(|pair| u16::from_le_bytes(*pair))
-            .collect();
+        // 不用 as_chunks::<2>()（要求 Rust 1.88+），也不用 chunks_exact(2)
+        // （clippy 会要求换成 as_chunks）：本仓库 MSRV 是 1.77。
+        let mut units = Vec::with_capacity(body.len() / 2);
+        for pair in body.chunks(2) {
+            if let [lo, hi] = pair {
+                units.push(u16::from_le_bytes([*lo, *hi]));
+            }
+        }
         String::from_utf16_lossy(&units).trim().to_string()
     } else {
         String::from_utf8_lossy(body).trim().to_string()
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct Distro {
     name: String,
     state_raw: String,
@@ -361,8 +422,8 @@ struct Distro {
 }
 
 impl Distro {
-    fn is_mixum_node(&self) -> bool {
-        self.name.to_ascii_lowercase().starts_with(DISTRO_PREFIX)
+    fn is_stopped(&self) -> bool {
+        self.state_raw.eq_ignore_ascii_case("stopped")
     }
 
     fn into_container(self) -> Container {
@@ -379,8 +440,11 @@ impl Distro {
     }
 }
 
-/// 解析 `wsl --list --verbose` 表格。STATE 列是不随区域变化的英文枚举，
-/// 以它为锚点取行，避免依赖列宽与表头；默认发行版的 `*` 标记剥掉。
+/// 解析 `wsl --list --verbose` 表格。
+///
+/// 以「最后一列是版本号」锚定，不写死 STATE 枚举：WSL 新增状态（例如
+/// `Uninstalling`）时这一行仍然能列出来，展示层把未知状态降级成 `Unknown`，
+/// 不会整行消失。默认发行版的 `*` 标记剥掉，名字里的空格保留。
 fn parse_distributions(text: &str) -> Vec<Distro> {
     let mut distros = Vec::new();
     for line in text.lines() {
@@ -388,8 +452,8 @@ fn parse_distributions(text: &str) -> Vec<Distro> {
         if tokens.len() < 3 {
             continue;
         }
-        let state_raw = tokens[tokens.len() - 2];
-        if !KNOWN_STATES.contains(&state_raw) {
+        let version = tokens[tokens.len() - 1];
+        if !version.chars().all(|c| c.is_ascii_digit()) {
             continue;
         }
         let mut name_tokens = &tokens[..tokens.len() - 2];
@@ -401,8 +465,8 @@ fn parse_distributions(text: &str) -> Vec<Distro> {
         }
         distros.push(Distro {
             name: name_tokens.join(" "),
-            state_raw: state_raw.to_string(),
-            version: tokens[tokens.len() - 1].to_string(),
+            state_raw: tokens[tokens.len() - 2].to_string(),
+            version: version.to_string(),
         });
     }
     distros
@@ -487,23 +551,37 @@ mod tests {
     }
 
     #[test]
+    fn keeps_rows_with_states_we_do_not_know() {
+        // 新增状态不应让整行消失（旧实现会按 KNOWN_STATES 白名单跳过）。
+        let text = "  NAME  STATE  VERSION\nmixum-dev  Uninstalling  2\n";
+        let distros = parse_distributions(text);
+        assert_eq!(distros.len(), 1);
+        assert_eq!(distros[0].state_raw, "Uninstalling");
+        assert_eq!(
+            distros[0].clone().into_container().state,
+            ContainerState::Unknown
+        );
+    }
+
+    #[test]
     fn skips_header_and_unknown_lines() {
         assert!(parse_distributions("  NAME  STATE  VERSION\n").is_empty());
         assert!(parse_distributions("").is_empty());
         assert!(parse_distributions("garbage line without states\n").is_empty());
+        // 最后一列不是版本号 → 不是发行版行。
+        assert!(parse_distributions("mixum-dev  Running  n/a\n").is_empty());
     }
 
     #[test]
     fn filters_mixum_nodes_case_insensitively() {
-        let node = |name: &str| Distro {
-            name: name.to_string(),
-            state_raw: "Running".to_string(),
-            version: "2".to_string(),
-        };
-        assert!(node("mixum-dev").is_mixum_node());
-        assert!(node("Mixum-Node").is_mixum_node());
-        assert!(!node("Ubuntu-24.04").is_mixum_node());
-        assert!(!node("docker-desktop").is_mixum_node());
+        assert!(is_node_name("mixum-dev"));
+        assert!(is_node_name("Mixum-Node"));
+        assert!(!is_node_name("Ubuntu-24.04"));
+        assert!(!is_node_name("docker-desktop"));
+        // 前缀必须带连字符：列表与写操作用同一套规则，不能这里列出来、
+        // 那边点不动。
+        assert!(!is_node_name("mixum"));
+        assert!(!is_node_name("mixumfoo"));
     }
 
     #[test]
@@ -523,6 +601,19 @@ mod tests {
     }
 
     #[test]
+    fn recognizes_stopped_state() {
+        let distro = |state: &str| Distro {
+            name: "mixum-dev".to_string(),
+            state_raw: state.to_string(),
+            version: "2".to_string(),
+        };
+        assert!(distro("Stopped").is_stopped());
+        assert!(distro("stopped").is_stopped());
+        assert!(!distro("Running").is_stopped());
+        assert!(!distro("Uninstalling").is_stopped());
+    }
+
+    #[test]
     fn detects_no_distributions_hint() {
         assert!(no_distributions_installed(
             "适用于 Linux 的 Windows 子系统没有已安装的分发版。"
@@ -536,16 +627,44 @@ mod tests {
     #[test]
     fn accepts_valid_create_spec() {
         assert!(validate_spec(&spec("mixum-dev")).is_ok());
-        // 列表过滤不区分大小写，创建也放过大小写变体。
+        // 大小写不敏感，与列表过滤一致。
         assert!(validate_spec(&spec("Mixum-Dev")).is_ok());
+        assert!(validate_spec(&spec("mixum-a_b.c-1")).is_ok());
     }
 
     #[test]
     fn rejects_names_without_mixum_prefix() {
-        for name in ["ubuntu", "mixumdev", "mixum", "docker-desktop"] {
+        // mixum / mixumfoo 少了连字符，列表与写操作都必须拒绝。
+        for name in ["ubuntu", "mixumdev", "mixum", "mixumfoo", "docker-desktop"] {
             let err = validate_spec(&spec(name)).unwrap_err().to_string();
             assert!(err.contains("mixum-"), "{name} 应被拒绝：{err}");
         }
+    }
+
+    #[test]
+    fn rejects_path_like_names() {
+        // 名字会拼进安装目录，分隔符与 .. 一律拒绝。
+        for name in [
+            r"mixum-..\evil",
+            "mixum-../evil",
+            "mixum-a/b",
+            r"mixum-a\b",
+            "mixum-..",
+            "mixum-.",
+            "mixum-a b",
+            "mixum-",
+            "mixum-节点",
+        ] {
+            assert!(validate_spec(&spec(name)).is_err(), "{name:?} 应被拒绝");
+            assert!(!is_node_name(name), "{name:?} 不应算节点");
+        }
+    }
+
+    #[test]
+    fn install_dir_stays_under_root() {
+        let dir = install_dir("mixum-dev").expect("合法名字应能拼出目录");
+        assert!(dir.starts_with(install_root()));
+        assert_eq!(dir.file_name().and_then(|n| n.to_str()), Some("mixum-dev"));
     }
 
     #[test]
@@ -568,7 +687,7 @@ mod tests {
     #[test]
     fn write_ops_refuse_foreign_distros() {
         assert!(check_managed("start_container", "mixum-dev").is_ok());
-        for id in ["Ubuntu-24.04", "docker-desktop"] {
+        for id in ["Ubuntu-24.04", "docker-desktop", "mixum", "mixumfoo"] {
             let err = check_managed("remove_container", id)
                 .unwrap_err()
                 .to_string();
@@ -651,12 +770,8 @@ mod tests {
     }
 
     /// 真实写入冒烟：会导入并注销一个 `mixum-live-test` 发行版。
-    /// 需要设置 `MIXUM_TEST_ROOTFS` 指向一个可用的 rootfs tar，否则跳过。
-    ///
-    /// ```sh
-    /// MIXUM_TEST_ROOTFS=D:\mixum\rootfs.tar \
-    ///   cargo test -p mixum-env-runtime-wsl2 -- --ignored live_write_cycle
-    /// ```
+    /// 需要设置 `MIXUM_TEST_ROOTFS` 指向一个可用的 rootfs tar（`.tar` / `.tar.gz`），
+    /// 否则跳过。
     #[tokio::test]
     #[ignore = "需要 Windows + WSL + MIXUM_TEST_ROOTFS"]
     async fn live_write_cycle() {
@@ -678,11 +793,43 @@ mod tests {
         let created = backend.create_container(spec).await.expect("import");
         assert_eq!(created.state, ContainerState::Stopped);
 
+        // 刚导入就是 Stopped：契约 §3 要求「已停止视为成功」。
+        backend
+            .stop_container(name)
+            .await
+            .expect("stop 已停止的节点应幂等成功");
+
         backend.start_container(name).await.expect("start");
         backend.stop_container(name).await.expect("stop");
         backend.remove_container(name).await.expect("remove");
 
         let listed = backend.list_containers().await.unwrap();
         assert!(!listed.iter().any(|c| c.name == name), "删除后不应再列出");
+    }
+
+    /// 真实失败路径：导入一个不是 tar 的文件，确认报错且安装目录被清掉。
+    #[tokio::test]
+    #[ignore = "需要 Windows + WSL"]
+    async fn live_import_failure_cleans_install_dir() {
+        let backend = backend();
+        let name = "mixum-live-bad";
+        let _ = backend.remove_container(name).await;
+
+        let bogus = std::env::temp_dir().join("mixum-bogus-rootfs.tar");
+        std::fs::write(&bogus, b"definitely not a tar").unwrap();
+        let dir = install_dir(name).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let mut spec = spec(name);
+        spec.image = bogus.to_string_lossy().into_owned();
+        let err = backend
+            .create_container(spec)
+            .await
+            .expect_err("非 tar 文件应导入失败");
+        assert!(matches!(err, EnvError::CommandFailed { .. }), "{err:?}");
+        assert!(!dir.exists(), "导入失败后应清掉安装目录：{}", dir.display());
+        assert!(!distro_exists(name).await.unwrap());
+
+        let _ = std::fs::remove_file(bogus);
     }
 }
