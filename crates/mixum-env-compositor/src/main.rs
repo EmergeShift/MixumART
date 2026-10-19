@@ -260,6 +260,9 @@ mod linux {
         data_device_state: DataDeviceState,
         popup_manager: PopupManager,
         popup_parents: std::collections::HashMap<WlSurface, WlSurface>,
+        pointer_pos: (f64, f64),
+        pointer_root: Option<WlSurface>,
+        active_popup: Option<WlSurface>,
         seat_state: SeatState<Self>,
         seat: Seat<Self>,
         _output: Output,
@@ -323,6 +326,9 @@ mod linux {
                 data_device_state,
                 popup_manager: PopupManager::default(),
                 popup_parents: std::collections::HashMap::new(),
+                pointer_pos: (0.0, 0.0),
+                pointer_root: None,
+                active_popup: None,
                 seat_state,
                 seat,
                 _output: output,
@@ -373,6 +379,36 @@ mod linux {
             broadcast(&self.clients, MSG_FRAME, &frame.encode());
         }
 
+        fn popup_hit(
+            &self,
+            root: &WlSurface,
+            x: f64,
+            y: f64,
+        ) -> Option<(WlSurface, f64, f64)> {
+            let mut hit = None;
+            for (popup, location) in PopupManager::popups_for_surface(root) {
+                let surface = popup.wl_surface();
+                let size = smithay::wayland::compositor::with_states(surface, |states| {
+                    states
+                        .data_map
+                        .get::<RendererSurfaceStateUserData>()
+                        .and_then(|data| data.lock().ok())
+                        .and_then(|data| data.buffer_size())
+                });
+                let Some(size) = size else {
+                    continue;
+                };
+                let left = location.x as f64;
+                let top = location.y as f64;
+                let right = left + size.w as f64;
+                let bottom = top + size.h as f64;
+                if x >= left && x < right && y >= top && y < bottom {
+                    hit = Some((surface.clone(), x - left, y - top));
+                }
+            }
+            hit
+        }
+
         fn handle_input(&mut self, event: InputEvent) {
             let id = match &event {
                 InputEvent::PointerMotion { surface, .. }
@@ -394,11 +430,16 @@ mod linux {
 
             match event {
                 InputEvent::PointerMotion { x, y, .. } => {
+                    self.pointer_pos = (x, y);
+                    self.pointer_root = Some(surface.clone());
+                    let (target, local_x, local_y) =
+                        self.popup_hit(&surface, x, y).unwrap_or((surface, x, y));
                     if let Some(pointer) = self.seat.get_pointer() {
-                        let location: Point<f64, smithay::utils::Logical> = (x, y).into();
+                        let location: Point<f64, smithay::utils::Logical> =
+                            (local_x, local_y).into();
                         pointer.motion(
                             self,
-                            Some((surface, location)),
+                            Some((target, location)),
                             &MotionEvent {
                                 location,
                                 serial,
@@ -408,8 +449,29 @@ mod linux {
                     }
                 }
                 InputEvent::PointerButton { button, action, .. } => {
+                    let hit = self
+                        .pointer_root
+                        .as_ref()
+                        .and_then(|root| self.popup_hit(root, self.pointer_pos.0, self.pointer_pos.1));
+                    let (target, local_x, local_y) = hit
+                        .clone()
+                        .unwrap_or((surface.clone(), self.pointer_pos.0, self.pointer_pos.1));
+                    self.active_popup = hit.map(|(surface, _, _)| surface.clone());
                     if let Some(keyboard) = self.seat.get_keyboard() {
-                        keyboard.set_focus(self, Some(surface.clone()), serial);
+                        keyboard.set_focus(self, Some(target.clone()), serial);
+                    }
+                    if let Some(pointer) = self.seat.get_pointer() {
+                        let location: Point<f64, smithay::utils::Logical> =
+                            (local_x, local_y).into();
+                        pointer.motion(
+                            self,
+                            Some((target, location)),
+                            &MotionEvent {
+                                location,
+                                serial,
+                                time,
+                            },
+                        );
                     }
                     let code = match button.as_str() {
                         "right" => 0x111,
@@ -446,7 +508,11 @@ mod linux {
                         return;
                     };
                     if let Some(keyboard) = self.seat.get_keyboard() {
-                        keyboard.set_focus(self, Some(surface), serial);
+                        keyboard.set_focus(
+                            self,
+                            Some(self.active_popup.clone().unwrap_or(surface)),
+                            serial,
+                        );
                         let mut send = |state| {
                             keyboard.input::<(), _>(
                                 self,
@@ -467,7 +533,11 @@ mod linux {
                 }
                 InputEvent::Focus { .. } => {
                     if let Some(keyboard) = self.seat.get_keyboard() {
-                        keyboard.set_focus(self, Some(surface), serial);
+                        keyboard.set_focus(
+                            self,
+                            Some(self.active_popup.clone().unwrap_or(surface)),
+                            serial,
+                        );
                     }
                 }
             }
