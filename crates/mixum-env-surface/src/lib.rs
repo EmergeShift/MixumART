@@ -87,6 +87,11 @@ pub enum InputEvent {
         keysym: String,
         action: String,
     },
+    /// Composed text (IME commit / paste), delivered via wp_text_input_v3.
+    Text {
+        surface: u32,
+        text: String,
+    },
     Focus {
         surface: u32,
     },

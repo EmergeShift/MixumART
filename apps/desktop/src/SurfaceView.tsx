@@ -109,17 +109,18 @@ export function SurfaceView({ surface, addr }: Props) {
   }
 
   const sendText = (text: string) => {
-    let skipped = false
+    // Text-input clients (GTK/Qt/…) accept composed text including CJK.
+    // Keep the existing key path for pure ASCII so terminals stay compatible.
+    if (/[^\x00-\x7F]/.test(text)) {
+      send({ type: 'text', surface, text })
+      return
+    }
     for (const ch of text) {
       const keysym = charName(ch)
-      if (!keysym) {
-        skipped = true
-        continue
-      }
+      if (!keysym) continue
       send({ type: 'key', surface, keysym, action: 'press' })
       send({ type: 'key', surface, keysym, action: 'release' })
     }
-    if (skipped) setStatus('部分字符不是 ASCII，当前 B 输入通路仅支持 ASCII')
   }
 
   const keyName = (event: React.KeyboardEvent): string | null => {
