@@ -136,10 +136,10 @@ frame 头：`surface, full_w, full_h, x, y, w, h`（7×u32）、
 `format u8`（0=仅光标、2=PNG）、`data_len u32`。首帧/尺寸变化为全量，
 之后只发脏区；静止不发帧。
 
-运行：
+运行（直连 TCP 模式，Tauri 当前走这条）：
 
 ```sh
-# 宿主（Tauri 应用；推荐）
+# 宿主（Tauri 应用）
 cd apps/desktop && npm run tauri dev
 # 「窗口」页填入 <container-ip>:7603，扫描后打开 surface
 
@@ -150,6 +150,31 @@ cargo run -p mixum-env-display --release -- --addr <container-ip>:7603
 XDG_RUNTIME_DIR=/run/mixum mixum-env-compositor
 XDG_RUNTIME_DIR=/run/mixum WAYLAND_DISPLAY=mixum-art-0 foot
 ```
+
+运行（MAP 模式，复用 A 的会话/令牌/接管）：
+
+```sh
+# 容器内：agentd 只有一个 comp 槽位，先停 mixcomp
+pkill -9 mixcomp
+XDG_RUNTIME_DIR=/run/mixum mixum-env-compositor \
+  --map-socket /run/mixum/display.sock
+XDG_RUNTIME_DIR=/run/mixum WAYLAND_DISPLAY=mixum-art-0 foot
+
+# 宿主：用 MAP 客户端（mixum-ctl / TS SDK）
+display.list
+display.attach { window: 1000, codec: "png" }
+display.input { window: 1000, type: "key", keysym: "a", action: "click" }
+```
+
+MAP 模式实测：`display.list` 看到 B surface（id 从 1000 起），attach 后
+`stream.start` 触发最后一帧全量重放，之后只收脏区补丁；键盘输入经
+`display.input` → agentd → B compositor seat → foot，补丁里出现
+`got:`/`a`。
+
+> 当前 agentd 只维护一个 comp 连接，B compositor 和 mixcomp 不能同时
+> 作为 display 源；MAP 模式下要先停 mixcomp。多 comp 源/命名空间是后续项。
+> Tauri 宿主目前仍走直连 TCP，接 MAP 客户端（复用 mixum-ctl 的 TOFU/令牌）
+> 是下一步。
 
 实测（0.1.2 节点，foot 996×663）：全量 17KB，时钟补丁 48×26 约 1.5KB；
 TCP 注入 `a` + `Return` 后 foot shell 输出 `got:`/`a`。宿主查看器同时
