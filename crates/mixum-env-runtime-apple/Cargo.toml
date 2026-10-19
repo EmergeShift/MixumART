@@ -1,0 +1,14 @@
+[package]
+name = "mixum-env-runtime-apple"
+description = "Apple Container 运行时后端（macOS）"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+mixum-env-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+async-trait.workspace = true
+tokio.workspace = true
