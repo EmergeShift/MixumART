@@ -1,0 +1,21 @@
+[package]
+name = "mixum-env-map"
+description = "MixumART 的 MAP WSS 客户端：display.list/attach/input + TOFU"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+mixum-env-surface = { workspace = true }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-tungstenite.workspace = true
+futures-util.workspace = true
+rustls.workspace = true
+sha2.workspace = true
+url.workspace = true
+ulid.workspace = true
+dirs.workspace = true

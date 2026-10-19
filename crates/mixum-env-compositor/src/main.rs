@@ -23,8 +23,9 @@ fn main() {
 mod linux {
     use std::{
         collections::HashMap,
-        io::Write,
+        io::{Read, Write},
         net::{TcpListener, TcpStream},
+        os::unix::net::UnixStream,
         sync::{
             mpsc::{self, Receiver, Sender},
             Arc, Mutex,
@@ -89,6 +90,150 @@ mod linux {
         fn disconnected(&self, _client_id: ClientId, _reason: DisconnectReason) {}
     }
 
+    enum MapEvent {
+        Input(InputEvent),
+        StreamStart(u32),
+    }
+
+    /// B compositor 作为 agentd 的 comp 客户端：JSON 控制 + 0x04 PNG 帧。
+    struct MapTransport {
+        writer: Arc<Mutex<UnixStream>>,
+    }
+
+    impl MapTransport {
+        fn connect(path: &str) -> std::io::Result<(Self, Receiver<MapEvent>)> {
+            let stream = UnixStream::connect(path)?;
+            eprintln!("map connected to {path}");
+            let mut reader = stream.try_clone()?;
+            let writer = Arc::new(Mutex::new(stream));
+            let (event_tx, event_rx) = mpsc::channel();
+            std::thread::spawn(move || loop {
+                let mut header = [0u8; 5];
+                if reader.read_exact(&mut header).is_err() {
+                    break;
+                }
+                let len = u32::from_le_bytes([header[0], header[1], header[2], header[3]]) as usize;
+                if len == 0 || len > 16 * 1024 * 1024 {
+                    break;
+                }
+                let mut payload = vec![0u8; len];
+                if reader.read_exact(&mut payload).is_err() {
+                    break;
+                }
+                if header[4] != 0x01 {
+                    continue;
+                }
+                let Ok(value) = serde_json::from_slice::<serde_json::Value>(&payload) else {
+                    continue;
+                };
+                let kind = value.get("type").and_then(serde_json::Value::as_str);
+                match kind {
+                    Some("input") => {
+                        if let Some(event) = input_from_control(&value) {
+                            let _ = event_tx.send(event);
+                        }
+                    }
+                    Some("stream.start") => {
+                        if let Some(id) = value.get("id").and_then(serde_json::Value::as_u64) {
+                            let _ = event_tx.send(MapEvent::StreamStart(id as u32));
+                        }
+                    }
+                    _ => {}
+                }
+            });
+            Ok((Self { writer }, event_rx))
+        }
+
+        fn send_json(&self, value: &serde_json::Value) {
+            let payload = serde_json::to_vec(value).unwrap_or_default();
+            if let Ok(mut stream) = self.writer.lock() {
+                let _ = stream.write_all(&(payload.len() as u32).to_le_bytes());
+                let _ = stream.write_all(&[0x01]);
+                let _ = stream.write_all(&payload);
+            }
+        }
+
+        fn window(&self, kind: &str, entry: &SurfaceEntry) {
+            self.send_json(&serde_json::json!({
+                "type": kind,
+                "id": entry.id,
+                "appId": entry.app_id,
+                "title": entry.title,
+                "width": entry.width as u32,
+                "height": entry.height as u32,
+                "focused": false,
+            }));
+        }
+
+        fn send_frame(&self, frame: &Frame) {
+            let full =
+                frame.x == 0 && frame.y == 0 && frame.w == frame.full_w && frame.h == frame.full_h;
+            let patch = if full { 0 } else { 20 };
+            let size = patch + frame.data.len();
+            if size > 16 * 1024 * 1024 - 27 {
+                return;
+            }
+            let mut payload = vec![0u8; 27 + size];
+            payload[0] = 0x01;
+            payload[1..5].copy_from_slice(&frame.surface.to_le_bytes());
+            payload[5..9].copy_from_slice(&frame.full_w.to_le_bytes());
+            payload[9..13].copy_from_slice(&frame.full_h.to_le_bytes());
+            payload[13..17].copy_from_slice(&(size as u32).to_le_bytes());
+            let flags: u16 = if full { 0x0001 } else { 0x0004 };
+            payload[17..19].copy_from_slice(&flags.to_le_bytes());
+            if full {
+                payload[27..].copy_from_slice(&frame.data);
+            } else {
+                payload[27..31].copy_from_slice(&frame.x.to_le_bytes());
+                payload[31..35].copy_from_slice(&frame.y.to_le_bytes());
+                payload[35..39].copy_from_slice(&frame.w.to_le_bytes());
+                payload[39..43].copy_from_slice(&frame.h.to_le_bytes());
+                payload[43..47].copy_from_slice(&2u32.to_le_bytes());
+                payload[47..].copy_from_slice(&frame.data);
+            }
+            if let Ok(mut stream) = self.writer.lock() {
+                let _ = stream.write_all(&(payload.len() as u32).to_le_bytes());
+                let _ = stream.write_all(&[0x04]);
+                let _ = stream.write_all(&payload);
+            }
+        }
+    }
+
+    fn input_from_control(value: &serde_json::Value) -> Option<MapEvent> {
+        let id = value.get("id")?.as_u64()? as u32;
+        let kind = value.get("kind")?.as_str()?;
+        let action = value
+            .get("action")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("click");
+        let event = match kind {
+            "pointer_motion" => InputEvent::PointerMotion {
+                surface: id,
+                x: value.get("x")?.as_f64()?,
+                y: value.get("y")?.as_f64()?,
+            },
+            "pointer_button" => InputEvent::PointerButton {
+                surface: id,
+                button: value
+                    .get("button")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("left")
+                    .to_string(),
+                action: action.to_string(),
+            },
+            "key" => InputEvent::Key {
+                surface: id,
+                keysym: value
+                    .get("keysym")
+                    .and_then(serde_json::Value::as_str)?
+                    .to_string(),
+                action: action.to_string(),
+            },
+            _ => return None,
+        };
+        Some(MapEvent::Input(event))
+    }
+
     struct SurfaceEntry {
         id: u32,
         /// Kept alive so xdg configure/ping handling keeps working.
@@ -118,6 +263,8 @@ mod linux {
         clients: Arc<Mutex<Vec<TcpStream>>>,
         new_clients: Receiver<TcpStream>,
         input_rx: Receiver<InputEvent>,
+        map: Option<MapTransport>,
+        map_rx: Receiver<MapEvent>,
         serial: u32,
     }
 
@@ -127,6 +274,8 @@ mod linux {
             clients: Arc<Mutex<Vec<TcpStream>>>,
             new_clients: Receiver<TcpStream>,
             input_rx: Receiver<InputEvent>,
+            map: Option<MapTransport>,
+            map_rx: Receiver<MapEvent>,
         ) -> Self {
             let compositor_state = CompositorState::new::<Self>(display_handle);
             let xdg_shell_state = XdgShellState::new::<Self>(display_handle);
@@ -171,10 +320,12 @@ mod linux {
                 seat,
                 _output: output,
                 surfaces: HashMap::new(),
-                next_id: 1,
+                next_id: 1000,
                 clients,
                 new_clients,
                 input_rx,
+                map,
+                map_rx,
                 serial: 0,
             }
         }
@@ -201,9 +352,17 @@ mod linux {
             if let Ok(payload) = serde_json::to_vec(&info) {
                 broadcast(&self.clients, MSG_SURFACE_CREATE, &payload);
             }
+            if let Some(map) = &self.map {
+                if let Some(entry) = self.surfaces.get(&id) {
+                    map.window("window.open", entry);
+                }
+            }
         }
 
         fn send_frame(&self, frame: Frame) {
+            if let Some(map) = &self.map {
+                map.send_frame(&frame);
+            }
             broadcast(&self.clients, MSG_FRAME, &frame.encode());
         }
 
@@ -342,6 +501,29 @@ mod linux {
                     }
                 }
             }
+        }
+
+        fn send_last_full(&self, id: u32) {
+            let Some(entry) = self.surfaces.get(&id) else {
+                return;
+            };
+            let Some(png) = &entry.last_full else {
+                return;
+            };
+            let Some(map) = &self.map else {
+                return;
+            };
+            map.send_frame(&Frame {
+                surface: id,
+                full_w: entry.width as u32,
+                full_h: entry.height as u32,
+                x: 0,
+                y: 0,
+                w: entry.width as u32,
+                h: entry.height as u32,
+                format: FORMAT_PNG,
+                data: png.clone(),
+            });
         }
 
         fn send_frame_callbacks(&self, surface: &WlSurface, time: u32) {
@@ -553,6 +735,9 @@ mod linux {
                 if let Ok(payload) = serde_json::to_vec(&SurfaceDestroy { id }) {
                     broadcast(&self.clients, MSG_SURFACE_DESTROY, &payload);
                 }
+                if let Some(map) = &self.map {
+                    map.send_json(&serde_json::json!({"type": "window.close", "id": id}));
+                }
             }
         }
 
@@ -686,8 +871,12 @@ mod linux {
         list.retain_mut(|stream| stream.write_all(&message).is_ok());
     }
 
-    fn spawn_tcp(new_tx: Sender<TcpStream>, input_tx: Sender<InputEvent>) -> std::io::Result<()> {
-        let listener = TcpListener::bind(("0.0.0.0", TCP_PORT))?;
+    fn spawn_tcp(
+        new_tx: Sender<TcpStream>,
+        input_tx: Sender<InputEvent>,
+        port: u16,
+    ) -> std::io::Result<()> {
+        let listener = TcpListener::bind(("0.0.0.0", port))?;
         std::thread::spawn(move || {
             for stream in listener.incoming().flatten() {
                 stream.set_nodelay(true).ok();
@@ -763,13 +952,37 @@ mod linux {
     smithay::delegate_data_device!(Art);
 
     pub fn run() -> Result<(), Box<dyn std::error::Error>> {
+        let mut map_socket: Option<String> = None;
+        let mut tcp_port = TCP_PORT;
+        let mut args = std::env::args().skip(1);
+        while let Some(arg) = args.next() {
+            match arg.as_str() {
+                "--map-socket" => {
+                    map_socket = Some(args.next().ok_or("--map-socket 需要路径")?);
+                }
+                "--tcp-port" => {
+                    tcp_port = args.next().ok_or("--tcp-port 需要端口")?.parse()?;
+                }
+                other => return Err(format!("未知参数 {other}").into()),
+            }
+        }
+
         let mut display = Display::<Art>::new()?;
         let mut display_handle = display.handle();
 
         let clients = Arc::new(Mutex::new(Vec::new()));
         let (input_tx, input_rx) = mpsc::channel();
+        let (map, map_rx) = if let Some(path) = &map_socket {
+            let (map, rx) = MapTransport::connect(path)?;
+            (Some(map), rx)
+        } else {
+            let (_tx, rx) = mpsc::channel();
+            (None, rx)
+        };
         let (new_tx, new_rx) = mpsc::channel();
-        spawn_tcp(new_tx, input_tx)?;
+        if map.is_none() {
+            spawn_tcp(new_tx, input_tx, tcp_port)?;
+        }
 
         // Remove a stale socket from a previous run; the lock file is handled
         // by wayland-server itself.
@@ -779,14 +992,24 @@ mod linux {
         }
         let listener = ListeningSocket::bind("mixum-art-0")?;
         println!(
-            "mixum-art ready: wayland={:?} tcp=0.0.0.0:{TCP_PORT}",
-            listener.socket_name()
+            "mixum-art ready: wayland={:?} transport={}",
+            listener.socket_name(),
+            map_socket
+                .as_deref()
+                .map(|path| format!("map:{path}"))
+                .unwrap_or_else(|| format!("tcp:0.0.0.0:{tcp_port}"))
         );
 
-        let mut state = Art::new(&display_handle, clients, new_rx, input_rx);
+        let mut state = Art::new(&display_handle, clients, new_rx, input_rx, map, map_rx);
         loop {
             while let Ok(event) = state.input_rx.try_recv() {
                 state.handle_input(event);
+            }
+            while let Ok(event) = state.map_rx.try_recv() {
+                match event {
+                    MapEvent::Input(event) => state.handle_input(event),
+                    MapEvent::StreamStart(id) => state.send_last_full(id),
+                }
             }
             while let Ok(mut stream) = state.new_clients.try_recv() {
                 state.send_snapshot(&mut stream);
