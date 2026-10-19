@@ -1,4 +1,4 @@
-# 显示与 Wayland 合成器（B 路线，设计草案）
+# 显示与 Wayland 合成器（B 路线，设计/实现）
 
 > 状态：**B0/B1 MVP 已实现**（2026-10-19）。容器内 Smithay 合成器把
 > toplevel 的 `wl_shm` buffer + damage 转发到宿主 minifb 窗口，指针/键盘

@@ -11,6 +11,12 @@
 **M0 骨架**：三种运行时已注册，Docker 与 Apple Container 可探测、可列出容器
 （含已停止）；写操作只留了契约。WSL 2 后端由并行小组接入中。
 
+**显示原型（B0/B1）**：`crates/mixum-env-compositor` 在容器内跑 Smithay
+headless 合成器，把 toplevel 的 buffer+damage 经 TCP 发给宿主
+`crates/mixum-env-display`（minifb 窗口），鼠标/键盘回传到 wl_seat。
+单 surface 原型，多窗口/IME/XWayland/GPU 未接；详见
+[`docs/display.md`](docs/display.md)。
+
 | 运行时 | 探测 | 列容器 | 创建 / 启停 |
 |--------|------|--------|-------------|
 | Docker | ✅ | ✅ | 契约预留（M1） |
@@ -60,6 +66,7 @@ docs/                         # 架构、模块归属、契约、界面、协作
 | [architecture.md](docs/architecture.md) | 定位、与 mixumOS 的分工、进程模型、路线图 |
 | [module-map.md](docs/module-map.md) | **每块代码该放在哪**、模块归属、并行协作规则 |
 | [runtime-contract.md](docs/runtime-contract.md) | 后端契约、状态语义、错误映射、序列化约定 |
+| [display.md](docs/display.md) | B 路线：容器内合成器、surface/damage/input、B0/B1 运行方式 |
 | [ui.md](docs/ui.md) | 界面结构、视图表、设计 token、文案约定 |
 | [contributing.md](docs/contributing.md) | 环境、命令、跨平台规则、提交与已知坑 |
 
