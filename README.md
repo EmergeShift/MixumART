@@ -15,8 +15,9 @@
 headless 合成器，把每个 toplevel 的 buffer+damage 经 TCP 发给宿主。
 Tauri 的「窗口」页可扫描 compositor、为每个 surface 开独立窗口
 （WebView canvas + 鼠标/键盘回传）；`mixum-env-display` 的 minifb 查看器
-保留作调试。原生 Metal/CAMetalLayer 纹理、IME、XWayland 未接；详见
-[`docs/display.md`](docs/display.md)。
+保留作调试。B compositor 也可接 agentd 的 comp 通道，走 MAP 的
+`display.list/attach/input`（复用 A 的令牌/接管）。原生 Metal/CAMetalLayer
+纹理、IME、XWayland 未接；详见 [`docs/display.md`](docs/display.md)。
 
 | 运行时 | 探测 | 列容器 | 创建 / 启停 |
 |--------|------|--------|-------------|
