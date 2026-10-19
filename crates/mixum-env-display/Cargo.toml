@@ -6,13 +6,18 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = ["viewer"]
+viewer = ["dep:minifb"]
+
 [[bin]]
 name = "mixum-art-viewer"
 path = "src/main.rs"
+required-features = ["viewer"]
 
 [dependencies]
 mixum-env-surface = { workspace = true }
 serde_json.workspace = true
 anyhow = "1"
-minifb = "0.27"
+minifb = { version = "0.27", optional = true }
 png = "0.17"
