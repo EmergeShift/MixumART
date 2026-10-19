@@ -66,7 +66,10 @@ process::run("docker", &["ps", "-a", "--no-trunc", "--format", "{{json .}}"], LI
 - 只传 argv，**不经过 shell**；命令里不允许出现用户输入拼接的字符串；
 - 超时：探测 5s，列举 10s；超时返回 `EnvError::Timeout`；
 - `stdin` 一律关闭，避免子进程等待输入；
-- 可执行文件找不到时统一返回 `NotInstalled`，安装提示由后端补充。
+- 可执行文件找不到时统一返回 `NotInstalled`，安装提示由后端补充；
+- **编码**：`process::run` 按 UTF-8 解码；wsl.exe 等控制台工具输出
+  UTF-16LE，走 `process::run_raw`（返回原始字节）由后端自行解码
+  （启发式见 wsl2 后端 `decode_console`）。
 
 ## 5. 错误映射
 
