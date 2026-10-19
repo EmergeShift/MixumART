@@ -15,10 +15,11 @@ use std::{
 use mixum_env_core::{BackendRegistry, RuntimeKind};
 use mixum_env_surface::InputEvent;
 
-/// 全局状态：后端注册表 + 每个 surface 窗口的输入通道。
+/// 全局状态：后端注册表 + 每个 surface 窗口的输入/关闭通道。
 pub struct AppState {
     pub registry: Arc<BackendRegistry>,
-    pub surface_inputs: Mutex<HashMap<u32, std::sync::mpsc::Sender<InputEvent>>>,
+    pub surface_inputs: Mutex<HashMap<u32, tokio::sync::mpsc::UnboundedSender<InputEvent>>>,
+    pub surface_closes: Mutex<HashMap<u32, tokio::sync::oneshot::Sender<()>>>,
 }
 
 impl AppState {
@@ -26,6 +27,7 @@ impl AppState {
         Self {
             registry: Arc::new(build_registry()),
             surface_inputs: Mutex::new(HashMap::new()),
+            surface_closes: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -54,24 +56,37 @@ pub fn run() {
     tauri::Builder::default()
         .manage(AppState::new())
         .setup(|app| {
-            // 开发用：MIXUM_ART_AUTOTEST=<addr> 时自动扫描并打开第一个
-            // surface，方便无 GUI 自动化/冒烟测试。
+            // 开发用：MIXUM_ART_AUTOTEST=<addr> + MIXUM_MAP_TOKEN（可选
+            // MIXUM_MAP_FP）时自动扫描并打开第一个 surface，方便冒烟。
             if let Ok(addr) = std::env::var("MIXUM_ART_AUTOTEST") {
-                let handle = app.handle().clone();
-                tauri::async_runtime::spawn(async move {
-                    if let Ok(surfaces) = commands::list_surfaces(addr.clone()).await {
-                        if let Some(surface) = surfaces.first() {
-                            let _ = commands::open_surface_window(
-                                handle,
-                                addr,
-                                surface.id,
-                                surface.title.clone(),
-                                surface.width,
-                                surface.height,
-                            );
+                if let Ok(token) = std::env::var("MIXUM_MAP_TOKEN") {
+                    let fingerprint = std::env::var("MIXUM_MAP_FP").ok();
+                    let handle = app.handle().clone();
+                    tauri::async_runtime::spawn(async move {
+                        if let Ok(surfaces) = commands::list_surfaces(
+                            addr.clone(),
+                            token.clone(),
+                            fingerprint.clone(),
+                        )
+                        .await
+                        {
+                            if let Some(surface) = surfaces.last() {
+                                let _ = commands::open_surface_window(
+                                    handle,
+                                    commands::OpenSurfaceRequest {
+                                        addr,
+                                        token,
+                                        fingerprint,
+                                        surface: surface.id,
+                                        title: surface.title.clone(),
+                                        width: surface.width,
+                                        height: surface.height,
+                                    },
+                                );
+                            }
                         }
-                    }
-                });
+                    });
+                }
             }
             Ok(())
         })
