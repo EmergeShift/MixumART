@@ -175,6 +175,11 @@ B 收 17.6KB 全量 + 补丁，互不串流。
 > 窗口按 owner 路由 `stream.start/stop` 与 `display.input`，帧只接受 owner。
 > Tauri 已切到 MAP（`mixum-env-map`）；macOS 已有 MTKView/Metal 原生叠加层，
 > 非 macOS 或 `MIXUM_NATIVE_METAL=0` 时回退 WebView canvas。
+>
+> **B3 A 回退（手动）**：agentd 多 comp 下 mixcomp 的窗口和 B compositor 的
+> surface 会同时出现在 `display.list`；Tauri「窗口」页以 A/B 标签区分，
+> 可手动打开 A 窗口。XWayland 尚未实现，所以 X11 应用仍不能直接跑在 B
+> compositor。
 
 实测（0.1.2 节点，foot 996×663）：全量 17KB，时钟补丁 48×26 约 1.5KB；
 TCP 注入 `a` + `Return` 后 foot shell 输出 `got:`/`a`。宿主查看器同时
