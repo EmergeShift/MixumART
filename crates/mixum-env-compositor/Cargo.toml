@@ -1,0 +1,15 @@
+[package]
+name = "mixum-env-compositor"
+description = "MixumART in-container Wayland compositor: forwards per-surface buffers + damage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+mixum-env-surface = { workspace = true }
+serde_json.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+smithay = { version = "0.7", default-features = false, features = ["wayland_frontend"] }
+png = "0.17"

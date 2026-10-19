@@ -5,6 +5,9 @@ members = [
   "crates/mixum-env-runtime-apple",
   "crates/mixum-env-runtime-docker",
   "crates/mixum-env-runtime-wsl2",
+  "crates/mixum-env-surface",
+  "crates/mixum-env-compositor",
+  "crates/mixum-env-display",
   "apps/desktop/src-tauri",
 ]
 
@@ -25,3 +28,6 @@ mixum-env-core = { path = "crates/mixum-env-core" }
 mixum-env-runtime-apple = { path = "crates/mixum-env-runtime-apple" }
 mixum-env-runtime-docker = { path = "crates/mixum-env-runtime-docker" }
 mixum-env-runtime-wsl2 = { path = "crates/mixum-env-runtime-wsl2" }
+mixum-env-surface = { path = "crates/mixum-env-surface" }
+mixum-env-compositor = { path = "crates/mixum-env-compositor" }
+mixum-env-display = { path = "crates/mixum-env-display" }

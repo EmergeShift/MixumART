@@ -62,6 +62,9 @@ apps/desktop/src  ──invoke──▶  apps/desktop/src-tauri
 | `crates/mixum-env-runtime-apple` | `container` CLI 探测、列举、输出解析；（M2）写操作 | 本组 | 同上 |
 | `crates/mixum-env-runtime-wsl2` | `wsl.exe` 交互、发行版管理 | **WSL 2 组** | 同上；不要改 core 去迁就实现 |
 | `apps/desktop/src-tauri/src/commands.rs` | 命令：取状态、转错误码、返回给前端 | 本组 | 业务逻辑、平台细节 |
+| `crates/mixum-env-surface` | surface/frame/input wire 类型与编解码 | 显示组 | 平台/CLI/Tauri 类型 |
+| `crates/mixum-env-compositor` | 容器内 Wayland 合成器、buffer/damage/seat | 显示组 | 宿主 UI、Tauri 依赖 |
+| `crates/mixum-env-display` | 宿主 TCP 客户端、窗口合成、输入回传 | 显示组 | Tauri 私有状态 |
 | `apps/desktop/src-tauri/src/lib.rs` | 后端装配、命令注册、启动期环境修补 | 本组 | 业务逻辑 |
 | `apps/desktop/src/views/` | 页面（环境、容器、后续镜像/设置） | 前端 | 命令名、后端私有字段 |
 | `apps/desktop/src/components/` | 无状态小组件（徽章等） | 前端 | 数据请求 |
