@@ -12,9 +12,10 @@
 （含已停止）；写操作只留了契约。WSL 2 后端已接入（探测、列举、导入 / 启停 / 注销）。
 
 **显示原型（B0/B1）**：`crates/mixum-env-compositor` 在容器内跑 Smithay
-headless 合成器，把 toplevel 的 buffer+damage 经 TCP 发给宿主
-`crates/mixum-env-display`（minifb 窗口），鼠标/键盘回传到 wl_seat。
-单 surface 原型，多窗口/IME/XWayland/GPU 未接；详见
+headless 合成器，把每个 toplevel 的 buffer+damage 经 TCP 发给宿主。
+Tauri 的「窗口」页可扫描 compositor、为每个 surface 开独立窗口
+（WebView canvas + 鼠标/键盘回传）；`mixum-env-display` 的 minifb 查看器
+保留作调试。原生 Metal/CAMetalLayer 纹理、IME、XWayland 未接；详见
 [`docs/display.md`](docs/display.md)。
 
 | 运行时 | 探测 | 列容器 | 创建 / 启停 |

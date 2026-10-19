@@ -92,7 +92,8 @@ pub enum InputEvent {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Frame {
     pub surface: u32,
     pub full_w: u32,

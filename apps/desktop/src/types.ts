@@ -38,3 +38,28 @@ export type HostInfo = {
   arch: string
   appVersion: string
 }
+
+export interface SurfaceInfo {
+  id: number
+  appId: string
+  title: string
+  width: number
+  height: number
+}
+
+export interface SurfaceFrame {
+  surface: number
+  fullW: number
+  fullH: number
+  x: number
+  y: number
+  w: number
+  h: number
+  format: number
+  data: number[]
+}
+
+export type SurfaceInputEvent =
+  | { type: 'pointer_motion'; surface: number; x: number; y: number }
+  | { type: 'pointer_button'; surface: number; button: 'left' | 'right' | 'middle'; action: 'press' | 'release' }
+  | { type: 'key'; surface: number; keysym: string; action: 'press' | 'release' }
