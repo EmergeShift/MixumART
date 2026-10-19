@@ -22,3 +22,5 @@ mixum-env-core.workspace = true
 mixum-env-runtime-apple.workspace = true
 mixum-env-runtime-docker.workspace = true
 mixum-env-runtime-wsl2.workspace = true
+mixum-env-surface.workspace = true
+mixum-env-display.workspace = true

@@ -33,8 +33,8 @@ mod linux {
     };
 
     use mixum_env_surface::{
-        encode_message, read_message, Frame, InputEvent, SurfaceInfo, FORMAT_PNG, MSG_FRAME,
-        MSG_INPUT, MSG_SURFACE_CREATE,
+        encode_message, read_message, Frame, InputEvent, SurfaceDestroy, SurfaceInfo, FORMAT_PNG,
+        MSG_FRAME, MSG_INPUT, MSG_SURFACE_CREATE, MSG_SURFACE_DESTROY,
     };
     use smithay::backend::renderer::utils::{
         on_commit_buffer_handler, RendererSurfaceStateUserData,
@@ -69,6 +69,7 @@ mod linux {
             },
             shell::xdg::{
                 PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
+                XdgToplevelSurfaceData,
             },
             shm::{with_buffer_contents, ShmHandler, ShmState},
         },
@@ -89,14 +90,18 @@ mod linux {
     }
 
     struct SurfaceEntry {
+        id: u32,
         /// Kept alive so xdg configure/ping handling keeps working.
         _toplevel: ToplevelSurface,
         wl_surface: WlSurface,
+        title: String,
+        app_id: String,
         announced: bool,
         width: usize,
         height: usize,
         prev: Vec<u8>,
         have_prev: bool,
+        last_full: Option<Vec<u8>>,
     }
 
     struct Art {
@@ -111,6 +116,7 @@ mod linux {
         surfaces: HashMap<u32, SurfaceEntry>,
         next_id: u32,
         clients: Arc<Mutex<Vec<TcpStream>>>,
+        new_clients: Receiver<TcpStream>,
         input_rx: Receiver<InputEvent>,
         serial: u32,
     }
@@ -119,6 +125,7 @@ mod linux {
         fn new(
             display_handle: &DisplayHandle,
             clients: Arc<Mutex<Vec<TcpStream>>>,
+            new_clients: Receiver<TcpStream>,
             input_rx: Receiver<InputEvent>,
         ) -> Self {
             let compositor_state = CompositorState::new::<Self>(display_handle);
@@ -166,6 +173,7 @@ mod linux {
                 surfaces: HashMap::new(),
                 next_id: 1,
                 clients,
+                new_clients,
                 input_rx,
                 serial: 0,
             }
@@ -178,11 +186,15 @@ mod linux {
                 .map(|(id, _)| *id)
         }
 
-        fn announce(&self, id: u32, width: usize, height: usize) {
+        fn announce(&self, id: u32, width: usize, height: usize, title: &str, app_id: &str) {
             let info = SurfaceInfo {
                 id,
-                app_id: String::new(),
-                title: "MixumART surface".into(),
+                app_id: app_id.to_owned(),
+                title: if title.is_empty() {
+                    "MixumART surface".into()
+                } else {
+                    title.to_owned()
+                },
                 width: width as u32,
                 height: height as u32,
             };
@@ -295,6 +307,43 @@ mod linux {
             }
         }
 
+        /// A new host connection gets the current surface table and the last
+        /// full frame, so viewers can attach after the app has started.
+        fn send_snapshot(&self, stream: &mut TcpStream) {
+            for entry in self.surfaces.values().filter(|entry| entry.announced) {
+                let info = SurfaceInfo {
+                    id: entry.id,
+                    app_id: entry.app_id.clone(),
+                    title: entry.title.clone(),
+                    width: entry.width as u32,
+                    height: entry.height as u32,
+                };
+                if let Ok(payload) = serde_json::to_vec(&info) {
+                    let message = encode_message(MSG_SURFACE_CREATE, &payload);
+                    if stream.write_all(&message).is_err() {
+                        return;
+                    }
+                }
+                if let Some(png) = &entry.last_full {
+                    let frame = Frame {
+                        surface: entry.id,
+                        full_w: entry.width as u32,
+                        full_h: entry.height as u32,
+                        x: 0,
+                        y: 0,
+                        w: entry.width as u32,
+                        h: entry.height as u32,
+                        format: FORMAT_PNG,
+                        data: png.clone(),
+                    };
+                    let message = encode_message(MSG_FRAME, &frame.encode());
+                    if stream.write_all(&message).is_err() {
+                        return;
+                    }
+                }
+            }
+        }
+
         fn send_frame_callbacks(&self, surface: &WlSurface, time: u32) {
             smithay::wayland::compositor::with_states(surface, |states| {
                 for callback in states
@@ -373,16 +422,24 @@ mod linux {
                 return;
             };
 
-            let mut announce: Option<(u32, usize, usize)> = None;
+            let (title, app_id) = toplevel_meta(surface);
+            let mut announce: Option<(u32, usize, usize, String, String)> = None;
             let mut outgoing: Option<(usize, usize, usize, usize, Vec<u8>)> = None;
             {
                 let entry = self.surfaces.get_mut(&id).expect("surface entry");
+                if !title.is_empty() {
+                    entry.title = title;
+                }
+                if !app_id.is_empty() {
+                    entry.app_id = app_id;
+                }
                 if !entry.announced {
                     entry.announced = true;
-                    announce = Some((id, width, height));
+                    announce = Some((id, width, height, entry.title.clone(), entry.app_id.clone()));
                 }
                 if !entry.have_prev || entry.width != width || entry.height != height {
                     if let Some(png) = encode_png(&rgba, width, height) {
+                        entry.last_full = Some(png.clone());
                         outgoing = Some((0, 0, width, height, png));
                     }
                     entry.width = width;
@@ -400,8 +457,8 @@ mod linux {
                     // nothing to send; frame callbacks still go out below.
                 }
             }
-            if let Some((id, width, height)) = announce {
-                self.announce(id, width, height);
+            if let Some((id, width, height, title, app_id)) = announce {
+                self.announce(id, width, height, &title, &app_id);
             }
             if let Some((x, y, w, h, png)) = outgoing {
                 let (full_w, full_h) = self
@@ -457,6 +514,7 @@ mod linux {
 
         fn new_toplevel(&mut self, surface: ToplevelSurface) {
             let wl_surface = surface.wl_surface().clone();
+            let (title, app_id) = toplevel_meta(&wl_surface);
             let id = self.next_id;
             self.next_id += 1;
             surface.with_pending_state(|state| {
@@ -467,18 +525,36 @@ mod linux {
             self.surfaces.insert(
                 id,
                 SurfaceEntry {
+                    id,
                     _toplevel: surface,
                     wl_surface,
+                    title,
+                    app_id,
                     announced: false,
                     width: 0,
                     height: 0,
                     prev: Vec::new(),
                     have_prev: false,
+                    last_full: None,
                 },
             );
         }
 
         fn new_popup(&mut self, _surface: PopupSurface, _positioner: PositionerState) {}
+
+        fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
+            let id = self
+                .surfaces
+                .iter()
+                .find(|(_, entry)| entry.wl_surface.id() == surface.wl_surface().id())
+                .map(|(id, _)| *id);
+            if let Some(id) = id {
+                self.surfaces.remove(&id);
+                if let Ok(payload) = serde_json::to_vec(&SurfaceDestroy { id }) {
+                    broadcast(&self.clients, MSG_SURFACE_DESTROY, &payload);
+                }
+            }
+        }
 
         fn grab(
             &mut self,
@@ -529,6 +605,22 @@ mod linux {
             _image: smithay::input::pointer::CursorImageStatus,
         ) {
         }
+    }
+
+    fn toplevel_meta(surface: &WlSurface) -> (String, String) {
+        smithay::wayland::compositor::with_states(surface, |states| {
+            states
+                .data_map
+                .get::<XdgToplevelSurfaceData>()
+                .and_then(|data| data.lock().ok())
+                .map(|data| {
+                    (
+                        data.title.clone().unwrap_or_default(),
+                        data.app_id.clone().unwrap_or_default(),
+                    )
+                })
+        })
+        .unwrap_or_default()
     }
 
     fn encode_png(rgba: &[u8], width: usize, height: usize) -> Option<Vec<u8>> {
@@ -594,10 +686,7 @@ mod linux {
         list.retain_mut(|stream| stream.write_all(&message).is_ok());
     }
 
-    fn spawn_tcp(
-        clients: Arc<Mutex<Vec<TcpStream>>>,
-        input_tx: Sender<InputEvent>,
-    ) -> std::io::Result<()> {
+    fn spawn_tcp(new_tx: Sender<TcpStream>, input_tx: Sender<InputEvent>) -> std::io::Result<()> {
         let listener = TcpListener::bind(("0.0.0.0", TCP_PORT))?;
         std::thread::spawn(move || {
             for stream in listener.incoming().flatten() {
@@ -621,7 +710,9 @@ mod linux {
                         }
                     });
                 }
-                clients.lock().expect("clients").push(stream);
+                if new_tx.send(stream).is_err() {
+                    return;
+                }
             }
         });
         Ok(())
@@ -677,7 +768,8 @@ mod linux {
 
         let clients = Arc::new(Mutex::new(Vec::new()));
         let (input_tx, input_rx) = mpsc::channel();
-        spawn_tcp(clients.clone(), input_tx)?;
+        let (new_tx, new_rx) = mpsc::channel();
+        spawn_tcp(new_tx, input_tx)?;
 
         // Remove a stale socket from a previous run; the lock file is handled
         // by wayland-server itself.
@@ -691,10 +783,14 @@ mod linux {
             listener.socket_name()
         );
 
-        let mut state = Art::new(&display_handle, clients, input_rx);
+        let mut state = Art::new(&display_handle, clients, new_rx, input_rx);
         loop {
             while let Ok(event) = state.input_rx.try_recv() {
                 state.handle_input(event);
+            }
+            while let Ok(mut stream) = state.new_clients.try_recv() {
+                state.send_snapshot(&mut stream);
+                state.clients.lock().expect("clients").push(stream);
             }
             while let Some(stream) = listener.accept()? {
                 let _ = display_handle.insert_client(stream, Arc::new(ClientState::default()));
