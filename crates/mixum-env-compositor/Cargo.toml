@@ -11,5 +11,5 @@ mixum-env-surface = { workspace = true }
 serde_json.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
-smithay = { version = "0.7", default-features = false, features = ["wayland_frontend"] }
+smithay = { version = "0.7", default-features = false, features = ["wayland_frontend", "desktop"] }
 png = "0.17"
