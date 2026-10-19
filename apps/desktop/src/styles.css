@@ -389,3 +389,50 @@ p {
   font-size: 12.5px;
   white-space: pre-wrap;
 }
+
+/* ---------- B 路线：surface 窗口 ---------- */
+
+.surface-view {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  background: #111;
+}
+
+.surface-canvas {
+  display: block;
+  width: 100vw;
+  height: 100vh;
+  outline: none;
+  background: #111;
+}
+
+.surface-status,
+.surface-meta {
+  position: fixed;
+  left: 10px;
+  padding: 5px 9px;
+  border-radius: 4px;
+  background: #000a;
+  color: #ddd;
+  font: 11.5px var(--mono);
+  pointer-events: none;
+}
+
+.surface-status {
+  bottom: 10px;
+}
+
+.surface-meta {
+  top: 10px;
+}
+
+.surface-addr {
+  min-width: 320px;
+  padding: 5px 9px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 12px;
+}
