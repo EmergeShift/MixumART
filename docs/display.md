@@ -5,8 +5,11 @@
 > 经同一 TCP 连接回传到 seat。A 路线（mixcomp 捕获 + damage 补丁 + PNG）
 > 在 mixumOS 侧独立推进，两者共用同一套 surface/damage 传输语义。
 >
-> 本版是**单 surface 原型**：多窗口、subsurface/popup、IME/clipboard、
-> XWayland 和 GPU 零拷贝都还没有接入。
+> 本版已支持**多 surface**：每个 toplevel 一个宿主窗口，surface.create /
+> frame / destroy 按 id 路由。宿主已接进 Tauri：`窗口`页扫描 art compositor
+> 并开独立窗口，帧走 Tauri 事件、输入走 `surface_input` 命令。
+> 当前渲染是 **WebView canvas**，不是 Metal/CAMetalLayer 原生纹理；
+> subsurface/popup、IME/clipboard、XWayland 和 GPU 零拷贝仍未接入。
 
 ## 1. 目标
 
@@ -136,7 +139,11 @@ frame 头：`surface, full_w, full_h, x, y, w, h`（7×u32）、
 运行：
 
 ```sh
-# 宿主
+# 宿主（Tauri 应用；推荐）
+cd apps/desktop && npm run tauri dev
+# 「窗口」页填入 <container-ip>:7603，扫描后打开 surface
+
+# 宿主（独立 minifb 调试查看器）
 cargo run -p mixum-env-display --release -- --addr <container-ip>:7603
 
 # 容器内
@@ -146,14 +153,16 @@ XDG_RUNTIME_DIR=/run/mixum WAYLAND_DISPLAY=mixum-art-0 foot
 
 实测（0.1.2 节点，foot 996×663）：全量 17KB，时钟补丁 48×26 约 1.5KB；
 TCP 注入 `a` + `Return` 后 foot shell 输出 `got:`/`a`。宿主查看器同时
-负责把鼠标/键盘事件写回同一连接。
+负责把鼠标/键盘事件写回同一连接。多窗口实测：`art-a`/`art-b` 两个
+surface 各自一个窗口，关闭 `art-b` 后收到 `surface.destroy` 且 `art-a`
+继续更新。
 
 ## 5. 里程碑
 
 | 阶段 | 内容 | 完成标准 |
 |------|------|----------|
 | **B0 ✅** | `mixum-env-compositor` Smithay headless + 单 toplevel surface 转发；宿主单窗口 PNG 全量 | 容器内 foot/Chromium 起窗，宿主查看器显示 |
-| **B1 ◐** | damage 补丁、焦点/指针/键盘；多窗口 | damage/输入已通；多窗口待做 |
+| **B1 ✅** | damage 补丁、焦点/指针/键盘；多窗口；Tauri 宿主 | 每个 surface 独立窗口；Tauri「窗口」页扫描/打开；关闭 surface 时窗口销毁 |
 | **B2** | subsurface/popup、剪贴板、IME、缩放 | Chromium 菜单/弹窗/中文输入正常 |
 | **B3** | XWayland（或保留 A 作为 X11 回退）、拖拽 | 常见 X11 应用可用 |
 | **B4** | GPU/dmabuf 零拷贝、远端自适应（视频回退） | 等 virtio-gpu/venus、宿主 GPU 导入成熟 |
