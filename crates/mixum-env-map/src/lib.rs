@@ -520,6 +520,74 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "需要运行中的 MAP 节点与 title=map-input 的 foot 窗口"]
+    async fn live_input_roundtrip() {
+        let url = std::env::var("MAP_URL").expect("MAP_URL");
+        let token = std::env::var("MAP_TOKEN").expect("MAP_TOKEN");
+        let fingerprint = std::env::var("MAP_FP").ok();
+        let client = MapClient::connect(&url, &token, fingerprint.as_deref())
+            .await
+            .expect("connect");
+        let surfaces = client.list().await.expect("list");
+        let surface = surfaces
+            .iter()
+            .find(|surface| surface.title == "map-input")
+            .expect("map-input surface");
+        let mut frames = client.frames();
+        client.attach(surface.id).await.expect("attach");
+        let event = |event: mixum_env_surface::InputEvent| event;
+        client
+            .input(
+                surface.id,
+                &event(mixum_env_surface::InputEvent::PointerMotion {
+                    surface: surface.id,
+                    x: 120.0,
+                    y: 80.0,
+                }),
+            )
+            .await
+            .expect("pointer motion");
+        client
+            .input(
+                surface.id,
+                &event(mixum_env_surface::InputEvent::PointerButton {
+                    surface: surface.id,
+                    button: "left".into(),
+                    action: "click".into(),
+                }),
+            )
+            .await
+            .expect("pointer button");
+        client
+            .input(
+                surface.id,
+                &event(mixum_env_surface::InputEvent::Key {
+                    surface: surface.id,
+                    keysym: "a".into(),
+                    action: "click".into(),
+                }),
+            )
+            .await
+            .expect("key a");
+        client
+            .input(
+                surface.id,
+                &event(mixum_env_surface::InputEvent::Key {
+                    surface: surface.id,
+                    keysym: "Return".into(),
+                    action: "click".into(),
+                }),
+            )
+            .await
+            .expect("key return");
+        let frame = tokio::time::timeout(Duration::from_secs(2), frames.recv())
+            .await
+            .expect("frame after input")
+            .expect("frame channel");
+        eprintln!("input frame {}x{}", frame.w, frame.h);
+    }
+
+    #[tokio::test]
     #[ignore = "需要运行中的 MAP 节点：MAP_URL/MAP_TOKEN/MAP_FP"]
     async fn live_list_and_first_frame() {
         let url = std::env::var("MAP_URL").expect("MAP_URL");
