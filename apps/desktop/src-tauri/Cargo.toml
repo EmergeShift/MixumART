@@ -1,0 +1,24 @@
+[package]
+name = "mixum-env-desktop"
+description = "mixum Agent Env 桌面端：宿主机运行时管理器与 GUI"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "mixum_env_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+mixum-env-core.workspace = true
+mixum-env-runtime-apple.workspace = true
+mixum-env-runtime-docker.workspace = true
+mixum-env-runtime-wsl2.workspace = true
