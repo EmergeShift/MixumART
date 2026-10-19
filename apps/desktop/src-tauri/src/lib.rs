@@ -6,6 +6,8 @@
 //! - 界面 → `apps/desktop/src`
 
 mod commands;
+#[cfg(target_os = "macos")]
+mod macos;
 
 use std::{
     collections::HashMap,
@@ -20,6 +22,8 @@ pub struct AppState {
     pub registry: Arc<BackendRegistry>,
     pub surface_inputs: Mutex<HashMap<u32, tokio::sync::mpsc::UnboundedSender<InputEvent>>>,
     pub surface_closes: Mutex<HashMap<u32, tokio::sync::oneshot::Sender<()>>>,
+    #[cfg(target_os = "macos")]
+    pub native_surfaces: Mutex<HashMap<u32, usize>>,
 }
 
 impl AppState {
@@ -28,6 +32,8 @@ impl AppState {
             registry: Arc::new(build_registry()),
             surface_inputs: Mutex::new(HashMap::new()),
             surface_closes: Mutex::new(HashMap::new()),
+            #[cfg(target_os = "macos")]
+            native_surfaces: Mutex::new(HashMap::new()),
         }
     }
 }
