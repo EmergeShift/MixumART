@@ -33,8 +33,8 @@ mod linux {
     };
 
     use mixum_env_surface::{
-        encode_message, read_message, Frame, InputEvent, SurfaceInfo, FORMAT_PNG, MSG_FRAME,
-        MSG_INPUT, MSG_SURFACE_CREATE,
+        encode_message, read_message, Frame, InputEvent, SurfaceDestroy, SurfaceInfo, FORMAT_PNG,
+        MSG_FRAME, MSG_INPUT, MSG_SURFACE_CREATE, MSG_SURFACE_DESTROY,
     };
     use smithay::backend::renderer::utils::{
         on_commit_buffer_handler, RendererSurfaceStateUserData,
@@ -69,6 +69,7 @@ mod linux {
             },
             shell::xdg::{
                 PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
+                XdgToplevelSurfaceData,
             },
             shm::{with_buffer_contents, ShmHandler, ShmState},
         },
@@ -92,6 +93,8 @@ mod linux {
         /// Kept alive so xdg configure/ping handling keeps working.
         _toplevel: ToplevelSurface,
         wl_surface: WlSurface,
+        title: String,
+        app_id: String,
         announced: bool,
         width: usize,
         height: usize,
@@ -178,11 +181,15 @@ mod linux {
                 .map(|(id, _)| *id)
         }
 
-        fn announce(&self, id: u32, width: usize, height: usize) {
+        fn announce(&self, id: u32, width: usize, height: usize, title: &str, app_id: &str) {
             let info = SurfaceInfo {
                 id,
-                app_id: String::new(),
-                title: "MixumART surface".into(),
+                app_id: app_id.to_owned(),
+                title: if title.is_empty() {
+                    "MixumART surface".into()
+                } else {
+                    title.to_owned()
+                },
                 width: width as u32,
                 height: height as u32,
             };
@@ -373,13 +380,20 @@ mod linux {
                 return;
             };
 
-            let mut announce: Option<(u32, usize, usize)> = None;
+            let (title, app_id) = toplevel_meta(surface);
+            let mut announce: Option<(u32, usize, usize, String, String)> = None;
             let mut outgoing: Option<(usize, usize, usize, usize, Vec<u8>)> = None;
             {
                 let entry = self.surfaces.get_mut(&id).expect("surface entry");
+                if !title.is_empty() {
+                    entry.title = title;
+                }
+                if !app_id.is_empty() {
+                    entry.app_id = app_id;
+                }
                 if !entry.announced {
                     entry.announced = true;
-                    announce = Some((id, width, height));
+                    announce = Some((id, width, height, entry.title.clone(), entry.app_id.clone()));
                 }
                 if !entry.have_prev || entry.width != width || entry.height != height {
                     if let Some(png) = encode_png(&rgba, width, height) {
@@ -400,8 +414,8 @@ mod linux {
                     // nothing to send; frame callbacks still go out below.
                 }
             }
-            if let Some((id, width, height)) = announce {
-                self.announce(id, width, height);
+            if let Some((id, width, height, title, app_id)) = announce {
+                self.announce(id, width, height, &title, &app_id);
             }
             if let Some((x, y, w, h, png)) = outgoing {
                 let (full_w, full_h) = self
@@ -457,6 +471,7 @@ mod linux {
 
         fn new_toplevel(&mut self, surface: ToplevelSurface) {
             let wl_surface = surface.wl_surface().clone();
+            let (title, app_id) = toplevel_meta(&wl_surface);
             let id = self.next_id;
             self.next_id += 1;
             surface.with_pending_state(|state| {
@@ -469,6 +484,8 @@ mod linux {
                 SurfaceEntry {
                     _toplevel: surface,
                     wl_surface,
+                    title,
+                    app_id,
                     announced: false,
                     width: 0,
                     height: 0,
@@ -479,6 +496,20 @@ mod linux {
         }
 
         fn new_popup(&mut self, _surface: PopupSurface, _positioner: PositionerState) {}
+
+        fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
+            let id = self
+                .surfaces
+                .iter()
+                .find(|(_, entry)| entry.wl_surface.id() == surface.wl_surface().id())
+                .map(|(id, _)| *id);
+            if let Some(id) = id {
+                self.surfaces.remove(&id);
+                if let Ok(payload) = serde_json::to_vec(&SurfaceDestroy { id }) {
+                    broadcast(&self.clients, MSG_SURFACE_DESTROY, &payload);
+                }
+            }
+        }
 
         fn grab(
             &mut self,
@@ -529,6 +560,22 @@ mod linux {
             _image: smithay::input::pointer::CursorImageStatus,
         ) {
         }
+    }
+
+    fn toplevel_meta(surface: &WlSurface) -> (String, String) {
+        smithay::wayland::compositor::with_states(surface, |states| {
+            states
+                .data_map
+                .get::<XdgToplevelSurfaceData>()
+                .and_then(|data| data.lock().ok())
+                .map(|data| {
+                    (
+                        data.title.clone().unwrap_or_default(),
+                        data.app_id.clone().unwrap_or_default(),
+                    )
+                })
+        })
+        .unwrap_or_default()
     }
 
     fn encode_png(rgba: &[u8], width: usize, height: usize) -> Option<Vec<u8>> {
