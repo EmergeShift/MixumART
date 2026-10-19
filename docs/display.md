@@ -1,8 +1,12 @@
 # 显示与 Wayland 合成器（B 路线，设计草案）
 
-> 状态：**Draft**（2026-10-19）。本文只定义 B 路线的模块边界与传输契约；
-> 实现从 B0 单窗口开始。A 路线（mixcomp 捕获 + damage 补丁 + PNG）在
-> mixumOS 侧独立推进，两者共用同一套 surface/damage 传输语义。
+> 状态：**B0/B1 MVP 已实现**（2026-10-19）。容器内 Smithay 合成器把
+> toplevel 的 `wl_shm` buffer + damage 转发到宿主 minifb 窗口，指针/键盘
+> 经同一 TCP 连接回传到 seat。A 路线（mixcomp 捕获 + damage 补丁 + PNG）
+> 在 mixumOS 侧独立推进，两者共用同一套 surface/damage 传输语义。
+>
+> 本版是**单 surface 原型**：多窗口、subsurface/popup、IME/clipboard、
+> XWayland 和 GPU 零拷贝都还没有接入。
 
 ## 1. 目标
 
@@ -106,12 +110,50 @@ surface.frame {
   重建失败时回退全量）；
 - 宿主不保存应用私有数据；明文 buffer 只在内存中短暂存在。
 
+## 4.5 B0/B1 实现（当前）
+
+新增三个 crate：
+
+| crate | 角色 |
+|-------|------|
+| `crates/mixum-env-surface` | 共享 wire 协议：surface 元数据、frame/patch、input |
+| `crates/mixum-env-compositor` | 容器内 Smithay headless 合成器（Linux） |
+| `crates/mixum-env-display` | 宿主 `mixum-art-viewer`（minifb 窗口 + 输入） |
+
+当前 wire：
+
+```text
+[M A R T][version=1][type][payload_len u32]
+  1 = surface.create (JSON: id/appId/title/width/height)
+  2 = frame         (33 字节头 + PNG)
+  3 = input         (JSON InputEvent)
+```
+
+frame 头：`surface, full_w, full_h, x, y, w, h`（7×u32）、
+`format u8`（0=仅光标、2=PNG）、`data_len u32`。首帧/尺寸变化为全量，
+之后只发脏区；静止不发帧。
+
+运行：
+
+```sh
+# 宿主
+cargo run -p mixum-env-display --release -- --addr <container-ip>:7603
+
+# 容器内
+XDG_RUNTIME_DIR=/run/mixum mixum-env-compositor
+XDG_RUNTIME_DIR=/run/mixum WAYLAND_DISPLAY=mixum-art-0 foot
+```
+
+实测（0.1.2 节点，foot 996×663）：全量 17KB，时钟补丁 48×26 约 1.5KB；
+TCP 注入 `a` + `Return` 后 foot shell 输出 `got:`/`a`。宿主查看器同时
+负责把鼠标/键盘事件写回同一连接。
+
 ## 5. 里程碑
 
 | 阶段 | 内容 | 完成标准 |
 |------|------|----------|
-| **B0** | `mixum-env-compositor` Smithay headless + 单 toplevel surface 转发；宿主单窗口 PNG 全量 | Chromium 在容器内起窗，宿主 MixumART 显示并可点击 |
-| **B1** | damage 补丁、焦点/指针/键盘；多窗口 | 静态页面零帧，输入可用；两个窗口独立 |
+| **B0 ✅** | `mixum-env-compositor` Smithay headless + 单 toplevel surface 转发；宿主单窗口 PNG 全量 | 容器内 foot/Chromium 起窗，宿主查看器显示 |
+| **B1 ◐** | damage 补丁、焦点/指针/键盘；多窗口 | damage/输入已通；多窗口待做 |
 | **B2** | subsurface/popup、剪贴板、IME、缩放 | Chromium 菜单/弹窗/中文输入正常 |
 | **B3** | XWayland（或保留 A 作为 X11 回退）、拖拽 | 常见 X11 应用可用 |
 | **B4** | GPU/dmabuf 零拷贝、远端自适应（视频回退） | 等 virtio-gpu/venus、宿主 GPU 导入成熟 |
