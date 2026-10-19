@@ -149,7 +149,9 @@ pub fn open_surface_window(app: AppHandle, request: OpenSurfaceRequest) -> Resul
     let app_for_session = app.clone();
     let label_for_session = label.clone();
     tauri::async_runtime::spawn(async move {
-        let _ = ready_rx.wait_for(|ready| *ready).await;
+        if ready_rx.wait_for(|ready| *ready).await.is_err() {
+            return;
+        }
         tokio::time::sleep(Duration::from_millis(300)).await;
         eprintln!("surface {surface} MAP session ready");
         let client = match MapClient::connect(&addr, &token, fingerprint.as_deref()).await {
