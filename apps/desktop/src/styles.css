@@ -112,8 +112,12 @@ input:focus {
   padding: 0 6px 22px;
 }
 
-.brand svg {
+.brand svg,
+.brand-logo {
   flex: none;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
 }
 
 .brand-text {
@@ -524,6 +528,19 @@ input:focus {
   padding: 9px 12px;
   border-bottom: 1px solid var(--line);
   vertical-align: middle;
+  white-space: nowrap;
+}
+
+/* 长标识（sha256 镜像名等）截断，避免挤垮其它列 */
+.table td.mono,
+.table td .mono {
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.table td .cell-stack {
+  max-width: 220px;
 }
 
 .table tr:last-child td {

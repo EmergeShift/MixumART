@@ -84,10 +84,14 @@ export function Cockpit({ backends }: Props) {
                       <span>{container.id.slice(0, 12)}</span>
                     </div>
                     <div className="env-cell">
-                      {container.agent?.name ?? <span className="muted">未标注使用者</span>}
-                      <small>
-                        {container.agent ? MODE_LABEL[container.agent.mode] : '来源未知'}
-                      </small>
+                      {container.agent ? (
+                        <>
+                          {container.agent.name}
+                          <small>{MODE_LABEL[container.agent.mode]}</small>
+                        </>
+                      ) : (
+                        <span className="muted">—</span>
+                      )}
                     </div>
                     <div className="env-cell">
                       <span className="mono">{container.image}</span>
@@ -133,8 +137,14 @@ export function Cockpit({ backends }: Props) {
                       <span>{container.id.slice(0, 12)}</span>
                     </div>
                     <div className="env-cell">
-                      {container.agent?.name ?? <span className="muted">未标注使用者</span>}
-                      <small>{container.state === 'paused' ? '已暂停' : '已停止'}</small>
+                      {container.agent ? (
+                        <>
+                          {container.agent.name}
+                          <small>{container.state === 'paused' ? '已暂停' : '已停止'}</small>
+                        </>
+                      ) : (
+                        <span className="muted">—</span>
+                      )}
                     </div>
                     <div className="env-cell">
                       <span className="mono">{container.image}</span>

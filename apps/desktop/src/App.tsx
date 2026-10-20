@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 
+import logo from './assets/logo.png'
 import { errorText, hostInfo, runtimeStatus } from './api'
 import { isDemo } from './demo'
 import { statusLabel, statusTone } from './status'
@@ -60,17 +61,7 @@ export default function App() {
     <div className="app">
       <aside className="sidebar">
         <div className="brand">
-          <svg width="26" height="26" viewBox="0 0 26 26" aria-hidden="true">
-            <rect x="1.5" y="1.5" width="23" height="23" rx="6" fill="none" stroke="#2f5a7a" />
-            <path
-              d="M7 17.5V9l6 5 6-5v8.5"
-              fill="none"
-              stroke="#2f5a7a"
-              strokeWidth="1.5"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-          </svg>
+          <img src={logo} alt="mixum ART" className="brand-logo" />
           <div className="brand-text">
             <strong>mixum ART</strong>
             <span>Agent Env</span>
