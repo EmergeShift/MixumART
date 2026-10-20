@@ -186,8 +186,11 @@ B 收 17.6KB 全量 + 补丁，互不串流。
 >
 > **B3 XWayland / A 回退**：B compositor 现在通过 Smithay XWayland + XWM
 > 支持 X11 toplevel、override-redirect 菜单、键鼠和 X11↔Wayland 剪贴板。
-> 需要镜像内 `xorg-xwayland`；X11 应用用 XWayland 的 `DISPLAY` 启动。
-> X11 XIM 输入法尚未接。agentd 多 comp 下仍可用 A 窗口手动回退。
+> 需要镜像内 `xorg-xwayland`。X11 应用**不需要开发者自己带参数**：
+> agentd 的 task/spawn_gui/external 启动路径会从 `/run/mixum/xwayland.display`
+> 自动注入 `DISPLAY` 和 `XMODIFIERS=@im=mixum`；交互登录 shell 由
+> `/etc/profile.d/mixum-x11.sh` 注入。非登录 `docker exec` 可用 `sh -lc`
+> 或自行 source。agentd 多 comp 下仍可用 A 窗口手动回退。
 
 实测（0.1.2 节点，foot 996×663）：全量 17KB，时钟补丁 48×26 约 1.5KB；
 TCP 注入 `a` + `Return` 后 foot shell 输出 `got:`/`a`。宿主查看器同时
