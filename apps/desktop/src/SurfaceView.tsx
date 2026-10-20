@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { listen } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 
-import { remoteClipboard, surfaceInput } from './api'
+import { remoteClipboard, surfaceInput, surfacePutFile } from './api'
 import type { SurfaceFrame, SurfaceInfo, SurfaceInputEvent } from './types'
 
 type Props = {
@@ -214,18 +214,16 @@ export function SurfaceView({ surface, addr }: Props) {
             send({ type: 'text', surface, text })
             return
           }
-          const file = event.dataTransfer.files?.[0]
-          if (!file) return
-          void file
-            .text()
-            .then((content) => {
-              if (content.length > 1_000_000) {
-                setStatus('拖入的文本超过 1MB，未发送')
-                return
-              }
-              send({ type: 'text', surface, text: content })
-            })
-            .catch((error: unknown) => setStatus(String(error)))
+          const files = Array.from(event.dataTransfer.files ?? [])
+          if (files.length === 0) return
+          void (async () => {
+            const paths: string[] = []
+            for (const file of files) {
+              const data = Array.from(new Uint8Array(await file.arrayBuffer()))
+              paths.push(await surfacePutFile(surface, file.name, data))
+            }
+            send({ type: 'text', surface, text: paths.join(' ') })
+          })().catch((error: unknown) => setStatus(String(error)))
         }}
       />
       {status && <div className="surface-status">{status}</div>}
