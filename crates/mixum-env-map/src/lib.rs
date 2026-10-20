@@ -291,6 +291,46 @@ impl MapClient {
         Ok(())
     }
 
+    /// Upload a file into the node's work_root/transfers directory.
+    pub async fn put_file(&self, name: &str, data: &[u8]) -> Result<String, MapError> {
+        let reply = self
+            .call("file.put", json!({ "name": name, "size": data.len() }))
+            .await?;
+        let transfer = reply
+            .payload
+            .get("transfer")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| MapError::Protocol("file.put 未返回 transfer".into()))?
+            as u32;
+        let mut offset = 0u64;
+        for chunk in data.chunks(256 * 1024) {
+            let mut frame = Vec::with_capacity(13 + chunk.len());
+            frame.push(0x05);
+            frame.extend_from_slice(&transfer.to_le_bytes());
+            frame.extend_from_slice(&offset.to_le_bytes());
+            frame.extend_from_slice(chunk);
+            self.tx
+                .send(Message::Binary(frame.into()))
+                .await
+                .map_err(|_| MapError::WebSocket("文件块发送失败".into()))?;
+            offset += chunk.len() as u64;
+        }
+        let digest = Sha256::digest(data);
+        let hash = digest.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+        let reply = self
+            .call(
+                "file.put.commit",
+                json!({ "transfer": transfer, "sha256": hash }),
+            )
+            .await?;
+        reply
+            .payload
+            .get("path")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)
+            .ok_or_else(|| MapError::Protocol("file.put.commit 未返回 path".into()))
+    }
+
     async fn call(&self, op: &str, payload: Value) -> Result<Envelope, MapError> {
         let request = Envelope::request(op, payload);
         let (sender, receiver) = oneshot::channel();
