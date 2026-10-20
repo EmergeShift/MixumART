@@ -21,6 +21,7 @@ fn main() {
 
 #[cfg(target_os = "linux")]
 mod linux {
+    use smithay::reexports::calloop;
     use std::{
         collections::HashMap,
         io::{Read, Write},
@@ -30,6 +31,8 @@ mod linux {
             mpsc::{self, Receiver, Sender},
             Arc, Mutex,
         },
+        os::fd::OwnedFd,
+        process::Stdio,
         time::{Duration, Instant},
     };
 
@@ -57,6 +60,8 @@ mod linux {
         },
         utils::{Logical, Point, Rectangle, Serial, Size, Transform},
         desktop::{PopupKind, PopupManager},
+        xwayland::{X11Surface, X11Wm, XWayland, XWaylandClientData, XWaylandEvent, XwmHandler},
+        xwayland::xwm::{Reorder, ResizeEdge, WmWindowProperty, XwmId},
         wayland::{
             buffer::BufferHandler,
             compositor::{
@@ -67,10 +72,11 @@ mod linux {
             output::OutputHandler,
             selection::{
                 data_device::{
-                    set_data_device_focus, ClientDndGrabHandler, DataDeviceHandler,
-                    DataDeviceState, ServerDndGrabHandler,
+                    clear_data_device_selection, request_data_device_client_selection,
+                    set_data_device_focus, set_data_device_selection, ClientDndGrabHandler,
+                    DataDeviceHandler, DataDeviceState, ServerDndGrabHandler,
                 },
-                SelectionHandler,
+                SelectionHandler, SelectionTarget,
             },
             shell::xdg::{
                 PopupSurface, PositionerState, ToplevelSurface, XdgPopupSurfaceData,
@@ -81,6 +87,7 @@ mod linux {
                 InputMethodHandler, InputMethodManagerState, PopupSurface as InputMethodPopup,
             },
             text_input::{TextInputManagerState, TextInputSeat},
+            xwayland_shell::{XWaylandShellHandler, XWaylandShellState},
         },
     };
 
@@ -249,10 +256,15 @@ mod linux {
         Some(MapEvent::Input(event))
     }
 
+    #[allow(dead_code)]
+    enum SurfaceRole {
+        Xdg(ToplevelSurface),
+        X11(X11Surface),
+    }
+
     struct SurfaceEntry {
         id: u32,
-        /// Kept alive so xdg configure/ping handling keeps working.
-        _toplevel: ToplevelSurface,
+        role: SurfaceRole,
         wl_surface: WlSurface,
         title: String,
         app_id: String,
@@ -262,6 +274,14 @@ mod linux {
         prev: Vec<u8>,
         have_prev: bool,
         last_full: Option<Vec<u8>>,
+    }
+
+    #[derive(Clone)]
+    struct X11Overlay {
+        wl_surface: WlSurface,
+        window: X11Surface,
+        parent: Option<u32>,
+        rgba: Option<(usize, usize, Vec<u8>)>,
     }
 
     struct Art {
@@ -278,6 +298,11 @@ mod linux {
         active_popup: Option<WlSurface>,
         _text_input_state: TextInputManagerState,
         _input_method_state: InputMethodManagerState,
+        xwayland_shell_state: XWaylandShellState,
+        xwm: Option<X11Wm>,
+        loop_handle: Option<calloop::LoopHandle<'static, Self>>,
+        x11_windows: HashMap<u32, u32>,
+        x11_overlays: HashMap<u32, X11Overlay>,
         seat_state: SeatState<Self>,
         seat: Seat<Self>,
         _output: Output,
@@ -304,6 +329,7 @@ mod linux {
             let xdg_shell_state = XdgShellState::new::<Self>(display_handle);
             let shm_state = ShmState::new::<Self>(display_handle, vec![]);
             let data_device_state = DataDeviceState::new::<Self>(display_handle);
+            let xwayland_shell_state = XWaylandShellState::new::<Self>(display_handle);
             let text_input_state = TextInputManagerState::new::<Self>(display_handle);
             let input_method_state =
                 InputMethodManagerState::new::<Self, _>(display_handle, |_client| true);
@@ -350,6 +376,11 @@ mod linux {
                 active_popup: None,
                 _text_input_state: text_input_state,
                 _input_method_state: input_method_state,
+                xwayland_shell_state,
+                xwm: None,
+                loop_handle: None,
+                x11_windows: HashMap::new(),
+                x11_overlays: HashMap::new(),
                 seat_state,
                 seat,
                 _output: output,
@@ -437,6 +468,42 @@ mod linux {
             let _ = serial;
         }
 
+        fn overlay_hit(&self, root_id: u32, x: f64, y: f64) -> Option<(WlSurface, f64, f64)> {
+            let parent = self.surfaces.get(&root_id)?;
+            let parent_origin = match &parent.role {
+                SurfaceRole::X11(window) => window.geometry().loc,
+                SurfaceRole::Xdg(_) => (0, 0).into(),
+            };
+            let mut hit = None;
+            for overlay in self.x11_overlays.values() {
+                if self.overlay_parent_id(overlay) != Some(root_id) {
+                    continue;
+                }
+                let Some((width, height, _)) = &overlay.rgba else {
+                    continue;
+                };
+                let geometry = overlay.window.geometry();
+                let left = (geometry.loc.x - parent_origin.x) as f64;
+                let top = (geometry.loc.y - parent_origin.y) as f64;
+                if x >= left
+                    && x < left + *width as f64
+                    && y >= top
+                    && y < top + *height as f64
+                {
+                    hit = Some((overlay.wl_surface.clone(), x - left, y - top));
+                }
+            }
+            hit
+        }
+
+        fn activate_surface(&self, id: u32) {
+            if let Some(entry) = self.surfaces.get(&id) {
+                if let SurfaceRole::X11(window) = &entry.role {
+                    let _ = window.set_activated(true);
+                }
+            }
+        }
+
         fn handle_input(&mut self, event: InputEvent) {
             let id = match &event {
                 InputEvent::PointerMotion { surface, .. }
@@ -461,14 +528,17 @@ mod linux {
                 InputEvent::PointerMotion { x, y, .. } => {
                     self.pointer_pos = (x, y);
                     self.pointer_root = Some(surface.clone());
-                    let (target, local_x, local_y) =
-                        self.popup_hit(&surface, x, y).unwrap_or((surface, x, y));
+                    let (target, local_x, local_y) = self
+                        .overlay_hit(id, x, y)
+                        .or_else(|| self.popup_hit(&surface, x, y))
+                        .unwrap_or((surface, x, y));
+                    let origin: Point<f64, smithay::utils::Logical> =
+                        (x - local_x, y - local_y).into();
+                    let location: Point<f64, smithay::utils::Logical> = (x, y).into();
                     if let Some(pointer) = self.seat.get_pointer() {
-                        let location: Point<f64, smithay::utils::Logical> =
-                            (local_x, local_y).into();
                         pointer.motion(
                             self,
-                            Some((target, location)),
+                            Some((target, origin)),
                             &MotionEvent {
                                 location,
                                 serial,
@@ -478,10 +548,14 @@ mod linux {
                     }
                 }
                 InputEvent::PointerButton { button, action, .. } => {
+                    self.activate_surface(id);
                     let hit = self
-                        .pointer_root
-                        .as_ref()
-                        .and_then(|root| self.popup_hit(root, self.pointer_pos.0, self.pointer_pos.1));
+                        .overlay_hit(id, self.pointer_pos.0, self.pointer_pos.1)
+                        .or_else(|| {
+                            self.pointer_root.as_ref().and_then(|root| {
+                                self.popup_hit(root, self.pointer_pos.0, self.pointer_pos.1)
+                            })
+                        });
                     let (target, local_x, local_y) = hit
                         .clone()
                         .unwrap_or((surface.clone(), self.pointer_pos.0, self.pointer_pos.1));
@@ -490,12 +564,13 @@ mod linux {
                         keyboard.set_focus(self, Some(target.clone()), serial);
                     }
                     self.focus_text_input(&target, serial);
+                    let origin: Point<f64, smithay::utils::Logical> =
+                        (self.pointer_pos.0 - local_x, self.pointer_pos.1 - local_y).into();
+                    let location: Point<f64, smithay::utils::Logical> = self.pointer_pos.into();
                     if let Some(pointer) = self.seat.get_pointer() {
-                        let location: Point<f64, smithay::utils::Logical> =
-                            (local_x, local_y).into();
                         pointer.motion(
                             self,
-                            Some((target, location)),
+                            Some((target, origin)),
                             &MotionEvent {
                                 location,
                                 serial,
@@ -534,6 +609,7 @@ mod linux {
                     }
                 }
                 InputEvent::Key { keysym, action, .. } => {
+                    self.activate_surface(id);
                     let Some(keycode) = keysym_to_keycode(&keysym) else {
                         return;
                     };
@@ -570,6 +646,7 @@ mod linux {
                     }
                 }
                 InputEvent::Focus { .. } => {
+                    self.activate_surface(id);
                     if let Some(keyboard) = self.seat.get_keyboard() {
                         let target = self.active_popup.clone().unwrap_or(surface);
                         keyboard.set_focus(self, Some(target.clone()), serial);
@@ -745,7 +822,7 @@ mod linux {
             smithay::wayland::compositor::with_states(surface, Self::read_states_rgba)
         }
 
-        fn composite(root: &WlSurface, canvas_w: usize, canvas_h: usize) -> Option<Vec<u8>> {
+        fn composite(&self, root: &WlSurface, canvas_w: usize, canvas_h: usize) -> Option<Vec<u8>> {
             let mut canvas = vec![0u8; canvas_w * canvas_h * 4];
             let mut drew = false;
             with_surface_tree_upward(
@@ -834,14 +911,106 @@ mod linux {
                     }
                 }
             }
+            // X11 override-redirect windows are not in the Wayland surface
+            // tree. Draw them into their parent host window at their X11
+            // screen offset relative to the parent's origin.
+            for overlay in self.x11_overlays.values() {
+                let Some(parent_id) = self.overlay_parent_id(overlay) else {
+                    continue;
+                };
+                let Some(parent) = self.surfaces.get(&parent_id) else {
+                    continue;
+                };
+                if parent.wl_surface.id() != root.id() {
+                    continue;
+                }
+                let parent_origin = match &parent.role {
+                    SurfaceRole::X11(window) => window.geometry().loc,
+                    SurfaceRole::Xdg(_) => (0, 0).into(),
+                };
+                let geometry = overlay.window.geometry();
+                let x = geometry.loc.x - parent_origin.x;
+                let y = geometry.loc.y - parent_origin.y;
+                let Some((width, height, rgba)) = overlay.rgba.as_ref() else {
+                    continue;
+                };
+                let (width, height) = (*width, *height);
+                drew = true;
+                for row in 0..height {
+                    let dy = y + row as i32;
+                    if dy < 0 || dy >= canvas_h as i32 {
+                        continue;
+                    }
+                    for col in 0..width {
+                        let dx = x + col as i32;
+                        if dx < 0 || dx >= canvas_w as i32 {
+                            continue;
+                        }
+                        let src = (row * width + col) * 4;
+                        let dst = (dy as usize * canvas_w + dx as usize) * 4;
+                        let alpha = rgba[src + 3] as u32;
+                        if alpha == 0 {
+                            continue;
+                        }
+                        if alpha == 255 {
+                            canvas[dst..dst + 4].copy_from_slice(&rgba[src..src + 4]);
+                        } else {
+                            let inv = 255 - alpha;
+                            for channel in 0..3 {
+                                canvas[dst + channel] = ((rgba[src + channel] as u32 * alpha
+                                    + canvas[dst + channel] as u32 * inv)
+                                    / 255) as u8;
+                            }
+                            canvas[dst + 3] = 255;
+                        }
+                    }
+                }
+            }
             drew.then_some(canvas)
+        }
+
+        fn overlay_parent_id(&self, overlay: &X11Overlay) -> Option<u32> {
+            if let Some(parent) = overlay.parent {
+                if let Some(id) = self.x11_windows.get(&parent) {
+                    return Some(*id);
+                }
+            }
+            self.surfaces
+                .iter()
+                .find(|(_, entry)| matches!(entry.role, SurfaceRole::X11(_)))
+                .map(|(id, _)| *id)
         }
 
         fn on_commit(&mut self, surface: &WlSurface) {
             let time = self.start.elapsed().as_millis() as u32;
+            if let Some(overlay) = self
+                .x11_overlays
+                .get(&surface.id().protocol_id())
+                .cloned()
+            {
+                if let Some(cached) = Self::read_surface_rgba(surface) {
+                    if let Some(overlay_mut) = self
+                        .x11_overlays
+                        .get_mut(&surface.id().protocol_id())
+                    {
+                        overlay_mut.rgba = Some(cached);
+                    }
+                }
+                if let Some(parent_id) = self.overlay_parent_id(&overlay) {
+                    if let Some(parent_root) = self
+                        .surfaces
+                        .get(&parent_id)
+                        .map(|entry| entry.wl_surface.clone())
+                    {
+                        self.on_commit(&parent_root);
+                    }
+                }
+                self.send_frame_callbacks(surface, time);
+                return;
+            }
             let root = self.root_surface(surface);
             let Some(id) = self.entry_for(&root) else {
-                self.send_frame_callbacks(surface, time);
+                    self.send_frame_callbacks(surface, time);
                 return;
             };
             let (mut width, mut height) = self
@@ -859,7 +1028,7 @@ mod linux {
                 self.send_frame_callbacks(surface, time);
                 return;
             }
-            let Some(rgba) = Self::composite(&root, width, height) else {
+            let Some(rgba) = self.composite(&root, width, height) else {
                 self.send_frame_callbacks(surface, time);
                 return;
             };
@@ -930,7 +1099,13 @@ mod linux {
         }
 
         fn client_compositor_state<'a>(&self, client: &'a Client) -> &'a CompositorClientState {
-            &client.get_data::<ClientState>().unwrap().compositor_state
+            if let Some(state) = client.get_data::<ClientState>() {
+                return &state.compositor_state;
+            }
+            if let Some(state) = client.get_data::<XWaylandClientData>() {
+                return &state.compositor_state;
+            }
+            panic!("client has no compositor state")
         }
 
         fn commit(&mut self, surface: &WlSurface) {
@@ -975,7 +1150,7 @@ mod linux {
                 id,
                 SurfaceEntry {
                     id,
-                    _toplevel: surface,
+                    role: SurfaceRole::Xdg(surface),
                     wl_surface,
                     title,
                     app_id,
@@ -1043,10 +1218,230 @@ mod linux {
         }
     }
 
+    impl XwmHandler for Art {
+        fn xwm_state(&mut self, _xwm: XwmId) -> &mut X11Wm {
+            self.xwm.as_mut().expect("X11 WM not started")
+        }
+
+        fn new_window(&mut self, _xwm: XwmId, _window: X11Surface) {
+        }
+        fn new_override_redirect_window(&mut self, _xwm: XwmId, _window: X11Surface) {}
+        fn map_window_request(&mut self, _xwm: XwmId, window: X11Surface) {
+            let _ = window.set_mapped(true);
+        }
+        fn mapped_override_redirect_window(&mut self, _xwm: XwmId, _window: X11Surface) {}
+        fn unmapped_window(&mut self, _xwm: XwmId, _window: X11Surface) {}
+        fn destroyed_window(&mut self, _xwm: XwmId, window: X11Surface) {
+            let Some(wl_surface) = window.wl_surface() else {
+                return;
+            };
+            let entry_id = self.entry_for(&wl_surface);
+            if let Some(id) = entry_id {
+                self.surfaces.remove(&id);
+                if let Ok(payload) = serde_json::to_vec(&SurfaceDestroy { id }) {
+                    broadcast(&self.clients, MSG_SURFACE_DESTROY, &payload);
+                }
+                if let Some(map) = &self.map {
+                    map.send_json(&serde_json::json!({"type": "window.close", "id": id}));
+                }
+            }
+            self.x11_windows.retain(|_, host_id| Some(*host_id) != entry_id);
+            self.x11_overlays.remove(&wl_surface.id().protocol_id());
+        }
+        fn configure_request(
+            &mut self,
+            _xwm: XwmId,
+            window: X11Surface,
+            x: Option<i32>,
+            y: Option<i32>,
+            w: Option<u32>,
+            h: Option<u32>,
+            _reorder: Option<Reorder>,
+        ) {
+            let mut rect = window.geometry();
+            if let Some(x) = x {
+                rect.loc.x = x;
+            }
+            if let Some(y) = y {
+                rect.loc.y = y;
+            }
+            if let Some(w) = w {
+                rect.size.w = w as i32;
+            }
+            if let Some(h) = h {
+                rect.size.h = h as i32;
+            }
+            let _ = window.configure(Some(rect));
+        }
+        fn configure_notify(
+            &mut self,
+            _xwm: XwmId,
+            _window: X11Surface,
+            _geometry: Rectangle<i32, Logical>,
+            _above: Option<u32>,
+        ) {
+        }
+        fn resize_request(
+            &mut self,
+            _xwm: XwmId,
+            _window: X11Surface,
+            _button: u32,
+            _edge: ResizeEdge,
+        ) {
+        }
+        fn move_request(&mut self, _xwm: XwmId, _window: X11Surface, _button: u32) {}
+        fn allow_selection_access(
+            &mut self,
+            _xwm: XwmId,
+            selection: SelectionTarget,
+        ) -> bool {
+            selection == SelectionTarget::Clipboard
+        }
+
+        fn send_selection(
+            &mut self,
+            _xwm: XwmId,
+            selection: SelectionTarget,
+            mime_type: String,
+            fd: OwnedFd,
+        ) {
+            if selection != SelectionTarget::Clipboard {
+                return;
+            }
+            let _ = request_data_device_client_selection(&self.seat, mime_type, fd);
+        }
+        fn property_notify(&mut self, _xwm: XwmId, _window: X11Surface, _property: WmWindowProperty) {}
+
+        fn new_selection(
+            &mut self,
+            _xwm: XwmId,
+            selection: SelectionTarget,
+            mime_types: Vec<String>,
+        ) {
+            if selection == SelectionTarget::Clipboard {
+                set_data_device_selection(
+                    &self.display_handle,
+                    &self.seat,
+                    mime_types,
+                    SelectionTarget::Clipboard,
+                );
+            }
+        }
+
+        fn cleared_selection(&mut self, _xwm: XwmId, selection: SelectionTarget) {
+            if selection == SelectionTarget::Clipboard {
+                clear_data_device_selection(&self.display_handle, &self.seat);
+            }
+        }
+    }
+
+    impl XWaylandShellHandler for Art {
+        fn xwayland_shell_state(&mut self) -> &mut XWaylandShellState {
+            &mut self.xwayland_shell_state
+        }
+
+        fn surface_associated(
+            &mut self,
+            _xwm: XwmId,
+            wl_surface: WlSurface,
+            window: X11Surface,
+        ) {
+            if window.is_override_redirect() {
+                // Override-redirect windows are menus/tooltips: composite them
+                // into their parent instead of creating a host window.
+                let overlay = X11Overlay {
+                    wl_surface: wl_surface.clone(),
+                    window: window.clone(),
+                    parent: window.is_transient_for(),
+                    rgba: Self::read_surface_rgba(&wl_surface),
+                };
+                self.x11_overlays
+                    .insert(wl_surface.id().protocol_id(), overlay.clone());
+                if let Some(parent_id) = self.overlay_parent_id(&overlay) {
+                    if let Some(parent_root) = self
+                        .surfaces
+                        .get(&parent_id)
+                        .map(|entry| entry.wl_surface.clone())
+                    {
+                        self.on_commit(&parent_root);
+                    }
+                }
+                return;
+            }
+            if self.entry_for(&wl_surface).is_some() {
+                return;
+            }
+            let id = self.next_id;
+            self.next_id += 1;
+            let geometry = window.geometry();
+            self.x11_windows.insert(window.window_id(), id);
+            self.surfaces.insert(
+                id,
+                SurfaceEntry {
+                    id,
+                    role: SurfaceRole::X11(window.clone()),
+                    wl_surface: wl_surface.clone(),
+                    title: window.title(),
+                    app_id: if window.class().is_empty() {
+                        window.instance()
+                    } else {
+                        window.class()
+                    },
+                    announced: false,
+                    width: geometry.size.w.max(1) as usize,
+                    height: geometry.size.h.max(1) as usize,
+                    prev: Vec::new(),
+                    have_prev: false,
+                    last_full: None,
+                },
+            );
+            // XWayland often commits the buffer before the X11 surface is
+            // associated with its wl_surface. Capture once now; a later commit
+            // will refresh the frame.
+            self.on_commit(&wl_surface);
+        }
+    }
+
     impl OutputHandler for Art {}
 
     impl SelectionHandler for Art {
-        type SelectionUserData = ();
+        type SelectionUserData = SelectionTarget;
+
+        fn new_selection(
+            &mut self,
+            ty: SelectionTarget,
+            source: Option<smithay::wayland::selection::SelectionSource>,
+            _seat: Seat<Self>,
+        ) {
+            let mime_types = source
+                .as_ref()
+                .map(|source| source.mime_types())
+                .unwrap_or_default();
+            if let Some(xwm) = self.xwm.as_mut() {
+                if let Err(error) = xwm.new_selection(
+                    ty,
+                    source.as_ref().map(|_| mime_types),
+                ) {
+                    eprintln!("xwm new_selection: {error}");
+                }
+            }
+        }
+
+        fn send_selection(
+            &mut self,
+            ty: SelectionTarget,
+            mime_type: String,
+            fd: OwnedFd,
+            _seat: Seat<Self>,
+            _user_data: &SelectionTarget,
+        ) {
+            let Some(handle) = self.loop_handle.clone() else {
+                return;
+            };
+            if let Some(xwm) = self.xwm.as_mut() {
+                let _ = xwm.send_selection(ty, mime_type, fd, handle);
+            }
+        }
     }
 
     impl DataDeviceHandler for Art {
@@ -1269,6 +1664,7 @@ mod linux {
     smithay::delegate_data_device!(Art);
 
     smithay::delegate_text_input_manager!(Art);
+    smithay::delegate_xwayland_shell!(Art);
     smithay::delegate_input_method_manager!(Art);
 
     /// Minimal input-method v2 client. Smithay's text-input handler ignores
@@ -1422,7 +1818,58 @@ mod linux {
 
         let mut state = Art::new(&display_handle, clients, new_rx, input_rx, map, map_rx);
         spawn_input_method();
+
+        // XWayland runs as a Wayland client of this compositor; its X11 WM
+        // socket is serviced by calloop on the same thread.
+        let mut event_loop = calloop::EventLoop::<'static, Art>::try_new()?;
+        let loop_handle = event_loop.handle();
+        state.loop_handle = Some(loop_handle.clone());
+        match XWayland::spawn(
+            &display_handle,
+            None,
+            std::iter::empty::<(String, String)>(),
+            true,
+            Stdio::null(),
+            Stdio::null(),
+            |_| (),
+        ) {
+            Ok((xwayland, client)) => {
+                let wm_handle = loop_handle.clone();
+                if let Err(error) = loop_handle.insert_source(
+                    xwayland,
+                    move |event, _, state: &mut Art| match event {
+                        XWaylandEvent::Ready {
+                            x11_socket,
+                            display_number,
+                        } => {
+                            eprintln!("XWayland ready on :{display_number}");
+                            let _ = std::fs::write(
+                                "/run/mixum/xwayland.display",
+                                format!("{display_number}\n"),
+                            );
+                            match X11Wm::start_wm(
+                                wm_handle.clone(),
+                                x11_socket,
+                                client.clone(),
+                            ) {
+                                Ok(wm) => {
+                                    eprintln!("X11 WM started");
+                                    state.xwm = Some(wm);
+                                }
+                                Err(error) => eprintln!("X11 WM start: {error}"),
+                            }
+                        }
+                        XWaylandEvent::Error => eprintln!("XWayland failed to start"),
+                    },
+                ) {
+                    eprintln!("XWayland source: {error}");
+                }
+            }
+            Err(error) => eprintln!("XWayland spawn: {error}"),
+        }
+
         loop {
+            event_loop.dispatch(Duration::from_millis(0), &mut state)?;
             while let Ok(event) = state.input_rx.try_recv() {
                 state.handle_input(event);
             }
