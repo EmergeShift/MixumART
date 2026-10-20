@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "mixum Agent Env",
+        "title": "mixum ART",
         "width": 1120,
         "height": 720,
         "minWidth": 880,
