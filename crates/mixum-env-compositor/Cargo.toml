@@ -16,3 +16,4 @@ serde_json.workspace = true
 smithay = { version = "0.7", default-features = false, features = ["wayland_frontend", "desktop", "xwayland"] }
 png = "0.17"
 x11rb = { version = "0.13", features = ["xtest"] }
+xim = { version = "0.5", features = ["x11rb-server"] }
