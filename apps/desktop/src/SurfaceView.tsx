@@ -201,6 +201,32 @@ export function SurfaceView({ surface, addr }: Props) {
         onCompositionEnd={(event) => {
           if (event.data) sendText(event.data)
         }}
+        onDragOver={(event) => {
+          event.preventDefault()
+          if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'
+        }}
+        onDrop={(event) => {
+          event.preventDefault()
+          const text =
+            event.dataTransfer.getData('text/plain') ||
+            event.dataTransfer.getData('text/uri-list')
+          if (text) {
+            send({ type: 'text', surface, text })
+            return
+          }
+          const file = event.dataTransfer.files?.[0]
+          if (!file) return
+          void file
+            .text()
+            .then((content) => {
+              if (content.length > 1_000_000) {
+                setStatus('拖入的文本超过 1MB，未发送')
+                return
+              }
+              send({ type: 'text', surface, text: content })
+            })
+            .catch((error: unknown) => setStatus(String(error)))
+        }}
       />
       {status && <div className="surface-status">{status}</div>}
       {info && <div className="surface-meta">{info.title || `surface ${info.id}`}</div>}
