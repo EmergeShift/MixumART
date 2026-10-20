@@ -30,7 +30,8 @@ text-input IME（text-input 客户端；foot 终端本身不消费 commit）、
 remote→host 剪贴板、**XWayland**（X11 toplevel、override-redirect 菜单、
 指针/键盘、X11↔Wayland 剪贴板；需要镜像内 `xorg-xwayland`）。
 X11 文本：`XMODIFIERS=@im=mixum` 走内置 XIM server；无 XIM 时回退
-XTEST/keymap 直接注入。X11 拖拽和 GPU/dmabuf 零拷贝未接。详见
+XTEST/keymap 直接注入。host 文本/URI/文本文件内容可拖入 surface；真正的
+跨 VM XDND 文件 drag-out/drop-target 与 GPU/dmabuf 零拷贝仍未接。详见
 [`docs/display.md`](docs/display.md)。
 
 | 运行时 | 探测 | 列容器 | 创建 / 启停 |
