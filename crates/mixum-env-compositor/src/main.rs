@@ -28,6 +28,7 @@ mod linux {
         net::{TcpListener, TcpStream},
         os::unix::net::UnixStream,
         sync::{
+            atomic::{AtomicBool, Ordering},
             mpsc::{self, Receiver, Sender},
             Arc, Mutex,
         },
@@ -301,6 +302,8 @@ mod linux {
         xwayland_shell_state: XWaylandShellState,
         xwm: Option<X11Wm>,
         xwayland_display: Option<u32>,
+        xim_tx: Option<Sender<String>>,
+        xim_active: Arc<AtomicBool>,
         loop_handle: Option<calloop::LoopHandle<'static, Self>>,
         x11_windows: HashMap<u32, u32>,
         x11_overlays: HashMap<u32, X11Overlay>,
@@ -380,6 +383,8 @@ mod linux {
                 xwayland_shell_state,
                 xwm: None,
                 xwayland_display: None,
+                xim_tx: None,
+                xim_active: Arc::new(AtomicBool::new(false)),
                 loop_handle: None,
                 x11_windows: HashMap::new(),
                 x11_overlays: HashMap::new(),
@@ -698,6 +703,13 @@ mod linux {
                         .map(|entry| matches!(entry.role, SurfaceRole::X11(_)))
                         .unwrap_or(false);
                     if is_x11 {
+                        if self.xim_active.load(Ordering::SeqCst) {
+                            if let Some(tx) = &self.xim_tx {
+                                if tx.send(text.clone()).is_ok() {
+                                    return;
+                                }
+                            }
+                        }
                         self.x11_type_text(&text);
                         return;
                     }
@@ -1832,6 +1844,153 @@ mod linux {
         });
     }
 
+    fn start_xim(display_number: u32, active: Arc<AtomicBool>) -> Sender<String> {
+        use xim::{
+            InputContext, Server, ServerError, ServerHandler, UserInputContext, XimConnections,
+            ALL_LOCALES,
+        };
+        use xim::x11rb::X11rbServer;
+
+        struct XimHandler {
+            active: bool,
+            focus: Option<(u32, u16, u16, String)>,
+            active_flag: Arc<AtomicBool>,
+        }
+        impl<S: Server<XEvent = x11rb::protocol::xproto::KeyPressEvent>> ServerHandler<S>
+            for XimHandler
+        {
+            type InputContextData = ();
+            type InputStyleArray = [xim::InputStyle; 4];
+            fn new_ic_data(
+                &mut self,
+                _server: &mut S,
+                _style: xim::InputStyle,
+            ) -> Result<(), ServerError> {
+                Ok(())
+            }
+            fn input_styles(&self) -> Self::InputStyleArray {
+                [
+                    xim::InputStyle::PREEDIT_CALLBACKS | xim::InputStyle::STATUS_NOTHING,
+                    xim::InputStyle::PREEDIT_NOTHING | xim::InputStyle::STATUS_NOTHING,
+                    xim::InputStyle::PREEDIT_POSITION | xim::InputStyle::STATUS_NOTHING,
+                    xim::InputStyle::PREEDIT_POSITION | xim::InputStyle::STATUS_NONE,
+                ]
+            }
+            fn filter_events(&self) -> u32 { 1 }
+            fn handle_connect(&mut self, _server: &mut S) -> Result<(), ServerError> {
+                self.active = true;
+                Ok(())
+            }
+            fn handle_create_ic(
+                &mut self,
+                server: &mut S,
+                user_ic: &mut UserInputContext<()>,
+            ) -> Result<(), ServerError> {
+                server.set_event_mask(&user_ic.ic, 1, 0)
+            }
+            fn handle_set_focus(
+                &mut self,
+                _server: &mut S,
+                user_ic: &mut UserInputContext<()>,
+            ) -> Result<(), ServerError> {
+                self.focus = Some((
+                    user_ic.ic.client_win(),
+                    user_ic.ic.input_method_id().get(),
+                    user_ic.ic.input_context_id().get(),
+                    user_ic.ic.locale().to_string(),
+                ));
+                self.active_flag.store(true, Ordering::SeqCst);
+                Ok(())
+            }
+            fn handle_unset_focus(
+                &mut self,
+                _server: &mut S,
+                _user_ic: &mut UserInputContext<()>,
+            ) -> Result<(), ServerError> {
+                self.focus = None;
+                self.active_flag.store(false, Ordering::SeqCst);
+                Ok(())
+            }
+            fn handle_forward_event(
+                &mut self,
+                _server: &mut S,
+                _user_ic: &mut UserInputContext<()>,
+                _xev: &x11rb::protocol::xproto::KeyPressEvent,
+            ) -> Result<bool, ServerError> {
+                Ok(false)
+            }
+            fn handle_set_ic_values(
+                &mut self,
+                _server: &mut S,
+                _user_ic: &mut UserInputContext<()>,
+            ) -> Result<(), ServerError> {
+                Ok(())
+            }
+            fn handle_destroy_ic(
+                &mut self,
+                _server: &mut S,
+                _user_ic: UserInputContext<()>,
+            ) -> Result<(), ServerError> {
+                self.focus = None;
+                self.active_flag.store(false, Ordering::SeqCst);
+                Ok(())
+            }
+            fn handle_reset_ic(
+                &mut self,
+                _server: &mut S,
+                _user_ic: &mut UserInputContext<()>,
+            ) -> Result<String, ServerError> {
+                Ok(String::new())
+            }
+        }
+
+        let (tx, rx) = mpsc::channel::<String>();
+        std::thread::spawn(move || {
+            use x11rb::connection::Connection;
+            let Ok((conn, screen)) =
+                x11rb::rust_connection::RustConnection::connect(Some(&format!(
+                    ":{display_number}"
+                )))
+            else {
+                return;
+            };
+            let Ok(mut server) =
+                X11rbServer::init(&conn, screen, "mixum", ALL_LOCALES)
+            else {
+                return;
+            };
+            let mut connections = XimConnections::new();
+            let mut handler = XimHandler {
+                active: false,
+                focus: None,
+                active_flag: active,
+            };
+            loop {
+                while let Ok(text) = rx.try_recv() {
+                    if let Some((client, im, ic, locale)) = handler.focus.clone() {
+                        let context = InputContext::new(
+                            client,
+                            std::num::NonZeroU16::new(im).unwrap_or(std::num::NonZeroU16::MIN),
+                            std::num::NonZeroU16::new(ic).unwrap_or(std::num::NonZeroU16::MIN),
+                            locale,
+                        );
+                        let _ = server.commit(&context, &text);
+                    }
+                }
+                match conn.poll_for_event() {
+                    Ok(Some(event)) => {
+                        let _ = server.filter_event(&event, &mut connections, &mut handler);
+                    }
+                    Ok(None) => {}
+                    Err(_) => break,
+                }
+                let _ = conn.flush();
+                std::thread::sleep(std::time::Duration::from_millis(4));
+            }
+        });
+        tx
+    }
+
     pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         let mut map_socket: Option<String> = None;
         let mut tcp_port = TCP_PORT;
@@ -1921,6 +2080,10 @@ mod linux {
                                     eprintln!("X11 WM started");
                                     state.xwm = Some(wm);
                                     state.xwayland_display = Some(display_number);
+                                    state.xim_tx = Some(start_xim(
+                                        display_number,
+                                        state.xim_active.clone(),
+                                    ));
                                 }
                                 Err(error) => eprintln!("X11 WM start: {error}"),
                             }
