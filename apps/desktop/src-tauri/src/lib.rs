@@ -106,6 +106,7 @@ pub fn run() {
             commands::open_surface_window,
             commands::surface_input,
             commands::remote_clipboard,
+            commands::surface_put_file,
         ])
         .run(tauri::generate_context!())
         .expect("启动 mixum Agent Env 失败");

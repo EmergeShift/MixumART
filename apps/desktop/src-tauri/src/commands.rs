@@ -290,6 +290,27 @@ pub fn open_surface_window(app: AppHandle, request: OpenSurfaceRequest) -> Resul
 }
 
 #[tauri::command]
+pub async fn surface_put_file(
+    app: AppHandle,
+    surface: u32,
+    name: String,
+    data: Vec<u8>,
+) -> Result<String, String> {
+    let client = app
+        .state::<AppState>()
+        .surface_clients
+        .lock()
+        .map_err(|error| error.to_string())?
+        .get(&surface)
+        .cloned()
+        .ok_or_else(|| "surface 尚未连接".to_string())?;
+    client
+        .put_file(&name, &data)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 pub fn surface_input(app: AppHandle, surface: u32, event: InputEvent) -> Result<(), String> {
     let state = app.state::<AppState>();
     let inputs = state

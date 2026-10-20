@@ -53,3 +53,6 @@ export const surfaceInput = (surface: number, event: SurfaceInputEvent) =>
 
 export const remoteClipboard = (surface: number) =>
   invoke<string>('remote_clipboard', { surface })
+
+export const surfacePutFile = (surface: number, name: string, data: number[]) =>
+  invoke<string>('surface_put_file', { surface, name, data })
