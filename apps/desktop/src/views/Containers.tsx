@@ -1,11 +1,24 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 
 import { errorText, listContainers } from '../api'
-import { statusDetail } from '../status'
-import type { BackendStatus, Container, ContainerState, PortMapping, RuntimeKind } from '../types'
+import type { AgentMode, BackendStatus, Container, RuntimeKind } from '../types'
 
 type Props = {
   backends: BackendStatus[] | null
+}
+
+const MODE_LABEL: Record<AgentMode, string> = {
+  'as-tool': '作为工具',
+  'sub-agent': 'Sub-agent',
+  isolated: '隔离环境',
+}
+
+const STATE_LABEL: Record<string, string> = {
+  running: '运行中',
+  stopped: '已停止',
+  paused: '已暂停',
+  created: '已创建',
+  unknown: '未知',
 }
 
 export function Containers({ backends }: Props) {
@@ -18,12 +31,11 @@ export function Containers({ backends }: Props) {
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
 
-  // 默认选中第一个可用运行时。
   useEffect(() => {
     if (kind === null && ready.length > 0) setKind(ready[0].kind)
   }, [kind, ready])
 
-  const load = useCallback(async () => {
+  const load = async () => {
     if (kind === null) return
     setLoading(true)
     setError(null)
@@ -35,18 +47,21 @@ export function Containers({ backends }: Props) {
     } finally {
       setLoading(false)
     }
-  }, [kind])
+  }
 
   useEffect(() => {
     void load()
-  }, [load])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [kind])
 
   return (
     <section>
       <div className="section-head">
         <div>
-          <h2>容器</h2>
-          <p className="muted">各运行时里的 mixumOS 容器。骨架阶段只读，启停与创建在 M1 接入。</p>
+          <h2>环境列表</h2>
+          <p className="muted">
+            每个容器属于一个发起方；启停、终端、日志在运行时接口接入后从行内直接操作。
+          </p>
         </div>
         <button className="ghost" onClick={() => void load()} disabled={loading || kind === null}>
           {loading ? '读取中…' : '刷新'}
@@ -55,19 +70,19 @@ export function Containers({ backends }: Props) {
 
       {backends === null ? (
         <p className="muted">正在检测运行时…</p>
+      ) : ready.length === 0 ? (
+        <div className="empty-panel">
+          <h3>没有可用的运行时</h3>
+          <p className="muted">在「设置」页查看检测结果与安装提示。</p>
+        </div>
       ) : (
         <>
           <div className="chips">
-            {backends.map((backend) => (
+            {ready.map((backend) => (
               <button
                 key={backend.kind}
-                className={`chip ${kind === backend.kind ? 'active' : ''}`}
-                disabled={backend.status.state !== 'ready'}
-                title={statusDetail(backend.status)}
-                onClick={() => {
-                  setKind(backend.kind)
-                  setContainers(null)
-                }}
+                className={kind === backend.kind ? 'chip active' : 'chip'}
+                onClick={() => setKind(backend.kind)}
               >
                 {backend.name}
               </button>
@@ -76,78 +91,70 @@ export function Containers({ backends }: Props) {
 
           {error && <div className="error">{error}</div>}
 
-          {kind === null ? (
-            <p className="empty">没有可用的运行时。先到「环境」里检测并启动一个。</p>
-          ) : containers === null ? (
-            <p className="muted">读取容器列表…</p>
+          {containers === null ? (
+            <p className="muted">读取中…</p>
           ) : containers.length === 0 ? (
-            <p className="empty">该运行时下还没有容器。</p>
+            <div className="empty-panel">
+              <h3>该运行时下没有容器</h3>
+              <p className="muted">创建入口随 vm.* 接入开放。</p>
+            </div>
           ) : (
-            <ContainerTable containers={containers} />
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>状态</th>
+                  <th>环境</th>
+                  <th>发起方</th>
+                  <th>模式</th>
+                  <th>镜像</th>
+                  <th>端口</th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                {containers.map((container) => (
+                  <tr key={container.id}>
+                    <td>
+                      <span className={`state state-${container.state}`}>
+                        <span className="dot" />
+                        {STATE_LABEL[container.state] ?? container.state}
+                      </span>
+                    </td>
+                    <td>
+                      <div className="cell-stack">
+                        <span>{container.name}</span>
+                        <span className="mono muted">{container.id.slice(0, 12)}</span>
+                      </div>
+                    </td>
+                    <td>{container.agent?.name ?? <span className="muted">未标注</span>}</td>
+                    <td>
+                      {container.agent ? (
+                        <span className="tag">{MODE_LABEL[container.agent.mode]}</span>
+                      ) : (
+                        <span className="muted">—</span>
+                      )}
+                    </td>
+                    <td className="mono">{container.image}</td>
+                    <td className="mono">
+                      {container.ports.length === 0
+                        ? '—'
+                        : container.ports.map((port) => `${port.host}→${port.container}`).join(', ')}
+                    </td>
+                    <td className="row-actions">
+                      <button className="ghost" disabled title="窗口流接入后可用">
+                        接管
+                      </button>
+                      <button className="ghost" disabled title="exec/stdio 接入后可用">
+                        终端
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           )}
         </>
       )}
     </section>
   )
-}
-
-function ContainerTable({ containers }: { containers: Container[] }) {
-  return (
-    <table className="table">
-      <thead>
-        <tr>
-          <th>名称</th>
-          <th>镜像</th>
-          <th>状态</th>
-          <th>端口</th>
-          <th>创建时间</th>
-        </tr>
-      </thead>
-      <tbody>
-        {containers.map((container) => (
-          <tr key={container.id}>
-            <td>
-              <div className="name">{container.name}</div>
-              <div className="mono">{shortId(container.id)}</div>
-            </td>
-            <td className="mono">{container.image}</td>
-            <td>
-              <span className={`state ${container.state}`}>{stateLabel(container.state)}</span>
-              {container.status ? <div className="mono">{container.status}</div> : null}
-            </td>
-            <td className="mono">{formatPorts(container.ports)}</td>
-            <td className="mono">{formatTime(container.createdAt)}</td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
-  )
-}
-
-const STATE_LABELS: Record<ContainerState, string> = {
-  created: '已创建',
-  running: '运行中',
-  paused: '已暂停',
-  stopped: '已停止',
-  unknown: '未知',
-}
-
-function stateLabel(state: ContainerState): string {
-  return STATE_LABELS[state]
-}
-
-function shortId(id: string): string {
-  return id.length > 12 ? id.slice(0, 12) : id
-}
-
-function formatPorts(ports: PortMapping[]): string {
-  if (ports.length === 0) return '—'
-  return ports.map((port) => `${port.host}→${port.container}`).join('  ')
-}
-
-function formatTime(value: string | null): string {
-  if (!value) return '—'
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return value
-  return date.toLocaleString('zh-CN', { hour12: false })
 }
