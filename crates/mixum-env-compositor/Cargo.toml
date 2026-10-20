@@ -15,3 +15,4 @@ serde_json.workspace = true
 [target.'cfg(target_os = "linux")'.dependencies]
 smithay = { version = "0.7", default-features = false, features = ["wayland_frontend", "desktop", "xwayland"] }
 png = "0.17"
+x11rb = { version = "0.13", features = ["xtest"] }
