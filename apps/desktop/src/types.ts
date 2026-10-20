@@ -23,6 +23,15 @@ export type PortMapping = {
   protocol: string
 }
 
+/** 该容器由谁发起、以哪种协作模式工作（Agent 平台接入的归属信息）。 */
+export type AgentMode = 'as-tool' | 'sub-agent' | 'isolated'
+
+export type AgentRef = {
+  name: string
+  mode: AgentMode
+  core?: string
+}
+
 export type Container = {
   id: string
   name: string
@@ -31,6 +40,8 @@ export type Container = {
   status: string | null
   createdAt: string | null
   ports: PortMapping[]
+  /** 后端尚未提供时为空——界面按「未标注」渲染，不虚构。 */
+  agent?: AgentRef | null
 }
 
 export type HostInfo = {
