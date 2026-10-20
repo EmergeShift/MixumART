@@ -14,8 +14,8 @@ export function Settings({ backends, host, onRefresh }: Props) {
       <section>
         <div className="section-head">
           <div>
-            <h2>运行时</h2>
-            <p className="muted">宿主机上可用于承载 mixumOS 的容器运行时。</p>
+            <h2>运行软件</h2>
+            <p>这台电脑上用来承载 Agent 环境的软件。装好其中一个即可。</p>
           </div>
           <button className="ghost" onClick={onRefresh}>
             重新检测
@@ -42,40 +42,38 @@ export function Settings({ backends, host, onRefresh }: Props) {
       <section>
         <div className="section-head">
           <div>
-            <h2>mixumOS</h2>
-            <p className="muted">容器内系统基座的设置。由节点的 sys.info 与配置接口提供。</p>
+            <h2>环境系统</h2>
+            <p>每个环境里安装的系统是 mixumOS，这里是它的设置。</p>
           </div>
         </div>
         <div className="settings-list">
           <div className="setting-row">
             <div>
-              <strong>快照后端</strong>
-              <span className="muted">disk / hybrid 快照的存储与物化后端</span>
+              <strong>快照与回退</strong>
+              <span className="muted">自动保存工作进度，可以随时回到之前的状态</span>
             </div>
-            <span className="mono muted">待接入</span>
-          </div>
-          <div className="setting-row">
-            <div>
-              <strong>快照存储与 GC</strong>
-              <span className="muted">CAS 容量、清理策略与保护窗口</span>
-            </div>
-            <span className="mono muted">待接入</span>
+            <span className="mono muted">即将开放</span>
           </div>
           <div className="setting-row">
             <div>
               <strong>内存快照</strong>
-              <span className="muted">
-                CRIU 仅在同内核节点可用；跨内核未验证（criu-feasibility.md）
-              </span>
+              <span className="muted">保留正在运行的进程；目前要求来源和目标使用同一内核</span>
             </div>
-            <span className="mono muted">同内核</span>
+            <span className="mono muted">同一内核</span>
           </div>
           <div className="setting-row">
             <div>
-              <strong>镜像与更新</strong>
-              <span className="muted">mixumos 镜像版本、更新通道与 pin</span>
+              <strong>系统镜像</strong>
+              <span className="muted">环境使用的 mixumOS 版本与更新方式</span>
             </div>
-            <span className="mono muted">待接入</span>
+            <span className="mono muted">即将开放</span>
+          </div>
+          <div className="setting-row">
+            <div>
+              <strong>磁盘占用</strong>
+              <span className="muted">快照与镜像占用的空间，可清理未使用的部分</span>
+            </div>
+            <span className="mono muted">即将开放</span>
           </div>
         </div>
       </section>
@@ -83,29 +81,29 @@ export function Settings({ backends, host, onRefresh }: Props) {
       <section>
         <div className="section-head">
           <div>
-            <h2>MART</h2>
-            <p className="muted">宿主侧应用设置。</p>
+            <h2>应用设置</h2>
+            <p>MART 自己的设置。</p>
           </div>
         </div>
         <div className="settings-list">
           <div className="setting-row">
             <div>
               <strong>外观</strong>
-              <span className="muted">深色 Operator（当前唯一主题）</span>
+              <span className="muted">暖纸色，跟随系统字体大小</span>
             </div>
-            <span className="mono muted">深色</span>
+            <span className="mono muted">浅色</span>
           </div>
           <div className="setting-row">
             <div>
-              <strong>节点证书</strong>
-              <span className="muted">TOFU 指纹固定；首次连接需人工确认</span>
+              <strong>连接安全</strong>
+              <span className="muted">首次连接环境时记录证书指纹，之后自动核对</span>
             </div>
-            <span className="mono muted">TOFU</span>
+            <span className="mono muted">已启用</span>
           </div>
           <div className="setting-row">
             <div>
-              <strong>遥测</strong>
-              <span className="muted">默认关闭；启用后仅聚合匿名指标（见 TRUST.md）</span>
+              <strong>匿名统计</strong>
+              <span className="muted">默认关闭；开启后只上报数量类信息，不包含任何内容</span>
             </div>
             <span className="mono muted">关闭</span>
           </div>

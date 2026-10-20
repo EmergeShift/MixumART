@@ -8,16 +8,16 @@ type Props = {
 }
 
 const MODE_LABEL: Record<AgentMode, string> = {
-  'as-tool': '作为工具',
-  'sub-agent': 'Sub-agent',
-  isolated: '隔离环境',
+  'as-tool': '直接使用',
+  'sub-agent': '派发任务',
+  isolated: '完全隔离',
 }
 
 const STATE_LABEL: Record<string, string> = {
-  running: '运行中',
+  running: '正在运行',
   stopped: '已停止',
   paused: '已暂停',
-  created: '已创建',
+  created: '未启动',
   unknown: '未知',
 }
 
@@ -58,10 +58,8 @@ export function Containers({ backends }: Props) {
     <section>
       <div className="section-head">
         <div>
-          <h2>环境列表</h2>
-          <p className="muted">
-            每个容器属于一个发起方；启停、终端、日志在运行时接口接入后从行内直接操作。
-          </p>
+          <h2>全部环境</h2>
+          <p>每个环境属于一个使用者。暂停、继续与终端入口会随环境管理功能上线。</p>
         </div>
         <button className="ghost" onClick={() => void load()} disabled={loading || kind === null}>
           {loading ? '读取中…' : '刷新'}
@@ -69,11 +67,11 @@ export function Containers({ backends }: Props) {
       </div>
 
       {backends === null ? (
-        <p className="muted">正在检测运行时…</p>
+        <p className="muted">正在检测…</p>
       ) : ready.length === 0 ? (
         <div className="empty-panel">
-          <h3>没有可用的运行时</h3>
-          <p className="muted">在「设置」页查看检测结果与安装提示。</p>
+          <h3>没有可用的运行软件</h3>
+          <p>在「设置」页查看检测结果与安装提示。</p>
         </div>
       ) : (
         <>
@@ -95,8 +93,8 @@ export function Containers({ backends }: Props) {
             <p className="muted">读取中…</p>
           ) : containers.length === 0 ? (
             <div className="empty-panel">
-              <h3>该运行时下没有容器</h3>
-              <p className="muted">创建入口随 vm.* 接入开放。</p>
+              <h3>这里还没有环境</h3>
+              <p>创建入口会随环境管理功能上线。</p>
             </div>
           ) : (
             <table className="table">
@@ -104,9 +102,9 @@ export function Containers({ backends }: Props) {
                 <tr>
                   <th>状态</th>
                   <th>环境</th>
-                  <th>发起方</th>
-                  <th>模式</th>
-                  <th>镜像</th>
+                  <th>谁在用</th>
+                  <th>使用方式</th>
+                  <th>系统镜像</th>
                   <th>端口</th>
                   <th />
                 </tr>
@@ -141,10 +139,10 @@ export function Containers({ backends }: Props) {
                         : container.ports.map((port) => `${port.host}→${port.container}`).join(', ')}
                     </td>
                     <td className="row-actions">
-                      <button className="ghost" disabled title="窗口流接入后可用">
-                        接管
+                      <button className="ghost" disabled title="画面接入后可用">
+                        监看
                       </button>
-                      <button className="ghost" disabled title="exec/stdio 接入后可用">
+                      <button className="ghost" disabled title="终端接入后可用">
                         终端
                       </button>
                     </td>

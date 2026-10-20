@@ -1,43 +1,38 @@
 import { useState } from 'react'
 
-import type { AgentMode } from '../types'
-
-const MODES: { key: AgentMode; title: string; summary: string; detail: string }[] = [
+const MODES = [
   {
-    key: 'as-tool',
-    title: '作为工具',
-    summary: '外部 Agent 直接使用环境',
+    title: '直接使用',
+    summary: '外部 Agent 自己动手',
     detail:
-      '例如 Codex 把 MART 当作它的执行环境：通过 MAP 提交任务、执行命令、观看窗口。容器内的 Agent Core 不运行。',
+      '例如 Codex 直接操作这个环境：打开终端、运行命令、查看窗口。环境里不运行我们提供的助手。',
   },
   {
-    key: 'sub-agent',
-    title: 'Sub-agent',
-    summary: '外部 Agent 把活派给 MART',
+    title: '派发任务',
+    summary: '外部 Agent 把活交给环境里的助手',
     detail:
-      'Codex 作为编排者派发任务，容器内的 Agent Core 执行工作。模型连接由用户自带（BYOK），凭证不进入快照。',
+      'Codex 只负责安排任务，真正干活的是环境里的助手。模型密钥使用你自己的（BYOK），不会进入快照。',
   },
   {
-    key: 'isolated',
-    title: '隔离环境',
-    summary: '一个 Agent 一个容器',
+    title: '完全隔离',
+    summary: '一个 Agent 一个环境',
     detail:
-      '把指定平台的凭证迁移进特定容器，会话与记忆只属于那个环境。适合把互不信任的 Agent 彻底隔开。',
+      '把一个 Agent 的登录凭据放进专属环境，其它 Agent 看不到、也用不了。适合互不信任的场景。',
   },
 ]
 
 const CORES = [
-  { key: 'mixum', name: 'Mixum Core', note: '内置，与快照/接管深度集成' },
-  { key: 'pi', name: 'Pi', note: '接入 Pi 的 harness' },
-  { key: 'deepseek', name: 'DeepSeek Harness', note: '接入 DeepSeek 的 agent 框架' },
-  { key: 'codex', name: 'Codex', note: '以 Codex 作为容器内核心' },
+  { key: 'mixum', name: '内置助手', note: '推荐。默认自带，与快照、接管配合最好' },
+  { key: 'pi', name: 'Pi', note: '使用 Pi 的执行引擎' },
+  { key: 'deepseek', name: 'DeepSeek', note: '使用 DeepSeek 的 Agent 框架' },
+  { key: 'codex', name: 'Codex', note: '让 Codex 在环境里执行' },
 ]
 
 const PLATFORMS = [
-  { name: 'Codex', kind: 'CLI agent' },
-  { name: 'Claude Code', kind: 'CLI agent' },
-  { name: 'Cursor', kind: 'IDE / GUI' },
-  { name: '自定义（MAP 客户端）', kind: '任意实现' },
+  { name: 'Codex', kind: '命令行 Agent' },
+  { name: 'Claude Code', kind: '命令行 Agent' },
+  { name: 'Cursor', kind: '编辑器' },
+  { name: '其它 Agent', kind: '支持 MAP 协议即可' },
 ]
 
 export function Agents() {
@@ -48,19 +43,16 @@ export function Agents() {
       <section>
         <div className="section-head">
           <div>
-            <h2>Agent 工作模式</h2>
-            <p className="muted">
-              MART 不运行 Agent 本体；它决定外部 Agent 与容器内 Agent Core 如何分工。
-            </p>
+            <h2>Agent 怎么使用 MART</h2>
+            <p>MART 自己不运行 Agent。你可以选择外部 Agent 和环境里的助手如何分工。</p>
           </div>
         </div>
         <div className="mode-grid">
           {MODES.map((mode) => (
-            <article className="mode-card" key={mode.key}>
-              <span className="tag">{mode.title}</span>
+            <article className="mode-card" key={mode.title}>
               <h3>{mode.summary}</h3>
-              <p className="muted">{mode.detail}</p>
-              <span className="pending">配置接入中</span>
+              <p>{mode.detail}</p>
+              <span className="pending">「{mode.title}」的配置功能即将开放</span>
             </article>
           ))}
         </div>
@@ -69,8 +61,8 @@ export function Agents() {
       <section>
         <div className="section-head">
           <div>
-            <h2>Agent Core</h2>
-            <p className="muted">容器内执行工作的核心。用户可选择我们的，也可以用别人的 harness。</p>
+            <h2>环境里由谁来干活</h2>
+            <p>默认使用内置助手；也可以换成你习惯的 Agent 引擎。</p>
           </div>
         </div>
         <div className="core-grid">
@@ -86,26 +78,26 @@ export function Agents() {
             </button>
           ))}
         </div>
-        <p className="muted footnote">选择持久化与启动装配随后端接入（当前仅界面状态）。</p>
+        <p className="footnote">当前只是界面选择；保存与生效会随环境创建功能一起开放。</p>
       </section>
 
       <section>
         <div className="section-head">
           <div>
-            <h2>平台接入</h2>
-            <p className="muted">已接入或计划接入的 Agent 平台；连接后为其分配环境与工作模式。</p>
+            <h2>已接入与计划接入的 Agent</h2>
+            <p>连接后，可以为每个 Agent 指定使用哪个环境、用哪种分工方式。</p>
           </div>
-          <button className="ghost" disabled title="连接器接入后可用">
-            添加平台
+          <button className="ghost" disabled title="连接功能即将开放">
+            添加 Agent
           </button>
         </div>
         <table className="table">
           <thead>
             <tr>
-              <th>平台</th>
+              <th>Agent</th>
               <th>类型</th>
               <th>状态</th>
-              <th>默认模式</th>
+              <th>默认使用方式</th>
               <th />
             </tr>
           </thead>
@@ -122,8 +114,8 @@ export function Agents() {
                 </td>
                 <td className="muted">—</td>
                 <td className="row-actions">
-                  <button className="ghost" disabled title="连接器接入后可用">
-                    配置
+                  <button className="ghost" disabled title="连接功能即将开放">
+                    连接
                   </button>
                 </td>
               </tr>
@@ -135,22 +127,20 @@ export function Agents() {
       <section>
         <div className="section-head">
           <div>
-            <h2>凭证与 BYOK</h2>
-            <p className="muted">
-              平台凭证由宿主保管，任务开始时注入目标容器；凭证永不进入快照（见 TRUST.md）。
-            </p>
+            <h2>登录凭据</h2>
+            <p>Agent 的账号钥匙由这台电脑保管，只交给指定的环境，不写进快照。</p>
           </div>
         </div>
         <div className="callout">
           <div>
-            <strong>凭证迁移到容器</strong>
-            <p className="muted">
-              vault.* 接入后开放：选择平台 → 选择容器 → 注入并立即擦除宿主侧副本；
-              快照中只保留会话状态，不含密钥。
+            <strong>把凭据放进指定环境</strong>
+            <p>
+              选择 Agent 和环境后，凭据会在开始时临时交给环境，结束后立即清除。
+              环境生成的快照里只有工作内容，没有密钥。
             </p>
           </div>
-          <button className="ghost" disabled title="vault.* 接入后可用">
-            迁移凭证
+          <button className="ghost" disabled title="凭据管理即将开放">
+            管理凭据
           </button>
         </div>
       </section>
