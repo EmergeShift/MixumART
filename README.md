@@ -29,8 +29,8 @@ Tauri 的「窗口」页通过 MAP WSS（`mixum-env-map`）连接 agentd：
 text-input IME（text-input 客户端；foot 终端本身不消费 commit）、
 remote→host 剪贴板、**XWayland**（X11 toplevel、override-redirect 菜单、
 指针/键盘、X11↔Wayland 剪贴板；需要镜像内 `xorg-xwayland`）。
-未接：X11 IM（XIM）输入法、GPU/dmabuf 零拷贝。详见
-[`docs/display.md`](docs/display.md)。
+X11 Unicode 文本走 XTEST/keymap 直接注入；**XIM 输入法协议未接**，
+GPU/dmabuf 零拷贝也未接。详见 [`docs/display.md`](docs/display.md)。
 
 | 运行时 | 探测 | 列容器 | 创建 / 启停 |
 |--------|------|--------|-------------|

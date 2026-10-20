@@ -300,6 +300,7 @@ mod linux {
         _input_method_state: InputMethodManagerState,
         xwayland_shell_state: XWaylandShellState,
         xwm: Option<X11Wm>,
+        xwayland_display: Option<u32>,
         loop_handle: Option<calloop::LoopHandle<'static, Self>>,
         x11_windows: HashMap<u32, u32>,
         x11_overlays: HashMap<u32, X11Overlay>,
@@ -378,6 +379,7 @@ mod linux {
                 _input_method_state: input_method_state,
                 xwayland_shell_state,
                 xwm: None,
+                xwayland_display: None,
                 loop_handle: None,
                 x11_windows: HashMap::new(),
                 x11_overlays: HashMap::new(),
@@ -501,6 +503,60 @@ mod linux {
                 if let SurfaceRole::X11(window) = &entry.role {
                     let _ = window.set_activated(true);
                 }
+            }
+        }
+
+        fn x11_type_text(&self, text: &str) {
+            use x11rb::connection::Connection;
+            use x11rb::protocol::xproto::ConnectionExt as _;
+            use x11rb::protocol::xtest::ConnectionExt as _;
+
+            let Some(display_number) = self.xwayland_display else {
+                return;
+            };
+            let Ok((conn, screen)) =
+                x11rb::rust_connection::RustConnection::connect(Some(&format!(
+                    ":{display_number}"
+                )))
+            else {
+                return;
+            };
+            let root = conn.setup().roots[screen].root;
+            // The first synthetic key after a fresh X11 connection is often
+            // consumed while XWayland resolves focus; send Shift as a no-op.
+            let _ = conn.xtest_fake_input(2, 50, 0, root, 0, 0, 0);
+            let _ = conn.xtest_fake_input(3, 50, 0, root, 0, 0, 0);
+            let _ = conn.flush();
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            let chars: Vec<char> = text.chars().collect();
+            for chunk in chars.chunks(16) {
+                let keysyms: Vec<u32> = chunk
+                    .iter()
+                    .map(|ch| 0x0100_0000u32 | *ch as u32)
+                    .collect();
+                let count = keysyms.len() as u8;
+                let first = 240u8;
+                let Ok(mapping) =
+                    conn.change_keyboard_mapping(count, first, 1, &keysyms)
+                else {
+                    continue;
+                };
+                if mapping.check().is_err() {
+                    continue;
+                }
+                if let Ok(cookie) = conn.get_input_focus() {
+                    let _ = cookie.reply();
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                for index in 0..count {
+                    let keycode = first + index;
+                    let _ = conn.xtest_fake_input(2, keycode, 0, root, 0, 0, 0);
+                    let _ = conn.xtest_fake_input(3, keycode, 0, root, 0, 0, 0);
+                    let _ = conn.flush();
+                    std::thread::sleep(std::time::Duration::from_millis(8));
+                }
+                let _ = conn.change_keyboard_mapping(count, first, 1, &vec![0; keysyms.len()]);
+                let _ = conn.flush();
             }
         }
 
@@ -636,6 +692,15 @@ mod linux {
                     }
                 }
                 InputEvent::Text { text, .. } => {
+                    let is_x11 = self
+                        .surfaces
+                        .get(&id)
+                        .map(|entry| matches!(entry.role, SurfaceRole::X11(_)))
+                        .unwrap_or(false);
+                    if is_x11 {
+                        self.x11_type_text(&text);
+                        return;
+                    }
                     self.focus_text_input(&surface, serial);
                     let text_input = self.seat.text_input();
                     if !text.is_empty() {
@@ -1855,6 +1920,7 @@ mod linux {
                                 Ok(wm) => {
                                     eprintln!("X11 WM started");
                                     state.xwm = Some(wm);
+                                    state.xwayland_display = Some(display_number);
                                 }
                                 Err(error) => eprintln!("X11 WM start: {error}"),
                             }

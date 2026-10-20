@@ -11,7 +11,8 @@
 > 当前 macOS 默认 **MTKView/Metal** 原生叠加层，非 macOS 或
 > `MIXUM_NATIVE_METAL=0` 回退 WebView canvas；输入/IME/剪贴板仍由
 > WebView 处理。XWayland 已接入（toplevel/override-redirect/输入/双向
-> 剪贴板）；X11 XIM 输入法与 GPU/dmabuf 零拷贝仍未接入。
+> 剪贴板）；X11 文本用 XTEST + 临时 keymap 注入 Unicode，XIM 输入法协议
+与 GPU/dmabuf 零拷贝仍未接入。
 
 ## 1. 目标
 
@@ -200,7 +201,7 @@ surface 各自一个窗口，关闭 `art-b` 后收到 `surface.destroy` 且 `art
 | **B0 ✅** | `mixum-env-compositor` Smithay headless + 单 toplevel surface 转发；宿主单窗口 PNG 全量 | 容器内 foot/Chromium 起窗，宿主查看器显示 |
 | **B1 ✅** | damage 补丁、焦点/指针/键盘；多窗口；Tauri + MAP | 每个 surface 独立窗口；Tauri 通过 MAP WSS 扫描/打开/输入 |
 | **B2 ✅（终端 IME 待补）** | subsurface/popup、输入、剪贴板、text-input IME | 弹窗/输入/剪贴板可用；foot 等终端的 IME 仍有限制 |
-| **B3 ✅（X11 XIM/拖拽待补）** | XWayland、A 回退、拖拽 | X11 toplevel/菜单/键鼠/剪贴板可用；XIM 未接 |
+| **B3 ✅（X11 XIM/拖拽待补）** | XWayland、A 回退、拖拽 | X11 toplevel/菜单/键鼠/剪贴板/Unicode 文本可用；XIM 未接 |
 | **B4** | GPU/dmabuf 零拷贝、远端自适应（视频回退） | 等 virtio-gpu/venus、宿主 GPU 导入成熟 |
 
 GPU 零拷贝（dmabuf/venus/SR-IOV）**等待成熟**：Apple Container/VM 目前
