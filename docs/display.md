@@ -1,15 +1,16 @@
 # 显示与 Wayland 合成器（B 路线，设计/实现）
 
-> 状态：**B0/B1 MVP 已实现**（2026-10-19）。容器内 Smithay 合成器把
-> toplevel 的 `wl_shm` buffer + damage 转发到宿主 minifb 窗口，指针/键盘
-> 经同一 TCP 连接回传到 seat。A 路线（mixcomp 捕获 + damage 补丁 + PNG）
+> 状态：**B0/B1/B2 已实现**（2026-10-20）。容器内 Smithay 合成器把
+> toplevel + subsurface/popup 的 `wl_shm` buffer + damage 转发到宿主；
+> 指针/键盘经 MAP 回传到 seat，text-input IME 与剪贴板已接。A 路线（mixcomp 捕获 + damage 补丁 + PNG）
 > 在 mixumOS 侧独立推进，两者共用同一套 surface/damage 传输语义。
 >
 > 本版已支持**多 surface**：每个 toplevel 一个宿主窗口，surface.create /
 > frame / destroy 按 id 路由。宿主已接进 Tauri：`窗口`页扫描 art compositor
 > 并开独立窗口，帧走 Tauri 事件、输入走 `surface_input` 命令。
-> 当前渲染是 **WebView canvas**，不是 Metal/CAMetalLayer 原生纹理；
-> subsurface/popup、IME/clipboard、XWayland 和 GPU 零拷贝仍未接入。
+> 当前 macOS 默认 **MTKView/Metal** 原生叠加层，非 macOS 或
+> `MIXUM_NATIVE_METAL=0` 回退 WebView canvas；输入/IME/剪贴板仍由
+> WebView 处理。XWayland 和 GPU/dmabuf 零拷贝仍未接入。
 
 ## 1. 目标
 
@@ -122,7 +123,7 @@ surface.frame {
 | `crates/mixum-env-surface` | 共享 wire 协议：surface 元数据、frame/patch、input |
 | `crates/mixum-env-compositor` | 容器内 Smithay headless 合成器（Linux） |
 | `crates/mixum-env-display` | 宿主 `mixum-art-viewer`（minifb 窗口 + 输入，直连 TCP 调试） |
-| `crates/mixum-env-map` | 宿主 MAP WSS 客户端（TOFU + display.list/attach/input） |
+| `crates/mixum-env-map` | 宿主 MAP WSS 客户端（TOFU + display.list/attach/input/clipboard） |
 | `apps/desktop/src-tauri/src/macos` | macOS MTKView/Metal 原生 surface 叠加层；WebView 负责输入 |
 
 当前 wire：
@@ -197,8 +198,8 @@ surface 各自一个窗口，关闭 `art-b` 后收到 `surface.destroy` 且 `art
 |------|------|----------|
 | **B0 ✅** | `mixum-env-compositor` Smithay headless + 单 toplevel surface 转发；宿主单窗口 PNG 全量 | 容器内 foot/Chromium 起窗，宿主查看器显示 |
 | **B1 ✅** | damage 补丁、焦点/指针/键盘；多窗口；Tauri + MAP | 每个 surface 独立窗口；Tauri 通过 MAP WSS 扫描/打开/输入 |
-| **B2** | subsurface/popup、剪贴板、IME、缩放 | Chromium 菜单/弹窗/中文输入正常 |
-| **B3** | XWayland（或保留 A 作为 X11 回退）、拖拽 | 常见 X11 应用可用 |
+| **B2 ✅（终端 IME 待补）** | subsurface/popup、输入、剪贴板、text-input IME | 弹窗/输入/剪贴板可用；foot 等终端的 IME 仍有限制 |
+| **B3（A 回退已接）** | XWayland 或保留 A 作为 X11 回退、拖拽 | X11 走手动 A；XWayland 未实现 |
 | **B4** | GPU/dmabuf 零拷贝、远端自适应（视频回退） | 等 virtio-gpu/venus、宿主 GPU 导入成熟 |
 
 GPU 零拷贝（dmabuf/venus/SR-IOV）**等待成熟**：Apple Container/VM 目前
