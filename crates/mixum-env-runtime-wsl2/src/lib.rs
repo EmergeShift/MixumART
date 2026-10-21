@@ -171,6 +171,28 @@ impl RuntimeBackend for Wsl2Backend {
         }
     }
 
+    async fn logs(&self, id: &str, tail: usize) -> Result<Vec<String>, EnvError> {
+        ensure_windows()?;
+        check_managed("logs", id)?;
+        let tail = tail.clamp(1, 2000);
+        let script = format!(
+            "journalctl -u mixumd -n {tail} --no-pager 2>/dev/null || \
+             tail -n {tail} /var/log/mixumd.log 2>/dev/null || \
+             dmesg 2>/dev/null | tail -n {tail}"
+        );
+        let args = ["-d", id, "-e", "sh", "-lc", &script];
+        let (success, stdout, stderr) = run_wsl(&args, LIST_TIMEOUT).await?;
+        if !success {
+            return Err(failed(&args, &stdout, &stderr));
+        }
+        Ok(stdout
+            .lines()
+            .map(str::trim_end)
+            .filter(|line| !line.is_empty())
+            .map(ToOwned::to_owned)
+            .collect())
+    }
+
     async fn remove_container(&self, id: &str) -> Result<(), EnvError> {
         ensure_windows()?;
         check_managed("remove_container", id)?;
