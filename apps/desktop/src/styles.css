@@ -1062,6 +1062,7 @@ input:focus {
 /* ---- 独立窗口（SurfaceView） ---- */
 
 .surface-view {
+  position: relative;
   height: 100vh;
   display: flex;
   flex-direction: column;
@@ -1243,4 +1244,56 @@ input:focus {
   .connect-panel {
     padding: 13px;
   }
+}
+
+.surface-toolbar {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 5;
+  display: flex;
+  gap: 8px;
+}
+
+.surface-toolbar .ghost {
+  background: rgba(255, 255, 255, 0.86);
+  backdrop-filter: blur(6px);
+}
+
+.snapshot-panel {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.snapshot-panel .section-head {
+  margin-bottom: 8px;
+}
+
+.snapshot-panel h4 {
+  margin: 0;
+  font-family: var(--serif);
+  font-size: 15px;
+}
+
+.snapshot-create {
+  display: flex;
+  gap: 8px;
+  margin: 8px 0 10px;
+}
+
+.snapshot-create input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  background: var(--surface-2);
+  color: var(--ink);
+  padding: 7px 9px;
+  font: inherit;
+  font-size: 13px;
+}
+
+.snapshot-table {
+  margin-top: 4px;
 }
