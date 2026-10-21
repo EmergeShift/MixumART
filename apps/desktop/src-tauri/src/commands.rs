@@ -6,10 +6,13 @@
 //! 3. `lib.rs` 的 `generate_handler!` 注册；
 //! 4. 前端 `src/api.ts` 包一层带类型的 invoke。
 
+use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
-use mixum_env_core::{BackendStatus, Container, RuntimeKind};
+use mixum_env_core::{BackendStatus, Container, CreateSpec, RuntimeKind};
 use serde::Serialize;
+use serde_json::Value;
 use tauri::State;
 
 use crate::AppState;
@@ -51,6 +54,486 @@ pub async fn list_containers(
         .list_containers()
         .await
         .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+pub async fn runtime_images(
+    kind: RuntimeKind,
+    state: State<'_, AppState>,
+) -> Result<Vec<String>, String> {
+    let backend = state
+        .registry
+        .get(kind)
+        .ok_or_else(|| format!("没有注册 {kind} 后端"))?;
+    backend.images().await.map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn runtime_disk_usage(
+    kind: RuntimeKind,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let backend = state
+        .registry
+        .get(kind)
+        .ok_or_else(|| format!("没有注册 {kind} 后端"))?;
+    backend
+        .disk_usage()
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn runtime_logs(
+    kind: RuntimeKind,
+    id: String,
+    tail: usize,
+    state: State<'_, AppState>,
+) -> Result<Vec<String>, String> {
+    let backend = state
+        .registry
+        .get(kind)
+        .ok_or_else(|| format!("没有注册 {kind} 后端"))?;
+    backend
+        .logs(&id, tail)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+// ---------------------------------------------------------------------------
+// 本地 Agent 注册表：MART 只保存“怎么启动”的配置，不保存凭据。
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentProfile {
+    pub id: String,
+    pub name: String,
+    pub kind: String,
+    pub mode: String,
+    pub core: String,
+    #[serde(default)]
+    pub command: String,
+}
+
+fn agent_profiles_path(app: &AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_data_dir()
+        .map(|dir| dir.join("agents.json"))
+        .map_err(|error| format!("无法定位应用数据目录：{error}"))
+}
+
+fn load_agent_map(app: &AppHandle) -> Result<HashMap<String, AgentProfile>, String> {
+    let path = agent_profiles_path(app)?;
+    match std::fs::read_to_string(&path) {
+        Ok(text) => {
+            serde_json::from_str(&text).map_err(|error| format!("Agent 配置格式错误：{error}"))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(HashMap::new()),
+        Err(error) => Err(format!("读取 Agent 配置失败：{error}")),
+    }
+}
+
+fn save_agent_map(app: &AppHandle, profiles: &HashMap<String, AgentProfile>) -> Result<(), String> {
+    let path = agent_profiles_path(app)?;
+    let Some(dir) = path.parent() else {
+        return Err("Agent 配置路径没有父目录".into());
+    };
+    std::fs::create_dir_all(dir).map_err(|error| format!("创建应用数据目录失败：{error}"))?;
+    let temp = dir.join(format!(".agents-{}.tmp", std::process::id()));
+    let text = serde_json::to_string_pretty(profiles)
+        .map_err(|error| format!("序列化 Agent 配置失败：{error}"))?;
+    std::fs::write(&temp, text).map_err(|error| format!("写入 Agent 配置失败：{error}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o600))
+            .map_err(|error| format!("设置 Agent 配置权限失败：{error}"))?;
+    }
+    std::fs::rename(&temp, &path).map_err(|error| format!("提交 Agent 配置失败：{error}"))
+}
+
+const KEYRING_SERVICE: &str = "mixum-art-agent";
+
+fn keyring_entry(agent_id: &str) -> Result<keyring::Entry, String> {
+    keyring::Entry::new(KEYRING_SERVICE, agent_id)
+        .map_err(|error| format!("打开系统钥匙串失败：{error}"))
+}
+
+#[tauri::command]
+pub fn set_agent_credential(agent_id: String, secret: String) -> Result<(), String> {
+    if secret.is_empty() {
+        return Err("凭据不能为空".into());
+    }
+    keyring_entry(&agent_id)?
+        .set_password(&secret)
+        .map_err(|error| format!("写入系统钥匙串失败：{error}"))
+}
+
+#[tauri::command]
+pub fn delete_agent_credential(agent_id: String) -> Result<(), String> {
+    match keyring_entry(&agent_id)?.delete_credential() {
+        Ok(()) => Ok(()),
+        Err(keyring::Error::NoEntry) => Ok(()),
+        Err(error) => Err(format!("删除系统钥匙串条目失败：{error}")),
+    }
+}
+
+#[tauri::command]
+pub fn has_agent_credential(agent_id: String) -> Result<bool, String> {
+    match keyring_entry(&agent_id)?.get_password() {
+        Ok(_) => Ok(true),
+        Err(keyring::Error::NoEntry) => Ok(false),
+        Err(error) => Err(format!("读取系统钥匙串失败：{error}")),
+    }
+}
+
+#[tauri::command]
+pub fn load_agent_profiles(app: AppHandle) -> Result<Vec<AgentProfile>, String> {
+    let mut profiles: Vec<_> = load_agent_map(&app)?.into_values().collect();
+    profiles.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(profiles)
+}
+
+#[tauri::command]
+pub fn save_agent_profile(app: AppHandle, profile: AgentProfile) -> Result<(), String> {
+    if profile.name.trim().is_empty() {
+        return Err("Agent 名称不能为空".into());
+    }
+    let mut profiles = load_agent_map(&app)?;
+    profiles.insert(profile.id.clone(), profile);
+    save_agent_map(&app, &profiles)
+}
+
+#[tauri::command]
+pub fn remove_agent_profile(app: AppHandle, id: String) -> Result<(), String> {
+    let mut profiles = load_agent_map(&app)?;
+    profiles.remove(&id);
+    save_agent_map(&app, &profiles)
+}
+
+// ---------------------------------------------------------------------------
+// 环境写操作：当前仅 WSL2 后端实现，其它后端会返回 Unimplemented。
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn start_environment(
+    kind: RuntimeKind,
+    id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let backend = state
+        .registry
+        .get(kind)
+        .ok_or_else(|| format!("没有注册 {kind} 后端"))?;
+    backend
+        .start_container(&id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn stop_environment(
+    kind: RuntimeKind,
+    id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let backend = state
+        .registry
+        .get(kind)
+        .ok_or_else(|| format!("没有注册 {kind} 后端"))?;
+    backend
+        .stop_container(&id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn remove_environment(
+    kind: RuntimeKind,
+    id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let backend = state
+        .registry
+        .get(kind)
+        .ok_or_else(|| format!("没有注册 {kind} 后端"))?;
+    backend
+        .remove_container(&id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn create_environment(
+    kind: RuntimeKind,
+    spec: CreateSpec,
+    state: State<'_, AppState>,
+) -> Result<Container, String> {
+    let backend = state
+        .registry
+        .get(kind)
+        .ok_or_else(|| format!("没有注册 {kind} 后端"))?;
+    backend
+        .create_container(spec)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+// ---------------------------------------------------------------------------
+// 环境连接档案：容器 → MAP 地址/令牌/指纹。
+//
+// 令牌不写 localStorage；落到 app_data_dir/connections.json（Unix 0600）。
+// 这里不是钥匙串实现，后续可以替换成系统 keychain，而不改前端命令形状。
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnvironmentConnection {
+    pub addr: String,
+    pub token: String,
+    #[serde(default)]
+    pub fingerprint: Option<String>,
+}
+
+fn connections_path(app: &AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_data_dir()
+        .map(|dir| dir.join("connections.json"))
+        .map_err(|error| format!("无法定位应用数据目录：{error}"))
+}
+
+fn load_connection_map(app: &AppHandle) -> Result<HashMap<String, EnvironmentConnection>, String> {
+    let path = connections_path(app)?;
+    match std::fs::read_to_string(&path) {
+        Ok(text) => {
+            serde_json::from_str(&text).map_err(|error| format!("连接档案格式错误：{error}"))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(HashMap::new()),
+        Err(error) => Err(format!("读取连接档案失败：{error}")),
+    }
+}
+
+fn save_connection_map(
+    app: &AppHandle,
+    connections: &HashMap<String, EnvironmentConnection>,
+) -> Result<(), String> {
+    let path = connections_path(app)?;
+    let Some(dir) = path.parent() else {
+        return Err("连接档案路径没有父目录".into());
+    };
+    std::fs::create_dir_all(dir).map_err(|error| format!("创建应用数据目录失败：{error}"))?;
+    let temp = dir.join(format!(".connections-{}.tmp", std::process::id()));
+    let text = serde_json::to_string_pretty(connections)
+        .map_err(|error| format!("序列化连接档案失败：{error}"))?;
+    std::fs::write(&temp, text).map_err(|error| format!("写入连接档案失败：{error}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o600))
+            .map_err(|error| format!("设置连接档案权限失败：{error}"))?;
+    }
+    std::fs::rename(&temp, &path).map_err(|error| format!("提交连接档案失败：{error}"))
+}
+
+fn connection_for(app: &AppHandle, container_id: &str) -> Result<EnvironmentConnection, String> {
+    load_connection_map(app)?
+        .remove(container_id)
+        .ok_or_else(|| format!("环境 {container_id} 还没有连接档案"))
+}
+
+async fn snapshot_client(app: &AppHandle, container_id: &str) -> Result<MapClient, String> {
+    let connection = connection_for(app, container_id)?;
+    MapClient::connect(
+        &connection.addr,
+        &connection.token,
+        connection.fingerprint.as_deref(),
+    )
+    .await
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn environment_snapshot_tree(
+    app: AppHandle,
+    container_id: String,
+) -> Result<Value, String> {
+    let client = snapshot_client(&app, &container_id).await?;
+    client
+        .snapshot_tree()
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn environment_snapshot_create(
+    app: AppHandle,
+    container_id: String,
+    label: Option<String>,
+) -> Result<Value, String> {
+    let client = snapshot_client(&app, &container_id).await?;
+    client
+        .snapshot_create(label.as_deref())
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn environment_snapshot_restore(
+    app: AppHandle,
+    container_id: String,
+    node: String,
+) -> Result<Value, String> {
+    let client = snapshot_client(&app, &container_id).await?;
+    client
+        .snapshot_restore(&node)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn environment_snapshot_fork(
+    app: AppHandle,
+    container_id: String,
+    node: String,
+    branch: String,
+) -> Result<Value, String> {
+    let client = snapshot_client(&app, &container_id).await?;
+    client
+        .snapshot_fork(&node, &branch)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommandResult {
+    pub task_id: String,
+    pub state: String,
+    pub lines: Vec<String>,
+    pub error: Option<String>,
+}
+
+#[tauri::command]
+pub async fn environment_run_command(
+    app: AppHandle,
+    container_id: String,
+    command: String,
+) -> Result<CommandResult, String> {
+    let connection = connection_for(&app, &container_id)?;
+    let client = MapClient::connect(
+        &connection.addr,
+        &connection.token,
+        connection.fingerprint.as_deref(),
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    let mut events = client.events();
+    client
+        .subscribe_task_events()
+        .await
+        .map_err(|error| error.to_string())?;
+    let task_id = client
+        .submit_shell_task(&command)
+        .await
+        .map_err(|error| error.to_string())?;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(600);
+    let mut lines = Vec::new();
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return Err(format!("命令执行超时，任务 {task_id} 仍在运行"));
+        }
+        let event = tokio::time::timeout(remaining, events.recv())
+            .await
+            .map_err(|_| format!("命令执行超时，任务 {task_id} 仍在运行"))?
+            .map_err(|error| format!("事件通道关闭：{error}"))?;
+        if event.op != "task.event" {
+            continue;
+        }
+        let Some(task_id_value) = event.payload.get("taskId").and_then(Value::as_str) else {
+            continue;
+        };
+        if task_id_value != task_id {
+            continue;
+        }
+        let event_type = event
+            .payload
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let data = event.payload.get("data").cloned().unwrap_or(Value::Null);
+        match event_type {
+            "log" => {
+                if let Some(line) = data.get("line").and_then(Value::as_str) {
+                    lines.push(line.to_owned());
+                }
+            }
+            "state" => {
+                let state = data
+                    .get("state")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned();
+                if state == "completed" {
+                    return Ok(CommandResult {
+                        task_id,
+                        state,
+                        lines,
+                        error: None,
+                    });
+                }
+                if state == "failed" || state == "canceled" {
+                    let error = event
+                        .payload
+                        .get("data")
+                        .and_then(|data| data.get("message"))
+                        .and_then(Value::as_str)
+                        .map(ToOwned::to_owned);
+                    return Ok(CommandResult {
+                        task_id,
+                        state,
+                        lines,
+                        error,
+                    });
+                }
+            }
+            "error" => {
+                lines.push(format!(
+                    "错误：{}",
+                    data.get("message")
+                        .and_then(Value::as_str)
+                        .unwrap_or("任务失败")
+                ));
+            }
+            _ => {}
+        }
+    }
+}
+
+#[tauri::command]
+pub fn load_environment_connections(
+    app: AppHandle,
+) -> Result<HashMap<String, EnvironmentConnection>, String> {
+    load_connection_map(&app)
+}
+
+#[tauri::command]
+pub fn save_environment_connection(
+    app: AppHandle,
+    container_id: String,
+    connection: EnvironmentConnection,
+) -> Result<(), String> {
+    let mut connections = load_connection_map(&app)?;
+    connections.insert(container_id, connection);
+    save_connection_map(&app, &connections)
+}
+
+#[tauri::command]
+pub fn remove_environment_connection(app: AppHandle, container_id: String) -> Result<(), String> {
+    let mut connections = load_connection_map(&app)?;
+    connections.remove(&container_id);
+    save_connection_map(&app, &connections)
 }
 
 // ---------------------------------------------------------------------------
@@ -120,7 +603,7 @@ pub fn open_surface_window(app: AppHandle, request: OpenSurfaceRequest) -> Resul
         .title(if title.is_empty() {
             "MixumART surface".to_string()
         } else {
-            format!("MixumART · {title}")
+            format!("MixumART · {title} · Ctrl/Cmd+Shift+T 接管")
         })
         .inner_size(width.max(320) as f64, height.max(240) as f64)
         // 沉浸式标题栏只属于 MART 主窗口；容器应用窗口保留普通系统标题栏。
@@ -196,10 +679,7 @@ pub fn open_surface_window(app: AppHandle, request: OpenSurfaceRequest) -> Resul
         let client = Arc::new(client);
         {
             let state = app_for_session.state::<AppState>();
-            let mut clients = state
-                .surface_clients
-                .lock()
-                .expect("surface clients lock");
+            let mut clients = state.surface_clients.lock().expect("surface clients lock");
             clients.insert(surface, client.clone());
         }
         // 先订阅再 attach：stream.start 触发的全量重放不能丢。
@@ -311,6 +791,29 @@ pub async fn surface_put_file(
         .ok_or_else(|| "surface 尚未连接".to_string())?;
     client
         .put_file(&name, &data)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn surface_takeover(
+    app: AppHandle,
+    surface: u32,
+    action: String,
+) -> Result<String, String> {
+    let client = {
+        let state = app.state::<AppState>();
+        let clients = state
+            .surface_clients
+            .lock()
+            .map_err(|error| error.to_string())?;
+        clients.get(&surface).cloned()
+    };
+    let Some(client) = client else {
+        return Err(format!("surface {surface} 没有打开的窗口"));
+    };
+    client
+        .takeover(surface, &action, true)
         .await
         .map_err(|error| error.to_string())
 }

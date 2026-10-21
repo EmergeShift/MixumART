@@ -124,6 +124,21 @@ pub trait RuntimeBackend: Send + Sync {
     async fn remove_container(&self, _id: &str) -> Result<(), EnvError> {
         Err(EnvError::unimplemented("remove_container"))
     }
+
+    /// 镜像引用列表（Docker/Apple Container 支持；WSL2 无镜像概念）。
+    async fn images(&self) -> Result<Vec<String>, EnvError> {
+        Err(EnvError::unimplemented("images"))
+    }
+
+    /// 运行时磁盘占用的人类可读摘要。
+    async fn disk_usage(&self) -> Result<String, EnvError> {
+        Err(EnvError::unimplemented("disk_usage"))
+    }
+
+    /// 容器最近日志。WSL2 没有统一的容器日志接口，默认不支持。
+    async fn logs(&self, _id: &str, _tail: usize) -> Result<Vec<String>, EnvError> {
+        Err(EnvError::unimplemented("logs"))
+    }
 }
 
 /// 后端注册表。应用启动时装配一次，之后只读。

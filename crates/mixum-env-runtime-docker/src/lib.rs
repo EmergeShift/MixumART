@@ -7,13 +7,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use mixum_env_core::container::{Container, ContainerState, PortMapping};
+use mixum_env_core::container::{Container, ContainerState, CreateSpec, PortMapping};
 use mixum_env_core::error::EnvError;
 use mixum_env_core::process;
 use mixum_env_core::runtime::{RuntimeBackend, RuntimeKind, RuntimeStatus};
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 const LIST_TIMEOUT: Duration = Duration::from_secs(10);
+const CREATE_TIMEOUT: Duration = Duration::from_secs(600);
+const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 const DAEMON_HINT: &str = "启动 Docker Desktop 或 colima 后点刷新";
 
 /// 应用装配入口。
@@ -55,6 +57,94 @@ impl RuntimeBackend for DockerBackend {
         let out = process::run("docker", &args, LIST_TIMEOUT).await?;
         let stdout = out.into_stdout("docker ps")?;
         parse_ps(&stdout)
+    }
+
+    async fn create_container(&self, spec: CreateSpec) -> Result<Container, EnvError> {
+        let mut args: Vec<String> = vec!["create".into(), "--name".into(), spec.name.clone()];
+        for port in &spec.ports {
+            args.push("-p".into());
+            args.push(format!(
+                "{}:{}/{}",
+                port.host, port.container, port.protocol
+            ));
+        }
+        for mount in &spec.mounts {
+            args.push("--mount".into());
+            let mut value = format!("type=bind,source={},target={}", mount.source, mount.target);
+            if mount.read_only {
+                value.push_str(",readonly");
+            }
+            args.push(value);
+        }
+        for (key, value) in &spec.env {
+            args.push("-e".into());
+            args.push(format!("{key}={value}"));
+        }
+        args.push(spec.image);
+        args.extend(spec.command);
+        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        let out = process::run("docker", &refs, CREATE_TIMEOUT).await?;
+        let id = out.into_stdout("docker create")?;
+        let containers = self.list_containers().await?;
+        containers
+            .into_iter()
+            .find(|container| container.id == id || container.name == spec.name)
+            .ok_or_else(|| EnvError::Parse(format!("docker create 后找不到容器 {id}")))
+    }
+
+    async fn start_container(&self, id: &str) -> Result<(), EnvError> {
+        let out = process::run("docker", &["start", id], WRITE_TIMEOUT).await?;
+        out.into_stdout("docker start").map(|_| ())
+    }
+
+    async fn stop_container(&self, id: &str) -> Result<(), EnvError> {
+        let out = process::run("docker", &["stop", id], WRITE_TIMEOUT).await?;
+        out.into_stdout("docker stop").map(|_| ())
+    }
+
+    async fn remove_container(&self, id: &str) -> Result<(), EnvError> {
+        let out = process::run("docker", &["rm", "-f", id], WRITE_TIMEOUT).await?;
+        out.into_stdout("docker rm").map(|_| ())
+    }
+
+    async fn images(&self) -> Result<Vec<String>, EnvError> {
+        let out = process::run(
+            "docker",
+            &["images", "--format", "{{.Repository}}:{{.Tag}}"],
+            LIST_TIMEOUT,
+        )
+        .await?;
+        let stdout = out.into_stdout("docker images")?;
+        Ok(stdout
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.contains(":<none>"))
+            .map(ToOwned::to_owned)
+            .collect())
+    }
+
+    async fn disk_usage(&self) -> Result<String, EnvError> {
+        let out = process::run("docker", &["system", "df"], LIST_TIMEOUT).await?;
+        out.into_stdout("docker system df")
+    }
+
+    async fn logs(&self, id: &str, tail: usize) -> Result<Vec<String>, EnvError> {
+        let tail = tail.to_string();
+        let out = process::run("docker", &["logs", "--tail", &tail, id], LIST_TIMEOUT).await?;
+        if !out.success {
+            return Err(EnvError::CommandFailed {
+                command: format!("docker logs {id}"),
+                stderr: out.stderr,
+            });
+        }
+        let mut lines: Vec<String> = out
+            .stdout
+            .lines()
+            .chain(out.stderr.lines())
+            .map(str::to_owned)
+            .collect();
+        lines.truncate(tail.parse().unwrap_or(usize::MAX));
+        Ok(lines)
     }
 }
 

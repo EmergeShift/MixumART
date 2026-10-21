@@ -5,6 +5,7 @@ import type { AgentMode, BackendStatus, Container } from '../types'
 
 type Props = {
   backends: BackendStatus[] | null
+  onOpenEnvironments: () => void
 }
 
 const MODE_LABEL: Record<AgentMode, string> = {
@@ -13,7 +14,7 @@ const MODE_LABEL: Record<AgentMode, string> = {
   isolated: '完全隔离',
 }
 
-export function Cockpit({ backends }: Props) {
+export function Cockpit({ backends, onOpenEnvironments }: Props) {
   const ready = useMemo(
     () => (backends ?? []).filter((backend) => backend.status.state === 'ready'),
     [backends],
@@ -69,7 +70,7 @@ export function Cockpit({ backends }: Props) {
             <div className="section-head">
               <div>
                 <h2>正在运行</h2>
-                <p>每一行是一个环境。右侧可以直接监看画面或进入终端。</p>
+                <p>每一行是一个环境；进入环境页可以连接、打开窗口或运行命令。</p>
               </div>
             </div>
 
@@ -108,11 +109,8 @@ export function Cockpit({ backends }: Props) {
                       </small>
                     </div>
                     <div className="env-actions">
-                      <button className="ghost" disabled title="画面接入后可用">
-                        监看
-                      </button>
-                      <button className="ghost" disabled title="终端接入后可用">
-                        终端
+                      <button className="ghost" onClick={onOpenEnvironments}>
+                        管理
                       </button>
                     </div>
                   </div>
@@ -156,8 +154,8 @@ export function Cockpit({ backends }: Props) {
                       <span className="mono">{container.image}</span>
                     </div>
                     <div className="env-actions">
-                      <button className="ghost" disabled title="环境管理接入后可用">
-                        继续
+                      <button className="ghost" onClick={onOpenEnvironments}>
+                        管理
                       </button>
                     </div>
                   </div>

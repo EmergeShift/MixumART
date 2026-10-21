@@ -184,7 +184,9 @@ export default function App() {
 
           <div className={`content ${isHome ? 'content-home' : 'content-page'}`}>
             {error && <div className="error">{error}</div>}
-            {tab === 'cockpit' && <Cockpit backends={backends} />}
+            {tab === 'cockpit' && (
+              <Cockpit backends={backends} onOpenEnvironments={() => setTab('containers')} />
+            )}
             {tab === 'containers' && <Containers backends={backends} />}
             {tab === 'surfaces' && <Surfaces />}
             {tab === 'agents' && <Agents />}

@@ -108,11 +108,18 @@ struct ListResponse {
     windows: Vec<WindowInfo>,
 }
 
+#[derive(Debug, Clone)]
+pub struct PushEvent {
+    pub op: String,
+    pub payload: Value,
+}
+
 #[derive(Clone)]
 pub struct MapClient {
     tx: mpsc::Sender<Message>,
     pending: Arc<Mutex<HashMap<String, oneshot::Sender<Envelope>>>>,
     frames: broadcast::Sender<Frame>,
+    events: broadcast::Sender<PushEvent>,
     pub fingerprint: String,
 }
 
@@ -178,10 +185,12 @@ impl MapClient {
         let (mut write, mut read) = stream.split();
         let (tx, mut outgoing) = mpsc::channel::<Message>(64);
         let (frame_tx, _) = broadcast::channel(128);
+        let (event_tx, _) = broadcast::channel(256);
         let pending: Arc<Mutex<HashMap<String, oneshot::Sender<Envelope>>>> =
             Arc::new(Mutex::new(HashMap::new()));
         let reader_pending = Arc::clone(&pending);
         let reader_frames = frame_tx.clone();
+        let reader_events = event_tx.clone();
         tokio::spawn(async move {
             while let Some(message) = read.next().await {
                 match message {
@@ -199,6 +208,10 @@ impl MapClient {
                                 continue;
                             }
                         }
+                        let _ = reader_events.send(PushEvent {
+                            op: envelope.op,
+                            payload: envelope.payload,
+                        });
                     }
                     Ok(Message::Binary(data)) => {
                         if let Some(frame) = parse_video(&data) {
@@ -223,6 +236,7 @@ impl MapClient {
             tx,
             pending,
             frames: frame_tx,
+            events: event_tx,
             fingerprint,
         };
         let hello = client
@@ -278,6 +292,91 @@ impl MapClient {
         Ok(text)
     }
 
+    /// Subscribe to push envelopes (task events, window events, ...).
+    pub fn events(&self) -> broadcast::Receiver<PushEvent> {
+        self.events.subscribe()
+    }
+
+    pub async fn subscribe_task_events(&self) -> Result<(), MapError> {
+        self.call("task.events", json!({})).await?;
+        Ok(())
+    }
+
+    /// Run a command through agentd's shell task driver; returns the task id.
+    pub async fn submit_shell_task(&self, command: &str) -> Result<String, MapError> {
+        let reply = self
+            .call(
+                "task.submit",
+                json!({
+                    "instruction": command,
+                    "agent": "shell",
+                    "params": { "cmd": command }
+                }),
+            )
+            .await?;
+        reply
+            .payload
+            .get("id")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)
+            .ok_or_else(|| MapError::Protocol("task.submit 未返回 id".into()))
+    }
+
+    /// Snapshot tree for a connected node (`snap.tree`).
+    pub async fn snapshot_tree(&self) -> Result<Value, MapError> {
+        Ok(self.call("snap.tree", json!({})).await?.payload)
+    }
+
+    /// Create a disk snapshot. `label` is optional; `auto=false` because this
+    /// is an explicit user action.
+    pub async fn snapshot_create(&self, label: Option<&str>) -> Result<Value, MapError> {
+        let mut payload = json!({ "kind": "disk", "auto": false });
+        if let Some(label) = label.filter(|label| !label.trim().is_empty()) {
+            payload["label"] = json!(label);
+        }
+        Ok(self.call("snap.create", payload).await?.payload)
+    }
+
+    /// Restore a snapshot in place. Callers must confirm because this is
+    /// destructive for the current worktree.
+    pub async fn snapshot_restore(&self, node: &str) -> Result<Value, MapError> {
+        self.call(
+            "snap.restore",
+            json!({ "node": node, "strategy": "inplace" }),
+        )
+        .await
+        .map(|reply| reply.payload)
+    }
+
+    /// Fork a snapshot into a new branch.
+    pub async fn snapshot_fork(&self, node: &str, branch: &str) -> Result<Value, MapError> {
+        self.call("snap.fork", json!({ "node": node, "branch": branch }))
+            .await
+            .map(|reply| reply.payload)
+    }
+
+    /// Claim/release a surface for the user. `force` is needed when an agent
+    /// currently owns the surface.
+    pub async fn takeover(
+        &self,
+        surface: u32,
+        action: &str,
+        force: bool,
+    ) -> Result<String, MapError> {
+        let reply = self
+            .call(
+                "display.takeover",
+                json!({ "window": surface, "action": action, "force": force }),
+            )
+            .await?;
+        reply
+            .payload
+            .get("mode")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)
+            .ok_or_else(|| MapError::Protocol("display.takeover 未返回 mode".into()))
+    }
+
     pub async fn input(
         &self,
         surface: u32,
@@ -316,7 +415,10 @@ impl MapClient {
             offset += chunk.len() as u64;
         }
         let digest = Sha256::digest(data);
-        let hash = digest.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+        let hash = digest
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
         let reply = self
             .call(
                 "file.put.commit",
