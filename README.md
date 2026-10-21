@@ -10,7 +10,7 @@
 
 **运行时管理**：三种运行时已注册；Docker、Apple Container、WSL 2 均支持
 探测、列举、创建/导入、启停和删除。环境页还支持连接档案、监看、快照、
-命令终端和日志；Agent 页保存本地配置，凭据写入系统钥匙串。
+命令终端和日志；连接令牌与 Agent 凭据都写入系统钥匙串。
 
 **显示原型（B0/B1/B2）**：`crates/mixum-env-compositor` 在容器内跑 Smithay
 headless 合成器，把每个 surface 的 buffer+damage 经 TCP/MAP 发给宿主。

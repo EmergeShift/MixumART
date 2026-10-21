@@ -139,6 +139,16 @@ pub trait RuntimeBackend: Send + Sync {
     async fn logs(&self, _id: &str, _tail: usize) -> Result<Vec<String>, EnvError> {
         Err(EnvError::unimplemented("logs"))
     }
+
+    /// 清理运行时未使用的数据；具体范围由后端决定，调用方必须先确认。
+    async fn prune(&self) -> Result<String, EnvError> {
+        Err(EnvError::unimplemented("prune"))
+    }
+
+    /// 拉取一个镜像引用。WSL2 没有镜像概念，默认不支持。
+    async fn pull_image(&self, _reference: &str) -> Result<(), EnvError> {
+        Err(EnvError::unimplemented("pull_image"))
+    }
 }
 
 /// 后端注册表。应用启动时装配一次，之后只读。

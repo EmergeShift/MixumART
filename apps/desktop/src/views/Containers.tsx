@@ -504,7 +504,7 @@ export function Containers({ backends }: Props) {
               <div className="section-head">
                 <div>
                   <h3>连接 {editor.name}</h3>
-                  <p>连接信息会保存在本机应用数据目录，不会写进快照。</p>
+                  <p>地址/指纹保存在应用数据目录，访问令牌写入系统钥匙串；都不会写进快照。</p>
                 </div>
                 <button className="ghost" onClick={() => setEditor(null)}>
                   取消
