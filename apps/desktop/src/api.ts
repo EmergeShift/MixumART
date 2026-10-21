@@ -6,6 +6,7 @@ import { demoBackends, demoContainers, demoHost, demoSurfaces, isDemo } from './
 import type {
   BackendStatus,
   Container,
+  CreateSpec,
   EnvironmentConnection,
   HostInfo,
   RuntimeKind,
@@ -32,6 +33,40 @@ export function errorText(err: unknown): string {
   if (typeof err === 'string') return err
   return JSON.stringify(err)
 }
+
+export const snapshotTree = (containerId: string) =>
+  isDemo()
+    ? demoDelay({ head: 'demo', branch: 'main', nodes: [] })
+    : invoke<unknown>('environment_snapshot_tree', { containerId })
+
+export const snapshotCreate = (containerId: string, label: string) =>
+  isDemo()
+    ? demoDelay({ id: 'demo', label })
+    : invoke<unknown>('environment_snapshot_create', { containerId, label: label || null })
+
+export const snapshotRestore = (containerId: string, node: string) =>
+  isDemo()
+    ? demoDelay({ restoredTo: node })
+    : invoke<unknown>('environment_snapshot_restore', { containerId, node })
+
+export const snapshotFork = (containerId: string, node: string, branch: string) =>
+  isDemo()
+    ? demoDelay({ branch })
+    : invoke<unknown>('environment_snapshot_fork', { containerId, node, branch })
+
+export const startEnvironment = (kind: RuntimeKind, id: string) =>
+  isDemo() ? demoDelay(undefined) : invoke<void>('start_environment', { kind, id })
+
+export const stopEnvironment = (kind: RuntimeKind, id: string) =>
+  isDemo() ? demoDelay(undefined) : invoke<void>('stop_environment', { kind, id })
+
+export const removeEnvironment = (kind: RuntimeKind, id: string) =>
+  isDemo() ? demoDelay(undefined) : invoke<void>('remove_environment', { kind, id })
+
+export const createEnvironment = (kind: RuntimeKind, spec: CreateSpec) =>
+  isDemo()
+    ? demoDelay(demoContainers[0])
+    : invoke<Container>('create_environment', { kind, spec })
 
 export const loadEnvironmentConnections = () =>
   isDemo()
@@ -82,6 +117,11 @@ export const openSurfaceWindow = (
 
 export const surfaceInput = (surface: number, event: SurfaceInputEvent) =>
   isDemo() ? Promise.resolve() : invoke<void>('surface_input', { surface, event })
+
+export const surfaceTakeover = (surface: number, action: 'claim' | 'release') =>
+  isDemo()
+    ? demoDelay(action === 'claim' ? 'user' : 'free')
+    : invoke<string>('surface_takeover', { surface, action })
 
 export const remoteClipboard = (surface: number) =>
   isDemo() ? Promise.resolve('clipboard unavailable in demo') : invoke<string>('remote_clipboard', { surface })

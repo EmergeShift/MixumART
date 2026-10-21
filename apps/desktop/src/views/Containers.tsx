@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 
 import {
+  createEnvironment,
   errorText,
   listContainers,
   listSurfaces,
@@ -8,6 +9,11 @@ import {
   openSurfaceWindow,
   removeEnvironmentConnection,
   saveEnvironmentConnection,
+  snapshotCreate,
+  snapshotRestore,
+  snapshotTree,
+  startEnvironment,
+  stopEnvironment,
 } from '../api'
 import type {
   AgentMode,
@@ -15,6 +21,7 @@ import type {
   Container,
   EnvironmentConnection,
   RuntimeKind,
+  SnapshotTree,
   SurfaceInfo,
 } from '../types'
 
@@ -68,6 +75,16 @@ export function Containers({ backends }: Props) {
   const [surfaces, setSurfaces] = useState<SurfaceInfo[] | null>(null)
   const [surfaceError, setSurfaceError] = useState<string | null>(null)
   const [surfaceLoading, setSurfaceLoading] = useState(false)
+  const [creating, setCreating] = useState(false)
+  const [createDraft, setCreateDraft] = useState({ name: 'mixum-node', image: '' })
+  const [actionId, setActionId] = useState<string | null>(null)
+  const [snapshots, setSnapshots] = useState<SnapshotTree | null>(null)
+  const [snapshotError, setSnapshotError] = useState<string | null>(null)
+  const [snapshotLoading, setSnapshotLoading] = useState(false)
+  const [snapshotLabel, setSnapshotLabel] = useState('')
+  const [snapshotAction, setSnapshotAction] = useState<string | null>(null)
+
+  const canManage = kind === 'wsl2'
 
   useEffect(() => {
     if (kind === null && ready.length > 0) setKind(ready[0].kind)
@@ -109,6 +126,19 @@ export function Containers({ backends }: Props) {
     })
   }
 
+  const loadSnapshots = async (container: Container) => {
+    setSnapshotLoading(true)
+    setSnapshotError(null)
+    try {
+      setSnapshots((await snapshotTree(container.id)) as SnapshotTree)
+    } catch (err) {
+      setSnapshotError(errorText(err))
+      setSnapshots(null)
+    } finally {
+      setSnapshotLoading(false)
+    }
+  }
+
   const browse = async (container: Container, profile?: EnvironmentConnection) => {
     const connection = profile ?? connections[container.id]
     if (!connection) {
@@ -120,6 +150,7 @@ export function Containers({ backends }: Props) {
     setSurfaces(null)
     setSurfaceError(null)
     setSurfaceLoading(true)
+    void loadSnapshots(container)
     try {
       setSurfaces(
         await listSurfaces(
@@ -189,16 +220,93 @@ export function Containers({ backends }: Props) {
     }
   }
 
+  const create = async () => {
+    if (!kind || !createDraft.name.trim() || !createDraft.image.trim()) {
+      setError('名称和 rootfs tar 路径都不能为空')
+      return
+    }
+    setActionId('create')
+    setError(null)
+    try {
+      await createEnvironment(kind, {
+        name: createDraft.name.trim(),
+        image: createDraft.image.trim(),
+        ports: [],
+        mounts: [],
+        env: {},
+        command: [],
+      })
+      setCreating(false)
+      await load()
+    } catch (err) {
+      setError(errorText(err))
+    } finally {
+      setActionId(null)
+    }
+  }
+
+  const runAction = async (container: Container, action: 'start' | 'stop') => {
+    if (!kind) return
+    setActionId(container.id)
+    setError(null)
+    try {
+      if (action === 'start') await startEnvironment(kind, container.id)
+      else await stopEnvironment(kind, container.id)
+      await load()
+    } catch (err) {
+      setError(errorText(err))
+    } finally {
+      setActionId(null)
+    }
+  }
+
+  const createSnapshot = async () => {
+    if (!browser) return
+    setSnapshotAction('create')
+    setSnapshotError(null)
+    try {
+      await snapshotCreate(browser.id, snapshotLabel)
+      setSnapshotLabel('')
+      await loadSnapshots(browser)
+    } catch (err) {
+      setSnapshotError(errorText(err))
+    } finally {
+      setSnapshotAction(null)
+    }
+  }
+
+  const restoreSnapshot = async (node: string) => {
+    if (!browser) return
+    if (!window.confirm(`回退到快照 ${node}？当前工作区会被替换。`)) return
+    setSnapshotAction(node)
+    setSnapshotError(null)
+    try {
+      await snapshotRestore(browser.id, node)
+      await loadSnapshots(browser)
+    } catch (err) {
+      setSnapshotError(errorText(err))
+    } finally {
+      setSnapshotAction(null)
+    }
+  }
+
   return (
     <section>
       <div className="section-head">
         <div>
           <h2>全部环境</h2>
-          <p>连接环境后可以打开它的窗口；暂停、继续与终端入口会随环境管理功能上线。</p>
+          <p>连接环境后可以打开它的窗口；WSL 环境支持创建、启动和停止，终端入口后续接入。</p>
         </div>
-        <button className="ghost" onClick={() => void load()} disabled={loading || kind === null}>
-          {loading ? '读取中…' : '刷新'}
-        </button>
+        <div className="row-actions">
+          {canManage && (
+            <button className="ghost" onClick={() => setCreating((value) => !value)}>
+              {creating ? '取消创建' : '创建环境'}
+            </button>
+          )}
+          <button className="ghost" onClick={() => void load()} disabled={loading || kind === null}>
+            {loading ? '读取中…' : '刷新'}
+          </button>
+        </div>
       </div>
 
       {backends === null ? (
@@ -223,6 +331,50 @@ export function Containers({ backends }: Props) {
           </div>
 
           {error && <div className="error">{error}</div>}
+
+          {creating && canManage && (
+            <section className="connect-panel" aria-label="创建环境">
+              <div className="section-head">
+                <div>
+                  <h3>创建 WSL 2 环境</h3>
+                  <p>从 rootfs tar 导入一个 mixumOS 节点。导入完成后还需要连接它的 MAP 地址。</p>
+                </div>
+              </div>
+              <div className="connect-grid">
+                <div className="field">
+                  <label htmlFor="create-name">环境名称</label>
+                  <input
+                    id="create-name"
+                    className="mono"
+                    value={createDraft.name}
+                    onChange={(event) => setCreateDraft({ ...createDraft, name: event.target.value })}
+                    spellCheck={false}
+                  />
+                </div>
+                <div className="field">
+                  <label htmlFor="create-image">rootfs tar 路径</label>
+                  <input
+                    id="create-image"
+                    className="mono"
+                    value={createDraft.image}
+                    onChange={(event) => setCreateDraft({ ...createDraft, image: event.target.value })}
+                    placeholder="C:\mixum\rootfs.tar"
+                    spellCheck={false}
+                  />
+                </div>
+              </div>
+              {error && <div className="error">{error}</div>}
+              <div className="connect-actions">
+                <button
+                  className="primary"
+                  onClick={() => void create()}
+                  disabled={actionId === 'create'}
+                >
+                  {actionId === 'create' ? '导入中…' : '导入环境'}
+                </button>
+              </div>
+            </section>
+          )}
 
           {editor && (
             <section className="connect-panel" aria-label={`连接 ${editor.name}`}>
@@ -327,6 +479,79 @@ export function Containers({ backends }: Props) {
                   </tbody>
                 </table>
               )}
+
+              <div className="snapshot-panel">
+                <div className="section-head">
+                  <div>
+                    <h4>快照</h4>
+                    <p className="muted">
+                      {snapshots?.branch ? `分支 ${snapshots.branch}` : '读取当前快照树'}
+                    </p>
+                  </div>
+                  <button
+                    className="ghost"
+                    onClick={() => void loadSnapshots(browser)}
+                    disabled={snapshotLoading}
+                  >
+                    刷新
+                  </button>
+                </div>
+                <div className="snapshot-create">
+                  <input
+                    value={snapshotLabel}
+                    onChange={(event) => setSnapshotLabel(event.target.value)}
+                    placeholder="快照标签（可选）"
+                    spellCheck={false}
+                  />
+                  <button
+                    className="ghost"
+                    onClick={() => void createSnapshot()}
+                    disabled={snapshotAction === 'create'}
+                  >
+                    创建快照
+                  </button>
+                </div>
+                {snapshotError && <div className="error">{snapshotError}</div>}
+                {snapshotLoading ? (
+                  <p className="muted">读取快照树…</p>
+                ) : !snapshots || (snapshots.nodes ?? []).length === 0 ? (
+                  <p className="muted">暂无快照。</p>
+                ) : (
+                  <table className="table snapshot-table">
+                    <thead>
+                      <tr>
+                        <th>快照</th>
+                        <th>分支</th>
+                        <th>类型</th>
+                        <th />
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(snapshots.nodes ?? []).map((node) => (
+                        <tr key={node.id}>
+                          <td>
+                            <div className="cell-stack">
+                              <span>{node.label || node.id.slice(0, 12)}</span>
+                              <span className="mono muted">{node.id.slice(0, 16)}</span>
+                            </div>
+                          </td>
+                          <td className="mono muted">{node.branch}</td>
+                          <td className="tag">{node.kind}</td>
+                          <td className="row-actions">
+                            <button
+                              className="ghost"
+                              onClick={() => void restoreSnapshot(node.id)}
+                              disabled={snapshotAction === node.id}
+                            >
+                              回退
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
             </section>
           )}
 
@@ -394,6 +619,24 @@ export function Containers({ backends }: Props) {
                         >
                           {connection ? '监看' : '连接'}
                         </button>
+                        {canManage && container.state !== 'running' && container.state !== 'paused' && (
+                          <button
+                            className="ghost"
+                            onClick={() => void runAction(container, 'start')}
+                            disabled={actionId === container.id}
+                          >
+                            启动
+                          </button>
+                        )}
+                        {canManage && container.state === 'running' && (
+                          <button
+                            className="ghost"
+                            onClick={() => void runAction(container, 'stop')}
+                            disabled={actionId === container.id}
+                          >
+                            停止
+                          </button>
+                        )}
                         <button className="ghost" disabled title="终端接入后可用">
                           终端
                         </button>

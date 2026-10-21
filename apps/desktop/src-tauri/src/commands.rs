@@ -10,8 +10,9 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use mixum_env_core::{BackendStatus, Container, RuntimeKind};
+use mixum_env_core::{BackendStatus, Container, CreateSpec, RuntimeKind};
 use serde::Serialize;
+use serde_json::Value;
 use tauri::State;
 
 use crate::AppState;
@@ -56,6 +57,74 @@ pub async fn list_containers(
 }
 
 // ---------------------------------------------------------------------------
+// 环境写操作：当前仅 WSL2 后端实现，其它后端会返回 Unimplemented。
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn start_environment(
+    kind: RuntimeKind,
+    id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let backend = state
+        .registry
+        .get(kind)
+        .ok_or_else(|| format!("没有注册 {kind} 后端"))?;
+    backend
+        .start_container(&id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn stop_environment(
+    kind: RuntimeKind,
+    id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let backend = state
+        .registry
+        .get(kind)
+        .ok_or_else(|| format!("没有注册 {kind} 后端"))?;
+    backend
+        .stop_container(&id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn remove_environment(
+    kind: RuntimeKind,
+    id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let backend = state
+        .registry
+        .get(kind)
+        .ok_or_else(|| format!("没有注册 {kind} 后端"))?;
+    backend
+        .remove_container(&id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn create_environment(
+    kind: RuntimeKind,
+    spec: CreateSpec,
+    state: State<'_, AppState>,
+) -> Result<Container, String> {
+    let backend = state
+        .registry
+        .get(kind)
+        .ok_or_else(|| format!("没有注册 {kind} 后端"))?;
+    backend
+        .create_container(spec)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+// ---------------------------------------------------------------------------
 // 环境连接档案：容器 → MAP 地址/令牌/指纹。
 //
 // 令牌不写 localStorage；落到 app_data_dir/connections.json（Unix 0600）。
@@ -81,8 +150,9 @@ fn connections_path(app: &AppHandle) -> Result<PathBuf, String> {
 fn load_connection_map(app: &AppHandle) -> Result<HashMap<String, EnvironmentConnection>, String> {
     let path = connections_path(app)?;
     match std::fs::read_to_string(&path) {
-        Ok(text) => serde_json::from_str(&text)
-            .map_err(|error| format!("连接档案格式错误：{error}")),
+        Ok(text) => {
+            serde_json::from_str(&text).map_err(|error| format!("连接档案格式错误：{error}"))
+        }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(HashMap::new()),
         Err(error) => Err(format!("读取连接档案失败：{error}")),
     }
@@ -108,6 +178,75 @@ fn save_connection_map(
             .map_err(|error| format!("设置连接档案权限失败：{error}"))?;
     }
     std::fs::rename(&temp, &path).map_err(|error| format!("提交连接档案失败：{error}"))
+}
+
+fn connection_for(app: &AppHandle, container_id: &str) -> Result<EnvironmentConnection, String> {
+    load_connection_map(app)?
+        .remove(container_id)
+        .ok_or_else(|| format!("环境 {container_id} 还没有连接档案"))
+}
+
+async fn snapshot_client(app: &AppHandle, container_id: &str) -> Result<MapClient, String> {
+    let connection = connection_for(app, container_id)?;
+    MapClient::connect(
+        &connection.addr,
+        &connection.token,
+        connection.fingerprint.as_deref(),
+    )
+    .await
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn environment_snapshot_tree(
+    app: AppHandle,
+    container_id: String,
+) -> Result<Value, String> {
+    let client = snapshot_client(&app, &container_id).await?;
+    client
+        .snapshot_tree()
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn environment_snapshot_create(
+    app: AppHandle,
+    container_id: String,
+    label: Option<String>,
+) -> Result<Value, String> {
+    let client = snapshot_client(&app, &container_id).await?;
+    client
+        .snapshot_create(label.as_deref())
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn environment_snapshot_restore(
+    app: AppHandle,
+    container_id: String,
+    node: String,
+) -> Result<Value, String> {
+    let client = snapshot_client(&app, &container_id).await?;
+    client
+        .snapshot_restore(&node)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn environment_snapshot_fork(
+    app: AppHandle,
+    container_id: String,
+    node: String,
+    branch: String,
+) -> Result<Value, String> {
+    let client = snapshot_client(&app, &container_id).await?;
+    client
+        .snapshot_fork(&node, &branch)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -278,10 +417,7 @@ pub fn open_surface_window(app: AppHandle, request: OpenSurfaceRequest) -> Resul
         let client = Arc::new(client);
         {
             let state = app_for_session.state::<AppState>();
-            let mut clients = state
-                .surface_clients
-                .lock()
-                .expect("surface clients lock");
+            let mut clients = state.surface_clients.lock().expect("surface clients lock");
             clients.insert(surface, client.clone());
         }
         // 先订阅再 attach：stream.start 触发的全量重放不能丢。
@@ -393,6 +529,29 @@ pub async fn surface_put_file(
         .ok_or_else(|| "surface 尚未连接".to_string())?;
     client
         .put_file(&name, &data)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn surface_takeover(
+    app: AppHandle,
+    surface: u32,
+    action: String,
+) -> Result<String, String> {
+    let client = {
+        let state = app.state::<AppState>();
+        let clients = state
+            .surface_clients
+            .lock()
+            .map_err(|error| error.to_string())?;
+        clients.get(&surface).cloned()
+    };
+    let Some(client) = client else {
+        return Err(format!("surface {surface} 没有打开的窗口"));
+    };
+    client
+        .takeover(surface, &action, true)
         .await
         .map_err(|error| error.to_string())
 }

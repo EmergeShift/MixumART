@@ -51,6 +51,32 @@ export type EnvironmentConnection = {
   fingerprint?: string | null
 }
 
+export type CreateSpec = {
+  name: string
+  image: string
+  ports?: PortMapping[]
+  mounts?: unknown[]
+  env?: Record<string, string>
+  command?: string[]
+}
+
+export type SnapshotNode = {
+  id: string
+  parent?: string | null
+  branch: string
+  label?: string | null
+  kind: string
+  createdAt?: string | null
+  sizeBytes?: number
+  chunks?: number
+}
+
+export type SnapshotTree = {
+  head?: string | null
+  branch?: string | null
+  nodes?: SnapshotNode[]
+}
+
 export type HostInfo = {
   os: string
   arch: string
