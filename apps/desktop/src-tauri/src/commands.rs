@@ -153,6 +153,41 @@ fn save_agent_map(app: &AppHandle, profiles: &HashMap<String, AgentProfile>) -> 
     std::fs::rename(&temp, &path).map_err(|error| format!("提交 Agent 配置失败：{error}"))
 }
 
+const KEYRING_SERVICE: &str = "mixum-art-agent";
+
+fn keyring_entry(agent_id: &str) -> Result<keyring::Entry, String> {
+    keyring::Entry::new(KEYRING_SERVICE, agent_id)
+        .map_err(|error| format!("打开系统钥匙串失败：{error}"))
+}
+
+#[tauri::command]
+pub fn set_agent_credential(agent_id: String, secret: String) -> Result<(), String> {
+    if secret.is_empty() {
+        return Err("凭据不能为空".into());
+    }
+    keyring_entry(&agent_id)?
+        .set_password(&secret)
+        .map_err(|error| format!("写入系统钥匙串失败：{error}"))
+}
+
+#[tauri::command]
+pub fn delete_agent_credential(agent_id: String) -> Result<(), String> {
+    match keyring_entry(&agent_id)?.delete_credential() {
+        Ok(()) => Ok(()),
+        Err(keyring::Error::NoEntry) => Ok(()),
+        Err(error) => Err(format!("删除系统钥匙串条目失败：{error}")),
+    }
+}
+
+#[tauri::command]
+pub fn has_agent_credential(agent_id: String) -> Result<bool, String> {
+    match keyring_entry(&agent_id)?.get_password() {
+        Ok(_) => Ok(true),
+        Err(keyring::Error::NoEntry) => Ok(false),
+        Err(error) => Err(format!("读取系统钥匙串失败：{error}")),
+    }
+}
+
 #[tauri::command]
 pub fn load_agent_profiles(app: AppHandle) -> Result<Vec<AgentProfile>, String> {
     let mut profiles: Vec<_> = load_agent_map(&app)?.into_values().collect();
