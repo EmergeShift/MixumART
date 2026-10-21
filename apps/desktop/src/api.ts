@@ -91,6 +91,25 @@ export const snapshotFork = (containerId: string, node: string, branch: string) 
     ? demoDelay({ branch })
     : invoke<unknown>('environment_snapshot_fork', { containerId, node, branch })
 
+export type MigrationFile = {
+  path: string
+  size: number
+  sha256: string
+}
+
+export const snapshotExport = (containerId: string, node: string) =>
+  isDemo()
+    ? demoDelay<MigrationFile>({ path: '/tmp/demo.mart', size: 0, sha256: '' })
+    : invoke<MigrationFile>('environment_snapshot_export', { containerId, node })
+
+export const snapshotImport = (containerId: string, path: string, origin?: string) =>
+  isDemo()
+    ? demoDelay('demo-node')
+    : invoke<string>('environment_snapshot_import', { containerId, path, origin })
+
+export const listMigrations = () =>
+  isDemo() ? demoDelay<MigrationFile[]>([]) : invoke<MigrationFile[]>('list_migrations')
+
 export type AgentProfile = {
   id: string
   name: string

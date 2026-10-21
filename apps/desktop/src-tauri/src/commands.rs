@@ -7,12 +7,13 @@
 //! 4. 前端 `src/api.ts` 包一层带类型的 invoke。
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use mixum_env_core::{BackendStatus, Container, CreateSpec, RuntimeKind};
 use serde::Serialize;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use tauri::State;
 
 use crate::AppState;
@@ -532,6 +533,133 @@ pub async fn environment_snapshot_fork(
         .snapshot_fork(&node, &branch)
         .await
         .map_err(|error| error.to_string())
+}
+
+fn migration_dir() -> PathBuf {
+    dirs::cache_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("mixum/migrations")
+}
+
+/// 列出本机缓存里的迁移包（`.mart`）。
+#[tauri::command]
+pub async fn list_migrations() -> Result<Vec<MigrationFile>, String> {
+    let dir = migration_dir();
+    let mut out = Vec::new();
+    let Ok(mut entries) = tokio::fs::read_dir(&dir).await else {
+        return Ok(out);
+    };
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("mart") {
+            continue;
+        }
+        let Ok(metadata) = entry.metadata().await else {
+            continue;
+        };
+        out.push(MigrationFile {
+            path: path.to_string_lossy().into_owned(),
+            size: metadata.len(),
+            sha256: String::new(),
+        });
+    }
+    out.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(out)
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MigrationFile {
+    pub path: String,
+    pub size: u64,
+    pub sha256: String,
+}
+
+/// 导出快照节点为 `.mart` 并下载到本机缓存。用户不需要手工拖文件。
+#[tauri::command]
+pub async fn environment_snapshot_export(
+    app: AppHandle,
+    container_id: String,
+    node: String,
+) -> Result<MigrationFile, String> {
+    let client = snapshot_client(&app, &container_id).await?;
+    let reply = client
+        .snapshot_export(&node)
+        .await
+        .map_err(|error| error.to_string())?;
+    let file = reply
+        .get("file")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "snap.export 未返回 file".to_string())?
+        .to_owned();
+    let expected = reply
+        .get("sha256")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+
+    let data = client
+        .get_file(&format!("transfers/{file}"))
+        .await
+        .map_err(|error| error.to_string())?;
+    let actual: String = Sha256::digest(&data)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    if !expected.is_empty() && actual != expected {
+        return Err("迁移文件 sha256 校验失败".into());
+    }
+
+    let dir = migration_dir();
+    tokio::fs::create_dir_all(&dir)
+        .await
+        .map_err(|error| format!("创建迁移缓存目录: {error}"))?;
+    let name = Path::new(&file)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "迁移文件名无效".to_string())?;
+    let path = dir.join(name);
+    tokio::fs::write(&path, &data)
+        .await
+        .map_err(|error| format!("写入迁移文件: {error}"))?;
+
+    Ok(MigrationFile {
+        path: path.to_string_lossy().into_owned(),
+        size: data.len() as u64,
+        sha256: actual,
+    })
+}
+
+/// 把本机 `.mart` 上传到目标环境并导入为快照节点。
+#[tauri::command]
+pub async fn environment_snapshot_import(
+    app: AppHandle,
+    container_id: String,
+    path: String,
+    origin: Option<String>,
+) -> Result<String, String> {
+    let data = tokio::fs::read(&path)
+        .await
+        .map_err(|error| format!("读取迁移文件: {error}"))?;
+    let name = Path::new(&path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "迁移文件名无效".to_string())?
+        .to_owned();
+    let client = snapshot_client(&app, &container_id).await?;
+    client
+        .put_file(&name, &data)
+        .await
+        .map_err(|error| error.to_string())?;
+    let reply = client
+        .snapshot_import(&name, origin.as_deref().unwrap_or("mixumart"))
+        .await
+        .map_err(|error| error.to_string())?;
+    reply
+        .get("node")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| "snap.import 未返回 node".to_string())
 }
 
 #[derive(Debug, serde::Serialize)]
