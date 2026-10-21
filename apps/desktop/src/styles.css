@@ -1223,7 +1223,7 @@ input:focus {
 .primary {
   border: 1px solid var(--accent);
   background: var(--accent);
-  color: #fff;
+  color: var(--on-accent);
   border-radius: 7px;
   padding: 7px 12px;
   font: inherit;
@@ -1373,4 +1373,13 @@ input:focus {
   padding: 7px 9px;
   font: inherit;
   font-size: 13px;
+}
+
+.table-scroll {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.table-scroll > .table {
+  min-width: 760px;
 }
