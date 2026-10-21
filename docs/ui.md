@@ -39,11 +39,11 @@ agent 用。界面承载三件事：
 
 | 视图 | 文件 | 数据来源 | 状态 |
 |------|------|----------|------|
-| 总览 | `src/views/Cockpit.tsx` | `list_containers`（聚合可用运行时） | 已实现；接管/终端/日志按钮待后端 |
-| 容器 | `src/views/Containers.tsx` | `list_containers` | 已实现；行内动作待后端 |
-| 窗口 | `src/views/Surfaces.tsx` | `list_surfaces` / `open_surface_window` | 已实现（MAP 连接扫描） |
-| Agent | `src/views/Agents.tsx` | 本地界面状态 | 界面完成；连接器/装配/凭证待后端 |
-| 设置 | `src/views/Settings.tsx` | `runtime_status` + 宿主信息 | 运行时已实现；mixumOS 设置待接入 |
+| 总览 | `src/views/Cockpit.tsx` | `list_containers`（聚合可用运行时） | 已实现；环境操作跳转到环境页 |
+| 容器 | `src/views/Containers.tsx` | `list_containers` + 连接档案 | 已实现：创建/启动/停止/删除、连接/监看、快照、命令终端、日志 |
+| 窗口 | `src/views/Surfaces.tsx` / `SurfaceView.tsx` | `list_surfaces` / `open_surface_window` | 已实现；接管支持按钮或 Ctrl/Cmd+Shift+T |
+| Agent | `src/views/Agents.tsx` | 本地 Agent 配置 | 已实现配置持久化；外部连接器与凭据仍由外部 Agent 负责 |
+| 设置 | `src/views/Settings.tsx` | `runtime_status` + 资源命令 | 已实现运行时状态、镜像列表、磁盘占用 |
 
 ## 3. 数据与演示模式
 
@@ -83,5 +83,5 @@ agent 用。界面承载三件事：
   专业词汇首次出现时用一句话解释（如内存快照的同一内核约束）；
 - **窗口的 A/B 通道是开发约定，不暴露给用户**：A（mixcomp）显示为
   「兼容模式」，B（合成器）显示为「增强模式」，并在页内解释各自含义；
-- 尚未接入的能力按钮禁用并带 title 说明，不显示会报错的假按钮；
+- 命令终端每条命令独立执行；持久 PTY 尚未接入；Agent 凭据不进入 MART。
 - 技术标识（`apple_container`、地址、路径）用等宽字体，不翻译，放在次要位置。
