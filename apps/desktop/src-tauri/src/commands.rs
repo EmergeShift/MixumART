@@ -6,6 +6,8 @@
 //! 3. `lib.rs` 的 `generate_handler!` 注册；
 //! 4. 前端 `src/api.ts` 包一层带类型的 invoke。
 
+use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use mixum_env_core::{BackendStatus, Container, RuntimeKind};
@@ -51,6 +53,86 @@ pub async fn list_containers(
         .list_containers()
         .await
         .map_err(|err| err.to_string())
+}
+
+// ---------------------------------------------------------------------------
+// 环境连接档案：容器 → MAP 地址/令牌/指纹。
+//
+// 令牌不写 localStorage；落到 app_data_dir/connections.json（Unix 0600）。
+// 这里不是钥匙串实现，后续可以替换成系统 keychain，而不改前端命令形状。
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnvironmentConnection {
+    pub addr: String,
+    pub token: String,
+    #[serde(default)]
+    pub fingerprint: Option<String>,
+}
+
+fn connections_path(app: &AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_data_dir()
+        .map(|dir| dir.join("connections.json"))
+        .map_err(|error| format!("无法定位应用数据目录：{error}"))
+}
+
+fn load_connection_map(app: &AppHandle) -> Result<HashMap<String, EnvironmentConnection>, String> {
+    let path = connections_path(app)?;
+    match std::fs::read_to_string(&path) {
+        Ok(text) => serde_json::from_str(&text)
+            .map_err(|error| format!("连接档案格式错误：{error}")),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(HashMap::new()),
+        Err(error) => Err(format!("读取连接档案失败：{error}")),
+    }
+}
+
+fn save_connection_map(
+    app: &AppHandle,
+    connections: &HashMap<String, EnvironmentConnection>,
+) -> Result<(), String> {
+    let path = connections_path(app)?;
+    let Some(dir) = path.parent() else {
+        return Err("连接档案路径没有父目录".into());
+    };
+    std::fs::create_dir_all(dir).map_err(|error| format!("创建应用数据目录失败：{error}"))?;
+    let temp = dir.join(format!(".connections-{}.tmp", std::process::id()));
+    let text = serde_json::to_string_pretty(connections)
+        .map_err(|error| format!("序列化连接档案失败：{error}"))?;
+    std::fs::write(&temp, text).map_err(|error| format!("写入连接档案失败：{error}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o600))
+            .map_err(|error| format!("设置连接档案权限失败：{error}"))?;
+    }
+    std::fs::rename(&temp, &path).map_err(|error| format!("提交连接档案失败：{error}"))
+}
+
+#[tauri::command]
+pub fn load_environment_connections(
+    app: AppHandle,
+) -> Result<HashMap<String, EnvironmentConnection>, String> {
+    load_connection_map(&app)
+}
+
+#[tauri::command]
+pub fn save_environment_connection(
+    app: AppHandle,
+    container_id: String,
+    connection: EnvironmentConnection,
+) -> Result<(), String> {
+    let mut connections = load_connection_map(&app)?;
+    connections.insert(container_id, connection);
+    save_connection_map(&app, &connections)
+}
+
+#[tauri::command]
+pub fn remove_environment_connection(app: AppHandle, container_id: String) -> Result<(), String> {
+    let mut connections = load_connection_map(&app)?;
+    connections.remove(&container_id);
+    save_connection_map(&app, &connections)
 }
 
 // ---------------------------------------------------------------------------

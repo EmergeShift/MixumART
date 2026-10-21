@@ -6,6 +6,7 @@ import { demoBackends, demoContainers, demoHost, demoSurfaces, isDemo } from './
 import type {
   BackendStatus,
   Container,
+  EnvironmentConnection,
   HostInfo,
   RuntimeKind,
   SurfaceInfo,
@@ -31,6 +32,24 @@ export function errorText(err: unknown): string {
   if (typeof err === 'string') return err
   return JSON.stringify(err)
 }
+
+export const loadEnvironmentConnections = () =>
+  isDemo()
+    ? demoDelay<Record<string, EnvironmentConnection>>({})
+    : invoke<Record<string, EnvironmentConnection>>('load_environment_connections')
+
+export const saveEnvironmentConnection = (
+  containerId: string,
+  connection: EnvironmentConnection,
+) =>
+  isDemo()
+    ? demoDelay(undefined)
+    : invoke<void>('save_environment_connection', { containerId, connection })
+
+export const removeEnvironmentConnection = (containerId: string) =>
+  isDemo()
+    ? demoDelay(undefined)
+    : invoke<void>('remove_environment_connection', { containerId })
 
 export const listSurfaces = (addr: string, token: string, fingerprint?: string) =>
   isDemo()
