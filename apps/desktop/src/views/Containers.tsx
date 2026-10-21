@@ -7,6 +7,7 @@ import {
   listSurfaces,
   loadEnvironmentConnections,
   openSurfaceWindow,
+  runEnvironmentCommand,
   removeEnvironmentConnection,
   saveEnvironmentConnection,
   snapshotCreate,
@@ -83,6 +84,11 @@ export function Containers({ backends }: Props) {
   const [snapshotLoading, setSnapshotLoading] = useState(false)
   const [snapshotLabel, setSnapshotLabel] = useState('')
   const [snapshotAction, setSnapshotAction] = useState<string | null>(null)
+  const [terminal, setTerminal] = useState<Container | null>(null)
+  const [terminalLines, setTerminalLines] = useState<string[]>([])
+  const [terminalCommand, setTerminalCommand] = useState('')
+  const [terminalRunning, setTerminalRunning] = useState(false)
+  const [terminalError, setTerminalError] = useState<string | null>(null)
 
   const canManage = kind !== null
 
@@ -146,6 +152,7 @@ export function Containers({ backends }: Props) {
       return
     }
     setEditor(null)
+    setTerminal(null)
     setBrowser(container)
     setSurfaces(null)
     setSurfaceError(null)
@@ -260,6 +267,37 @@ export function Containers({ backends }: Props) {
       setError(errorText(err))
     } finally {
       setActionId(null)
+    }
+  }
+
+  const openTerminal = (container: Container) => {
+    if (!connections[container.id]) {
+      openEditor(container)
+      return
+    }
+    setBrowser(null)
+    setEditor(null)
+    setTerminal(container)
+    setTerminalLines([])
+    setTerminalCommand('')
+    setTerminalError(null)
+  }
+
+  const runCommand = async () => {
+    if (!terminal || !terminalCommand.trim()) return
+    const command = terminalCommand.trim()
+    setTerminalRunning(true)
+    setTerminalError(null)
+    setTerminalCommand('')
+    setTerminalLines((previous) => [...previous, `$ ${command}`])
+    try {
+      const result = await runEnvironmentCommand(terminal.id, command)
+      setTerminalLines((previous) => [...previous, ...result.lines])
+      if (result.error) setTerminalError(result.error)
+    } catch (err) {
+      setTerminalError(errorText(err))
+    } finally {
+      setTerminalRunning(false)
     }
   }
 
@@ -395,6 +433,44 @@ export function Containers({ backends }: Props) {
                   {actionId === 'create' ? '导入中…' : '导入环境'}
                 </button>
               </div>
+            </section>
+          )}
+
+          {terminal && (
+            <section className="connect-panel terminal-panel" aria-label={`${terminal.name} 的命令终端`}>
+              <div className="section-head">
+                <div>
+                  <h3>{terminal.name} · 命令终端</h3>
+                  <p>每条命令在环境里独立执行；后续会接入持久 PTY。</p>
+                </div>
+                <button className="ghost" onClick={() => setTerminal(null)}>
+                  关闭
+                </button>
+              </div>
+              <pre className="terminal-output">
+                {terminalLines.length > 0 ? terminalLines.join('\n') : '输入命令并回车。'}
+              </pre>
+              {terminalError && <div className="error">{terminalError}</div>}
+              <form
+                className="terminal-input"
+                onSubmit={(event) => {
+                  event.preventDefault()
+                  void runCommand()
+                }}
+              >
+                <span className="mono">$</span>
+                <input
+                  className="mono"
+                  value={terminalCommand}
+                  onChange={(event) => setTerminalCommand(event.target.value)}
+                  placeholder="例如 ls -la /var/lib/mixum"
+                  spellCheck={false}
+                  autoFocus
+                />
+                <button className="primary" type="submit" disabled={terminalRunning}>
+                  {terminalRunning ? '执行中…' : '运行'}
+                </button>
+              </form>
             </section>
           )}
 
@@ -659,7 +735,11 @@ export function Containers({ backends }: Props) {
                             停止
                           </button>
                         )}
-                        <button className="ghost" disabled title="终端接入后可用">
+                        <button
+                          className="ghost"
+                          onClick={() => openTerminal(container)}
+                          title="运行一条命令（独立进程）"
+                        >
                           终端
                         </button>
                       </td>

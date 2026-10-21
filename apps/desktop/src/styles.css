@@ -1297,3 +1297,55 @@ input:focus {
 .snapshot-table {
   margin-top: 4px;
 }
+
+.terminal-panel {
+  background: #141318;
+  border-color: #2b2931;
+  color: #d8d4cb;
+}
+
+.terminal-panel h3 {
+  color: #f0ece3;
+}
+
+.terminal-output {
+  min-height: 180px;
+  max-height: 320px;
+  overflow: auto;
+  margin: 10px 0;
+  padding: 10px;
+  border-radius: 8px;
+  background: #0b0a0e;
+  color: #d8d4cb;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.terminal-input {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.terminal-input > span {
+  color: #8fd19e;
+}
+
+.terminal-input input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid #3a3742;
+  border-radius: 7px;
+  background: #1c1a21;
+  color: #f0ece3;
+  padding: 8px 9px;
+  font: inherit;
+  font-size: 13px;
+}
+
+.terminal-input input:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
