@@ -1184,6 +1184,7 @@ pub fn open_environment_surface(
             addr: connection.addr,
             token: connection.token,
             fingerprint: connection.fingerprint,
+            node: None,
             surface,
             title,
             width,
@@ -1233,11 +1234,96 @@ pub async fn list_surfaces(
     addr: String,
     token: String,
     fingerprint: Option<String>,
+    node: Option<String>,
 ) -> Result<Vec<SurfaceInfo>, String> {
     let client = MapClient::connect(&addr, &token, fingerprint.as_deref())
         .await
         .map_err(|error| error.to_string())?;
+    client.set_node(node);
     client.list().await.map_err(|error| error.to_string())
+}
+
+/// gateway.node.list:列出 gateway 背后的在线节点(RFC 0003)。
+#[tauri::command]
+pub async fn gateway_nodes(
+    addr: String,
+    token: String,
+    fingerprint: Option<String>,
+) -> Result<Vec<String>, String> {
+    let client = MapClient::connect(&addr, &token, fingerprint.as_deref())
+        .await
+        .map_err(|error| error.to_string())?;
+    client.node_list().await.map_err(|error| error.to_string())
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PairCode {
+    pub code: String,
+    pub expires_in: u64,
+}
+
+/// 用户会话生成一次性配对码(5 分钟)。
+#[tauri::command]
+pub async fn gateway_pair_create(
+    addr: String,
+    token: String,
+    fingerprint: Option<String>,
+) -> Result<PairCode, String> {
+    let client = MapClient::connect(&addr, &token, fingerprint.as_deref())
+        .await
+        .map_err(|error| error.to_string())?;
+    let (code, expires_in) = client
+        .pair_create()
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(PairCode { code, expires_in })
+}
+
+/// 未认证设备用配对码换设备令牌(RFC 0003)。
+#[tauri::command]
+pub async fn gateway_pair_claim(
+    addr: String,
+    code: String,
+    device_name: String,
+    fingerprint: Option<String>,
+) -> Result<mixum_env_map::PairClaim, String> {
+    MapClient::pair_claim(&addr, &code, &device_name, fingerprint.as_deref())
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// 当前用户已配对设备(owner 隔离由服务端保证)。
+#[tauri::command]
+pub async fn gateway_devices(
+    addr: String,
+    token: String,
+    fingerprint: Option<String>,
+) -> Result<Vec<mixum_env_map::DeviceInfo>, String> {
+    let client = MapClient::connect(&addr, &token, fingerprint.as_deref())
+        .await
+        .map_err(|error| error.to_string())?;
+    client
+        .device_list()
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// 吊销设备令牌(owner 或 admin)。
+#[tauri::command]
+pub async fn gateway_revoke_device(
+    addr: String,
+    token: String,
+    fingerprint: Option<String>,
+    jti: String,
+) -> Result<bool, String> {
+    let client = MapClient::connect(&addr, &token, fingerprint.as_deref())
+        .await
+        .map_err(|error| error.to_string())?;
+    client
+        .device_revoke(&jti)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -1247,6 +1333,9 @@ pub struct OpenSurfaceRequest {
     pub token: String,
     #[serde(default)]
     pub fingerprint: Option<String>,
+    /// gateway 路由目标;直连节点忽略。
+    #[serde(default)]
+    pub node: Option<String>,
     pub surface: u32,
     #[serde(default)]
     pub title: String,
@@ -1262,6 +1351,7 @@ pub fn open_surface_window(app: AppHandle, request: OpenSurfaceRequest) -> Resul
         addr,
         token,
         fingerprint,
+        node,
         surface,
         title,
         width,
@@ -1344,7 +1434,10 @@ pub fn open_surface_window(app: AppHandle, request: OpenSurfaceRequest) -> Resul
         tokio::time::sleep(Duration::from_millis(300)).await;
         eprintln!("surface {surface} MAP session ready");
         let client = match MapClient::connect(&addr, &token, fingerprint.as_deref()).await {
-            Ok(client) => client,
+            Ok(client) => {
+                client.set_node(node);
+                client
+            }
             Err(error) => {
                 let _ = app_for_session.emit_to(
                     &label_for_session,

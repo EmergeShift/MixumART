@@ -324,13 +324,37 @@ export const removeEnvironmentConnection = (containerId: string) =>
     ? demoDelay(undefined)
     : invoke<void>('remove_environment_connection', { containerId })
 
-export const listSurfaces = (addr: string, token: string, fingerprint?: string) =>
+export interface PairClaim {
+  token: string
+  deviceId: string
+}
+
+export interface PairCode {
+  code: string
+  expiresIn: number
+}
+
+export interface DeviceInfo {
+  jti: string
+  name: string
+  sub: string
+  owner: string
+  iat: number
+}
+
+export const listSurfaces = (
+  addr: string,
+  token: string,
+  fingerprint?: string,
+  node?: string,
+) =>
   isDemo()
     ? demoDelay(demoSurfaces)
     : invoke<SurfaceInfo[]>('list_surfaces', {
         addr,
         token,
         fingerprint: fingerprint || null,
+        node: node || null,
       })
 
 export const openSurfaceWindow = (
@@ -338,6 +362,7 @@ export const openSurfaceWindow = (
   token: string,
   fingerprint: string | undefined,
   surface: SurfaceInfo,
+  node?: string,
 ) =>
   isDemo()
     ? Promise.resolve()
@@ -346,11 +371,70 @@ export const openSurfaceWindow = (
           addr,
           token,
           fingerprint: fingerprint || null,
+          node: node || null,
           surface: surface.id,
           title: surface.title,
           width: surface.width,
           height: surface.height,
         },
+      })
+
+// gateway 控制面(RFC 0003):节点列表、配对码、设备管理。
+export const gatewayNodes = (addr: string, token: string, fingerprint?: string) =>
+  isDemo()
+    ? Promise.resolve([] as string[])
+    : invoke<string[]>('gateway_nodes', {
+        addr,
+        token,
+        fingerprint: fingerprint || null,
+      })
+
+export const gatewayPairCreate = (addr: string, token: string, fingerprint?: string) =>
+  isDemo()
+    ? Promise.resolve({ code: '000000', expiresIn: 300 })
+    : invoke<PairCode>('gateway_pair_create', {
+        addr,
+        token,
+        fingerprint: fingerprint || null,
+      })
+
+export const gatewayPairClaim = (
+  addr: string,
+  code: string,
+  deviceName: string,
+  fingerprint?: string,
+) =>
+  isDemo()
+    ? Promise.resolve({ token: 'demo-token', deviceId: 'demo-device' })
+    : invoke<PairClaim>('gateway_pair_claim', {
+        addr,
+        code,
+        deviceName,
+        fingerprint: fingerprint || null,
+      })
+
+export const gatewayDevices = (addr: string, token: string, fingerprint?: string) =>
+  isDemo()
+    ? Promise.resolve([] as DeviceInfo[])
+    : invoke<DeviceInfo[]>('gateway_devices', {
+        addr,
+        token,
+        fingerprint: fingerprint || null,
+      })
+
+export const gatewayRevokeDevice = (
+  addr: string,
+  token: string,
+  fingerprint: string | undefined,
+  jti: string,
+) =>
+  isDemo()
+    ? Promise.resolve(true)
+    : invoke<boolean>('gateway_revoke_device', {
+        addr,
+        token,
+        fingerprint: fingerprint || null,
+        jti,
       })
 
 export const surfaceInput = (surface: number, event: SurfaceInputEvent) =>
