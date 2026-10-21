@@ -1282,7 +1282,8 @@ input:focus {
   margin: 8px 0 10px;
 }
 
-.snapshot-create input {
+.snapshot-create input,
+.snapshot-create select {
   flex: 1;
   min-width: 0;
   border: 1px solid var(--line-strong);

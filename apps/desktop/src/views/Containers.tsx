@@ -7,6 +7,8 @@ import {
   createEnvironment,
   errorText,
   listContainers,
+  listMigrations,
+  type MigrationFile,
   listSurfaces,
   loadEnvironmentConnections,
   openContainerTerminal,
@@ -16,6 +18,8 @@ import {
   removeEnvironmentConnection,
   saveEnvironmentConnection,
   snapshotCreate,
+  snapshotExport,
+  snapshotImport,
   snapshotRestore,
   snapshotTree,
   startEnvironment,
@@ -89,6 +93,9 @@ export function Containers({ backends }: Props) {
   const [snapshotLoading, setSnapshotLoading] = useState(false)
   const [snapshotLabel, setSnapshotLabel] = useState('')
   const [snapshotAction, setSnapshotAction] = useState<string | null>(null)
+  const [migrations, setMigrations] = useState<MigrationFile[]>([])
+  const [migrationPath, setMigrationPath] = useState('')
+  const [migrationNotice, setMigrationNotice] = useState('')
   const [terminal, setTerminal] = useState<Container | null>(null)
   const [terminalId, setTerminalId] = useState<number | null>(null)
   const [terminalLines, setTerminalLines] = useState<string[]>([])
@@ -368,6 +375,47 @@ export function Containers({ backends }: Props) {
     setSnapshotError(null)
     try {
       await snapshotRestore(browser.id, node)
+      await loadSnapshots(browser)
+    } catch (err) {
+      setSnapshotError(errorText(err))
+    } finally {
+      setSnapshotAction(null)
+    }
+  }
+
+  const exportSnapshot = async (node: string) => {
+    if (!browser) return
+    setSnapshotAction(`export:${node}`)
+    setSnapshotError(null)
+    setMigrationNotice('')
+    try {
+      const file = await snapshotExport(browser.id, node)
+      setMigrationNotice(`已导出 ${file.path}（${file.size} 字节）`)
+      setMigrations(await listMigrations())
+    } catch (err) {
+      setSnapshotError(errorText(err))
+    } finally {
+      setSnapshotAction(null)
+    }
+  }
+
+  const refreshMigrations = async () => {
+    try {
+      setMigrations(await listMigrations())
+    } catch (err) {
+      setSnapshotError(errorText(err))
+    }
+  }
+
+  const importMigration = async () => {
+    if (!browser || !migrationPath) return
+    if (!window.confirm(`把 ${migrationPath} 导入当前环境？会新增一个快照节点。`)) return
+    setSnapshotAction('import')
+    setSnapshotError(null)
+    setMigrationNotice('')
+    try {
+      const node = await snapshotImport(browser.id, migrationPath)
+      setMigrationNotice(`已导入节点 ${node}`)
       await loadSnapshots(browser)
     } catch (err) {
       setSnapshotError(errorText(err))
@@ -659,6 +707,30 @@ export function Containers({ backends }: Props) {
                     创建快照
                   </button>
                 </div>
+                <div className="snapshot-create">
+                  <select
+                    value={migrationPath}
+                    onChange={(event) => setMigrationPath(event.target.value)}
+                  >
+                    <option value="">选择本机迁移包…</option>
+                    {migrations.map((file) => (
+                      <option key={file.path} value={file.path}>
+                        {file.path.split('/').pop()}（{file.size} B）
+                      </option>
+                    ))}
+                  </select>
+                  <button className="ghost" onClick={() => void refreshMigrations()}>
+                    扫描迁移包
+                  </button>
+                  <button
+                    className="ghost"
+                    onClick={() => void importMigration()}
+                    disabled={!migrationPath || snapshotAction === 'import'}
+                  >
+                    导入
+                  </button>
+                </div>
+                {migrationNotice && <p className="muted">{migrationNotice}</p>}
                 {snapshotError && <div className="error">{snapshotError}</div>}
                 {snapshotLoading ? (
                   <p className="muted">读取快照树…</p>
@@ -692,6 +764,13 @@ export function Containers({ backends }: Props) {
                               disabled={snapshotAction === node.id}
                             >
                               回退
+                            </button>
+                            <button
+                              className="ghost"
+                              onClick={() => void exportSnapshot(node.id)}
+                              disabled={snapshotAction === `export:${node.id}`}
+                            >
+                              导出
                             </button>
                           </td>
                         </tr>
