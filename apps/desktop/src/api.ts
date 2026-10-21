@@ -107,6 +107,21 @@ export const snapshotImport = (containerId: string, path: string, origin?: strin
     ? demoDelay('demo-node')
     : invoke<string>('environment_snapshot_import', { containerId, path, origin })
 
+export const migrateSnapshot = (
+  sourceContainerId: string,
+  targetContainerId: string,
+  node: string,
+  origin?: string,
+) =>
+  isDemo()
+    ? demoDelay('demo-node')
+    : invoke<string>('environment_migrate', {
+        sourceContainerId,
+        targetContainerId,
+        node,
+        origin,
+      })
+
 export const listMigrations = () =>
   isDemo() ? demoDelay<MigrationFile[]>([]) : invoke<MigrationFile[]>('list_migrations')
 
