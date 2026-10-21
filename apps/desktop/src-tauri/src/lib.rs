@@ -120,6 +120,8 @@ pub fn run() {
             commands::remove_agent_profile,
             commands::runtime_disk_usage,
             commands::runtime_logs,
+            commands::runtime_prune,
+            commands::runtime_pull_image,
             commands::start_environment,
             commands::stop_environment,
             commands::remove_environment,

@@ -128,6 +128,16 @@ impl RuntimeBackend for DockerBackend {
         out.into_stdout("docker system df")
     }
 
+    async fn pull_image(&self, reference: &str) -> Result<(), EnvError> {
+        let out = process::run("docker", &["pull", reference], CREATE_TIMEOUT).await?;
+        out.into_stdout("docker pull").map(|_| ())
+    }
+
+    async fn prune(&self) -> Result<String, EnvError> {
+        let out = process::run("docker", &["system", "prune", "-f"], WRITE_TIMEOUT).await?;
+        out.into_stdout("docker system prune")
+    }
+
     async fn logs(&self, id: &str, tail: usize) -> Result<Vec<String>, EnvError> {
         let tail = tail.to_string();
         let out = process::run("docker", &["logs", "--tail", &tail, id], LIST_TIMEOUT).await?;
