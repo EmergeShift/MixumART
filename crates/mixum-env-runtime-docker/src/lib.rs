@@ -7,13 +7,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use mixum_env_core::container::{Container, ContainerState, PortMapping};
+use mixum_env_core::container::{Container, ContainerState, CreateSpec, PortMapping};
 use mixum_env_core::error::EnvError;
 use mixum_env_core::process;
 use mixum_env_core::runtime::{RuntimeBackend, RuntimeKind, RuntimeStatus};
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 const LIST_TIMEOUT: Duration = Duration::from_secs(10);
+const CREATE_TIMEOUT: Duration = Duration::from_secs(600);
+const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 const DAEMON_HINT: &str = "启动 Docker Desktop 或 colima 后点刷新";
 
 /// 应用装配入口。
@@ -55,6 +57,54 @@ impl RuntimeBackend for DockerBackend {
         let out = process::run("docker", &args, LIST_TIMEOUT).await?;
         let stdout = out.into_stdout("docker ps")?;
         parse_ps(&stdout)
+    }
+
+    async fn create_container(&self, spec: CreateSpec) -> Result<Container, EnvError> {
+        let mut args: Vec<String> = vec!["create".into(), "--name".into(), spec.name.clone()];
+        for port in &spec.ports {
+            args.push("-p".into());
+            args.push(format!(
+                "{}:{}/{}",
+                port.host, port.container, port.protocol
+            ));
+        }
+        for mount in &spec.mounts {
+            args.push("--mount".into());
+            let mut value = format!("type=bind,source={},target={}", mount.source, mount.target);
+            if mount.read_only {
+                value.push_str(",readonly");
+            }
+            args.push(value);
+        }
+        for (key, value) in &spec.env {
+            args.push("-e".into());
+            args.push(format!("{key}={value}"));
+        }
+        args.push(spec.image);
+        args.extend(spec.command);
+        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        let out = process::run("docker", &refs, CREATE_TIMEOUT).await?;
+        let id = out.into_stdout("docker create")?;
+        let containers = self.list_containers().await?;
+        containers
+            .into_iter()
+            .find(|container| container.id == id || container.name == spec.name)
+            .ok_or_else(|| EnvError::Parse(format!("docker create 后找不到容器 {id}")))
+    }
+
+    async fn start_container(&self, id: &str) -> Result<(), EnvError> {
+        let out = process::run("docker", &["start", id], WRITE_TIMEOUT).await?;
+        out.into_stdout("docker start").map(|_| ())
+    }
+
+    async fn stop_container(&self, id: &str) -> Result<(), EnvError> {
+        let out = process::run("docker", &["stop", id], WRITE_TIMEOUT).await?;
+        out.into_stdout("docker stop").map(|_| ())
+    }
+
+    async fn remove_container(&self, id: &str) -> Result<(), EnvError> {
+        let out = process::run("docker", &["rm", "-f", id], WRITE_TIMEOUT).await?;
+        out.into_stdout("docker rm").map(|_| ())
     }
 }
 

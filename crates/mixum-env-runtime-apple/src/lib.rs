@@ -8,13 +8,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use mixum_env_core::container::{Container, ContainerState, PortMapping};
+use mixum_env_core::container::{Container, ContainerState, CreateSpec, PortMapping};
 use mixum_env_core::error::EnvError;
 use mixum_env_core::process;
 use mixum_env_core::runtime::{RuntimeBackend, RuntimeKind, RuntimeStatus};
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 const LIST_TIMEOUT: Duration = Duration::from_secs(10);
+const CREATE_TIMEOUT: Duration = Duration::from_secs(600);
+const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 const INSTALL_HINT: &str = "brew install container，然后执行 container system start";
 const START_HINT: &str = "执行 container system start 启动容器服务";
 
@@ -63,6 +65,54 @@ impl RuntimeBackend for AppleContainerBackend {
         let out = process::run("container", &args, LIST_TIMEOUT).await?;
         let stdout = out.into_stdout("container list --all")?;
         parse_list(&stdout)
+    }
+
+    async fn create_container(&self, spec: CreateSpec) -> Result<Container, EnvError> {
+        let mut args: Vec<String> = vec!["create".into(), "--name".into(), spec.name.clone()];
+        for port in &spec.ports {
+            args.push("--publish".into());
+            args.push(format!(
+                "{}:{}/{}",
+                port.host, port.container, port.protocol
+            ));
+        }
+        for mount in &spec.mounts {
+            args.push("--mount".into());
+            let mut value = format!("type=bind,source={},target={}", mount.source, mount.target);
+            if mount.read_only {
+                value.push_str(",readonly");
+            }
+            args.push(value);
+        }
+        for (key, value) in &spec.env {
+            args.push("--env".into());
+            args.push(format!("{key}={value}"));
+        }
+        args.push(spec.image);
+        args.extend(spec.command);
+        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        let out = process::run("container", &refs, CREATE_TIMEOUT).await?;
+        let id = out.into_stdout("container create")?;
+        let containers = self.list_containers().await?;
+        containers
+            .into_iter()
+            .find(|container| container.id == id || container.name == spec.name)
+            .ok_or_else(|| EnvError::Parse(format!("container create 后找不到容器 {id}")))
+    }
+
+    async fn start_container(&self, id: &str) -> Result<(), EnvError> {
+        let out = process::run("container", &["start", id], WRITE_TIMEOUT).await?;
+        out.into_stdout("container start").map(|_| ())
+    }
+
+    async fn stop_container(&self, id: &str) -> Result<(), EnvError> {
+        let out = process::run("container", &["stop", id], WRITE_TIMEOUT).await?;
+        out.into_stdout("container stop").map(|_| ())
+    }
+
+    async fn remove_container(&self, id: &str) -> Result<(), EnvError> {
+        let out = process::run("container", &["delete", id], WRITE_TIMEOUT).await?;
+        out.into_stdout("container delete").map(|_| ())
     }
 }
 
