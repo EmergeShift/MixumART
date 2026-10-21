@@ -149,6 +149,11 @@ pub trait RuntimeBackend: Send + Sync {
     async fn pull_image(&self, _reference: &str) -> Result<(), EnvError> {
         Err(EnvError::unimplemented("pull_image"))
     }
+
+    /// 从本地 OCI/tar 归档导入镜像。
+    async fn load_image(&self, _path: &str) -> Result<(), EnvError> {
+        Err(EnvError::unimplemented("load_image"))
+    }
 }
 
 /// 后端注册表。应用启动时装配一次，之后只读。

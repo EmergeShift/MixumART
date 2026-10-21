@@ -104,6 +104,11 @@ export const runtimePullImage = (kind: RuntimeKind, reference: string) =>
     ? demoDelay(undefined)
     : invoke<void>('runtime_pull_image', { kind, reference })
 
+export const runtimeLoadImage = (kind: RuntimeKind, path: string) =>
+  isDemo()
+    ? demoDelay(undefined)
+    : invoke<void>('runtime_load_image', { kind, path })
+
 export const runtimePrune = (kind: RuntimeKind) =>
   isDemo()
     ? demoDelay('demo prune ok')

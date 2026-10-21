@@ -122,6 +122,7 @@ pub fn run() {
             commands::runtime_logs,
             commands::runtime_prune,
             commands::runtime_pull_image,
+            commands::runtime_load_image,
             commands::start_environment,
             commands::stop_environment,
             commands::remove_environment,

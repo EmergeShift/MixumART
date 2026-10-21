@@ -133,6 +133,11 @@ impl RuntimeBackend for DockerBackend {
         out.into_stdout("docker pull").map(|_| ())
     }
 
+    async fn load_image(&self, path: &str) -> Result<(), EnvError> {
+        let out = process::run("docker", &["load", "-i", path], CREATE_TIMEOUT).await?;
+        out.into_stdout("docker load").map(|_| ())
+    }
+
     async fn prune(&self) -> Result<String, EnvError> {
         let out = process::run("docker", &["system", "prune", "-f"], WRITE_TIMEOUT).await?;
         out.into_stdout("docker system prune")

@@ -100,6 +100,22 @@ pub async fn runtime_pull_image(
 }
 
 #[tauri::command]
+pub async fn runtime_load_image(
+    kind: RuntimeKind,
+    path: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let backend = state
+        .registry
+        .get(kind)
+        .ok_or_else(|| format!("没有注册 {kind} 后端"))?;
+    backend
+        .load_image(&path)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 pub async fn runtime_prune(
     kind: RuntimeKind,
     state: State<'_, AppState>,
