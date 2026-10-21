@@ -59,13 +59,13 @@ BackendRegistry ──▶ Arc<dyn RuntimeBackend>
 
 | 能力 | macOS | Windows | Linux |
 |------|-------|---------|-------|
-| Apple Container | ✅ 已验证（只读） | — | — |
-| Docker | ✅ 已验证（只读） | 代码就绪，未真机验证 | 代码就绪，未真机验证 |
-| WSL 2 | — | 由并行组接入中 | — |
+| Apple Container | ✅ 已接入（探测/列举/创建/启停/删除） | — | — |
+| Docker | ✅ 已接入（探测/列举/创建/启停/删除） | 代码就绪，未真机验证 | 代码就绪，未真机验证 |
+| WSL 2 | — | ✅ 探测/列举/导入/启停/注销 | — |
 | 构建依赖 | Xcode CLT | WebView2 + MSVC | webkit2gtk 等（见 Tauri 文档） |
 
-「已接入（只读）」= 探测与列举可用，创建/启停/删除返回 `Unimplemented`，
-界面暂不提供按钮（见路线图 M1/M2）。
+三种运行时都通过同一 `RuntimeBackend` 契约提供写操作；界面按后端状态展示，
+未实现的额外能力（例如镜像导入的图形化流程）返回明确错误。
 
 ## 5. 安全与边界
 
@@ -82,11 +82,11 @@ BackendRegistry ──▶ Arc<dyn RuntimeBackend>
 
 | 里程碑 | 内容 | 完成标准 |
 |--------|------|----------|
-| **M0（当前）** | Tauri 2 骨架、三后端注册、只读探测与列举、模块归属文档 | macOS 编译/运行验证通过；Windows/Linux 待 CI；macOS 上能列出 Docker 与 Apple Container 容器 |
-| M1 | Docker 写操作（创建/启停/删除）、容器详情与日志 | 通过 GUI 完整跑起一个 mixumOS 容器 |
-| M2 | Apple Container 写操作、OCI 镜像导入、内核设置 | 一键起节点，等价于 apple-container.md 的手工流程 |
-| M3 | WSL 2 接入（并行组） | Windows 上导入发行版并起节点 |
-| M4 | 宿主机安装器、mixumOS 设计迁移（任务/窗口/快照入口） | 新机器一条链路装完并能管理节点 |
+| **M0（已完成）** | Tauri 2 骨架、三后端注册、探测与列举、模块归属文档 | macOS 编译/运行验证通过 |
+| **M1（已完成）** | Docker 写操作（创建/启停/删除）、容器日志 | 通过 GUI 完整跑起一个 mixumOS 容器 |
+| **M2（部分完成）** | Apple Container 写操作；OCI 镜像导入/内核设置仍需向导 | 一键起节点 |
+| **M3（已完成）** | WSL 2 接入（导入/启停/注销） | Windows 上导入发行版并起节点 |
+| M4 | 宿主机安装器、Agent 外部连接器、持久终端 | 新机器一条链路装完并能管理节点 |
 
 ## 7. v0 非目标
 

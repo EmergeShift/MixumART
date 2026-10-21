@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { listen } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 
-import { remoteClipboard, surfaceInput, surfacePutFile } from './api'
+import { remoteClipboard, surfaceInput, surfacePutFile, surfaceTakeover } from './api'
 import type { SurfaceFrame, SurfaceInfo, SurfaceInputEvent } from './types'
 
 type Props = {
@@ -15,6 +15,8 @@ export function SurfaceView({ surface, addr }: Props) {
   const chainRef = useRef<Promise<void>>(Promise.resolve())
   const [info, setInfo] = useState<SurfaceInfo | null>(null)
   const [status, setStatus] = useState(`连接 ${addr} …`)
+  const [takeoverMode, setTakeoverMode] = useState<string | null>(null)
+  const [takeoverPending, setTakeoverPending] = useState(false)
 
   useEffect(() => {
     let disposed = false
@@ -145,8 +147,44 @@ export function SurfaceView({ surface, addr }: Props) {
     }
   }
 
+  const toggleTakeover = async () => {
+    const action = takeoverMode === 'user' ? 'release' : 'claim'
+    setTakeoverPending(true)
+    try {
+      const mode = await surfaceTakeover(surface, action)
+      setTakeoverMode(mode)
+      setStatus(mode === 'user' ? '已接管窗口' : '已释放窗口')
+    } catch (error: unknown) {
+      setStatus(String(error))
+    } finally {
+      setTakeoverPending(false)
+    }
+  }
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === 't') {
+        event.preventDefault()
+        void toggleTakeover()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [takeoverMode, takeoverPending])
+
   return (
     <div className="surface-view">
+      <div className="surface-toolbar">
+        <button
+          type="button"
+          className="ghost"
+          onClick={() => void toggleTakeover()}
+          disabled={takeoverPending}
+          title="快捷键：Ctrl/Cmd+Shift+T"
+        >
+          {takeoverMode === 'user' ? '释放窗口' : '接管窗口'}
+        </button>
+      </div>
       <canvas
         ref={canvasRef}
         className="surface-canvas"

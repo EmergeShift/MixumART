@@ -1,10 +1,41 @@
 import { useEffect, useMemo, useState } from 'react'
 
-import { errorText, listContainers } from '../api'
-import type { AgentMode, BackendStatus, Container, RuntimeKind } from '../types'
+import {
+  createEnvironment,
+  errorText,
+  listContainers,
+  listSurfaces,
+  loadEnvironmentConnections,
+  openSurfaceWindow,
+  runtimeLogs,
+  runEnvironmentCommand,
+  removeEnvironment,
+  removeEnvironmentConnection,
+  saveEnvironmentConnection,
+  snapshotCreate,
+  snapshotRestore,
+  snapshotTree,
+  startEnvironment,
+  stopEnvironment,
+} from '../api'
+import type {
+  AgentMode,
+  BackendStatus,
+  Container,
+  EnvironmentConnection,
+  RuntimeKind,
+  SnapshotTree,
+  SurfaceInfo,
+} from '../types'
 
 type Props = {
   backends: BackendStatus[] | null
+}
+
+type ConnectionDraft = {
+  addr: string
+  token: string
+  fingerprint: string
 }
 
 const MODE_LABEL: Record<AgentMode, string> = {
@@ -21,6 +52,12 @@ const STATE_LABEL: Record<string, string> = {
   unknown: '未知',
 }
 
+const defaultAddress = (container: Container) => {
+  const port =
+    container.ports.find((item) => item.container === 7601) ?? container.ports[0]
+  return port ? `127.0.0.1:${port.host}` : '127.0.0.1:7601'
+}
+
 export function Containers({ backends }: Props) {
   const ready = useMemo(
     () => (backends ?? []).filter((backend) => backend.status.state === 'ready'),
@@ -28,12 +65,44 @@ export function Containers({ backends }: Props) {
   )
   const [kind, setKind] = useState<RuntimeKind | null>(null)
   const [containers, setContainers] = useState<Container[] | null>(null)
+  const [connections, setConnections] = useState<Record<string, EnvironmentConnection>>({})
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
+  const [editor, setEditor] = useState<Container | null>(null)
+  const [draft, setDraft] = useState<ConnectionDraft>({
+    addr: '',
+    token: '',
+    fingerprint: '',
+  })
+  const [browser, setBrowser] = useState<Container | null>(null)
+  const [surfaces, setSurfaces] = useState<SurfaceInfo[] | null>(null)
+  const [surfaceError, setSurfaceError] = useState<string | null>(null)
+  const [surfaceLoading, setSurfaceLoading] = useState(false)
+  const [creating, setCreating] = useState(false)
+  const [createDraft, setCreateDraft] = useState({ name: 'mixum-node', image: '', hostPort: '17601' })
+  const [actionId, setActionId] = useState<string | null>(null)
+  const [snapshots, setSnapshots] = useState<SnapshotTree | null>(null)
+  const [snapshotError, setSnapshotError] = useState<string | null>(null)
+  const [snapshotLoading, setSnapshotLoading] = useState(false)
+  const [snapshotLabel, setSnapshotLabel] = useState('')
+  const [snapshotAction, setSnapshotAction] = useState<string | null>(null)
+  const [terminal, setTerminal] = useState<Container | null>(null)
+  const [terminalLines, setTerminalLines] = useState<string[]>([])
+  const [terminalCommand, setTerminalCommand] = useState('')
+  const [terminalRunning, setTerminalRunning] = useState(false)
+  const [terminalError, setTerminalError] = useState<string | null>(null)
+
+  const canManage = kind !== null
 
   useEffect(() => {
     if (kind === null && ready.length > 0) setKind(ready[0].kind)
   }, [kind, ready])
+
+  useEffect(() => {
+    void loadEnvironmentConnections()
+      .then(setConnections)
+      .catch((err: unknown) => setError(errorText(err)))
+  }, [])
 
   const load = async () => {
     if (kind === null) return
@@ -54,16 +123,251 @@ export function Containers({ backends }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [kind])
 
+  const openEditor = (container: Container) => {
+    const existing = connections[container.id]
+    setEditor(container)
+    setBrowser(null)
+    setDraft({
+      addr: existing?.addr ?? defaultAddress(container),
+      token: existing?.token ?? '',
+      fingerprint: existing?.fingerprint ?? '',
+    })
+  }
+
+  const loadSnapshots = async (container: Container) => {
+    setSnapshotLoading(true)
+    setSnapshotError(null)
+    try {
+      setSnapshots((await snapshotTree(container.id)) as SnapshotTree)
+    } catch (err) {
+      setSnapshotError(errorText(err))
+      setSnapshots(null)
+    } finally {
+      setSnapshotLoading(false)
+    }
+  }
+
+  const browse = async (container: Container, profile?: EnvironmentConnection) => {
+    const connection = profile ?? connections[container.id]
+    if (!connection) {
+      openEditor(container)
+      return
+    }
+    setEditor(null)
+    setTerminal(null)
+    setBrowser(container)
+    setSurfaces(null)
+    setSurfaceError(null)
+    setSurfaceLoading(true)
+    void loadSnapshots(container)
+    try {
+      setSurfaces(
+        await listSurfaces(
+          connection.addr,
+          connection.token,
+          connection.fingerprint ?? undefined,
+        ),
+      )
+    } catch (err) {
+      setSurfaceError(errorText(err))
+      setSurfaces([])
+    } finally {
+      setSurfaceLoading(false)
+    }
+  }
+
+  const saveAndBrowse = async () => {
+    if (!editor) return
+    if (!draft.addr.trim() || !draft.token.trim()) {
+      setSurfaceError('节点地址和访问令牌都不能为空')
+      return
+    }
+    const connection: EnvironmentConnection = {
+      addr: draft.addr.trim(),
+      token: draft.token.trim(),
+      fingerprint: draft.fingerprint.trim() || null,
+    }
+    try {
+      await saveEnvironmentConnection(editor.id, connection)
+      setConnections((previous) => ({ ...previous, [editor.id]: connection }))
+      await browse(editor, connection)
+    } catch (err) {
+      setSurfaceError(errorText(err))
+    }
+  }
+
+  const removeConnection = async (container: Container) => {
+    try {
+      await removeEnvironmentConnection(container.id)
+      setConnections((previous) => {
+        const next = { ...previous }
+        delete next[container.id]
+        return next
+      })
+      setEditor(null)
+      setBrowser(null)
+      setSurfaces(null)
+    } catch (err) {
+      setSurfaceError(errorText(err))
+    }
+  }
+
+  const openSurface = async (surface: SurfaceInfo) => {
+    if (!browser) return
+    const connection = connections[browser.id]
+    if (!connection) return
+    setSurfaceError(null)
+    try {
+      await openSurfaceWindow(
+        connection.addr,
+        connection.token,
+        connection.fingerprint ?? undefined,
+        surface,
+      )
+    } catch (err) {
+      setSurfaceError(errorText(err))
+    }
+  }
+
+  const create = async () => {
+    if (!kind || !createDraft.name.trim() || !createDraft.image.trim()) {
+      setError('名称和 rootfs tar 路径都不能为空')
+      return
+    }
+    setActionId('create')
+    setError(null)
+    try {
+      await createEnvironment(kind, {
+        name: createDraft.name.trim(),
+        image: createDraft.image.trim(),
+        ports:
+          kind === 'wsl2'
+            ? []
+            : [{ host: Number(createDraft.hostPort) || 17601, container: 7601, protocol: 'tcp' }],
+        mounts: [],
+        env: {},
+        command: [],
+      })
+      setCreating(false)
+      await load()
+    } catch (err) {
+      setError(errorText(err))
+    } finally {
+      setActionId(null)
+    }
+  }
+
+  const runAction = async (container: Container, action: 'start' | 'stop' | 'remove') => {
+    if (!kind) return
+    setActionId(container.id)
+    setError(null)
+    try {
+      if (action === 'start') await startEnvironment(kind, container.id)
+      else if (action === 'stop') await stopEnvironment(kind, container.id)
+      else {
+        if (!window.confirm(`删除环境 ${container.name}？`)) return
+        await removeEnvironment(kind, container.id)
+      }
+      await load()
+    } catch (err) {
+      setError(errorText(err))
+    } finally {
+      setActionId(null)
+    }
+  }
+
+  const openTerminal = (container: Container) => {
+    if (!connections[container.id]) {
+      openEditor(container)
+      return
+    }
+    setBrowser(null)
+    setEditor(null)
+    setTerminal(container)
+    setTerminalLines([])
+    setTerminalCommand('')
+    setTerminalError(null)
+  }
+
+  const runCommand = async () => {
+    if (!terminal || !terminalCommand.trim()) return
+    const command = terminalCommand.trim()
+    setTerminalRunning(true)
+    setTerminalError(null)
+    setTerminalCommand('')
+    setTerminalLines((previous) => [...previous, `$ ${command}`])
+    try {
+      const result = await runEnvironmentCommand(terminal.id, command)
+      setTerminalLines((previous) => [...previous, ...result.lines])
+      if (result.error) setTerminalError(result.error)
+    } catch (err) {
+      setTerminalError(errorText(err))
+    } finally {
+      setTerminalRunning(false)
+    }
+  }
+
+  const loadLogs = async () => {
+    if (!terminal || !kind) return
+    setTerminalRunning(true)
+    setTerminalError(null)
+    try {
+      const lines = await runtimeLogs(kind, terminal.id)
+      setTerminalLines((previous) => [...previous, '--- 环境日志 ---', ...lines])
+    } catch (err) {
+      setTerminalError(errorText(err))
+    } finally {
+      setTerminalRunning(false)
+    }
+  }
+
+  const createSnapshot = async () => {
+    if (!browser) return
+    setSnapshotAction('create')
+    setSnapshotError(null)
+    try {
+      await snapshotCreate(browser.id, snapshotLabel)
+      setSnapshotLabel('')
+      await loadSnapshots(browser)
+    } catch (err) {
+      setSnapshotError(errorText(err))
+    } finally {
+      setSnapshotAction(null)
+    }
+  }
+
+  const restoreSnapshot = async (node: string) => {
+    if (!browser) return
+    if (!window.confirm(`回退到快照 ${node}？当前工作区会被替换。`)) return
+    setSnapshotAction(node)
+    setSnapshotError(null)
+    try {
+      await snapshotRestore(browser.id, node)
+      await loadSnapshots(browser)
+    } catch (err) {
+      setSnapshotError(errorText(err))
+    } finally {
+      setSnapshotAction(null)
+    }
+  }
+
   return (
     <section>
       <div className="section-head">
         <div>
           <h2>全部环境</h2>
-          <p>每个环境属于一个使用者。暂停、继续与终端入口会随环境管理功能上线。</p>
+          <p>连接环境后可以打开窗口、运行命令；运行软件支持创建、启动、停止和删除环境。</p>
         </div>
-        <button className="ghost" onClick={() => void load()} disabled={loading || kind === null}>
-          {loading ? '读取中…' : '刷新'}
-        </button>
+        <div className="row-actions">
+          {canManage && (
+            <button className="ghost" onClick={() => setCreating((value) => !value)}>
+              {creating ? '取消创建' : '创建环境'}
+            </button>
+          )}
+          <button className="ghost" onClick={() => void load()} disabled={loading || kind === null}>
+            {loading ? '读取中…' : '刷新'}
+          </button>
+        </div>
       </div>
 
       {backends === null ? (
@@ -89,12 +393,297 @@ export function Containers({ backends }: Props) {
 
           {error && <div className="error">{error}</div>}
 
+          {creating && canManage && (
+            <section className="connect-panel" aria-label="创建环境">
+              <div className="section-head">
+                <div>
+                  <h3>创建 {kind === 'docker' ? 'Docker' : kind === 'wsl2' ? 'WSL 2' : 'Apple Container'} 环境</h3>
+                  <p>
+                    {kind === 'wsl2'
+                      ? '从 rootfs tar 导入一个 mixumOS 节点；完成后在环境行连接 MAP。'
+                      : '用本机镜像启动一个环境；完成后在环境行连接 MAP。'}
+                  </p>
+                </div>
+              </div>
+              <div className="connect-grid">
+                <div className="field">
+                  <label htmlFor="create-name">环境名称</label>
+                  <input
+                    id="create-name"
+                    className="mono"
+                    value={createDraft.name}
+                    onChange={(event) => setCreateDraft({ ...createDraft, name: event.target.value })}
+                    spellCheck={false}
+                  />
+                </div>
+                <div className="field">
+                  <label htmlFor="create-image">
+                    {kind === 'wsl2' ? 'rootfs tar 路径' : '镜像名'}
+                  </label>
+                  <input
+                    id="create-image"
+                    className="mono"
+                    value={createDraft.image}
+                    onChange={(event) => setCreateDraft({ ...createDraft, image: event.target.value })}
+                    placeholder={kind === 'wsl2' ? 'C:\mixum\rootfs.tar' : 'mixumos:0.1.4'}
+                    spellCheck={false}
+                  />
+                </div>
+                {kind !== 'wsl2' && (
+                  <div className="field">
+                    <label htmlFor="create-port">MAP 端口</label>
+                    <input
+                      id="create-port"
+                      className="mono"
+                      value={createDraft.hostPort}
+                      onChange={(event) => setCreateDraft({ ...createDraft, hostPort: event.target.value })}
+                      placeholder="17601"
+                      spellCheck={false}
+                    />
+                  </div>
+                )}
+              </div>
+              {error && <div className="error">{error}</div>}
+              <div className="connect-actions">
+                <button
+                  className="primary"
+                  onClick={() => void create()}
+                  disabled={actionId === 'create'}
+                >
+                  {actionId === 'create' ? '导入中…' : '导入环境'}
+                </button>
+              </div>
+            </section>
+          )}
+
+          {terminal && (
+            <section className="connect-panel terminal-panel" aria-label={`${terminal.name} 的命令终端`}>
+              <div className="section-head">
+                <div>
+                  <h3>{terminal.name} · 命令终端</h3>
+                  <p>每条命令在环境里独立执行；后续会接入持久 PTY。</p>
+                </div>
+                <div className="row-actions">
+                  <button className="ghost" onClick={() => void loadLogs()} disabled={terminalRunning}>
+                    加载环境日志
+                  </button>
+                  <button className="ghost" onClick={() => setTerminal(null)}>
+                    关闭
+                  </button>
+                </div>
+              </div>
+              <pre className="terminal-output">
+                {terminalLines.length > 0 ? terminalLines.join('\n') : '输入命令并回车。'}
+              </pre>
+              {terminalError && <div className="error">{terminalError}</div>}
+              <form
+                className="terminal-input"
+                onSubmit={(event) => {
+                  event.preventDefault()
+                  void runCommand()
+                }}
+              >
+                <span className="mono">$</span>
+                <input
+                  className="mono"
+                  value={terminalCommand}
+                  onChange={(event) => setTerminalCommand(event.target.value)}
+                  placeholder="例如 ls -la /var/lib/mixum"
+                  spellCheck={false}
+                  autoFocus
+                />
+                <button className="primary" type="submit" disabled={terminalRunning}>
+                  {terminalRunning ? '执行中…' : '运行'}
+                </button>
+              </form>
+            </section>
+          )}
+
+          {editor && (
+            <section className="connect-panel" aria-label={`连接 ${editor.name}`}>
+              <div className="section-head">
+                <div>
+                  <h3>连接 {editor.name}</h3>
+                  <p>连接信息会保存在本机应用数据目录，不会写进快照。</p>
+                </div>
+                <button className="ghost" onClick={() => setEditor(null)}>
+                  取消
+                </button>
+              </div>
+              <div className="connect-grid">
+                <div className="field">
+                  <label htmlFor="container-map-addr">节点地址</label>
+                  <input
+                    id="container-map-addr"
+                    className="mono"
+                    value={draft.addr}
+                    onChange={(event) => setDraft({ ...draft, addr: event.target.value })}
+                    placeholder="例如 127.0.0.1:7601"
+                    spellCheck={false}
+                  />
+                </div>
+                <div className="field">
+                  <label htmlFor="container-map-token">访问令牌</label>
+                  <input
+                    id="container-map-token"
+                    className="mono"
+                    type="password"
+                    value={draft.token}
+                    onChange={(event) => setDraft({ ...draft, token: event.target.value })}
+                    placeholder="map1.…"
+                    spellCheck={false}
+                  />
+                </div>
+                <div className="field">
+                  <label htmlFor="container-map-fp">证书指纹（可选）</label>
+                  <input
+                    id="container-map-fp"
+                    className="mono"
+                    value={draft.fingerprint}
+                    onChange={(event) => setDraft({ ...draft, fingerprint: event.target.value })}
+                    placeholder="首次连接可留空"
+                    spellCheck={false}
+                  />
+                </div>
+              </div>
+              {surfaceError && <div className="error">{surfaceError}</div>}
+              <div className="connect-actions">
+                <button className="primary" onClick={() => void saveAndBrowse()}>
+                  保存并查看窗口
+                </button>
+                <button className="ghost" onClick={() => void removeConnection(editor)}>
+                  移除连接档案
+                </button>
+              </div>
+            </section>
+          )}
+
+          {browser && (
+            <section className="connect-panel" aria-label={`${browser.name} 的窗口`}>
+              <div className="section-head">
+                <div>
+                  <h3>{browser.name} 的窗口</h3>
+                  <p className="mono muted">{connections[browser.id]?.addr}</p>
+                </div>
+                <button className="ghost" onClick={() => setBrowser(null)}>
+                  关闭
+                </button>
+              </div>
+              {surfaceError && <div className="error">{surfaceError}</div>}
+              {surfaceLoading || surfaces === null ? (
+                <p className="muted">正在查找窗口…</p>
+              ) : surfaces.length === 0 ? (
+                <p className="muted">这个环境里暂时没有窗口。</p>
+              ) : (
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>窗口</th>
+                      <th>应用</th>
+                      <th>尺寸</th>
+                      <th />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {surfaces.map((surface) => (
+                      <tr key={surface.id}>
+                        <td>{surface.title || '未命名窗口'}</td>
+                        <td className="mono muted">{surface.appId || '—'}</td>
+                        <td className="mono">
+                          {surface.width}×{surface.height}
+                        </td>
+                        <td className="row-actions">
+                          <button className="ghost" onClick={() => void openSurface(surface)}>
+                            打开窗口
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+
+              <div className="snapshot-panel">
+                <div className="section-head">
+                  <div>
+                    <h4>快照</h4>
+                    <p className="muted">
+                      {snapshots?.branch ? `分支 ${snapshots.branch}` : '读取当前快照树'}
+                    </p>
+                  </div>
+                  <button
+                    className="ghost"
+                    onClick={() => void loadSnapshots(browser)}
+                    disabled={snapshotLoading}
+                  >
+                    刷新
+                  </button>
+                </div>
+                <div className="snapshot-create">
+                  <input
+                    value={snapshotLabel}
+                    onChange={(event) => setSnapshotLabel(event.target.value)}
+                    placeholder="快照标签（可选）"
+                    spellCheck={false}
+                  />
+                  <button
+                    className="ghost"
+                    onClick={() => void createSnapshot()}
+                    disabled={snapshotAction === 'create'}
+                  >
+                    创建快照
+                  </button>
+                </div>
+                {snapshotError && <div className="error">{snapshotError}</div>}
+                {snapshotLoading ? (
+                  <p className="muted">读取快照树…</p>
+                ) : !snapshots || (snapshots.nodes ?? []).length === 0 ? (
+                  <p className="muted">暂无快照。</p>
+                ) : (
+                  <table className="table snapshot-table">
+                    <thead>
+                      <tr>
+                        <th>快照</th>
+                        <th>分支</th>
+                        <th>类型</th>
+                        <th />
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(snapshots.nodes ?? []).map((node) => (
+                        <tr key={node.id}>
+                          <td>
+                            <div className="cell-stack">
+                              <span>{node.label || node.id.slice(0, 12)}</span>
+                              <span className="mono muted">{node.id.slice(0, 16)}</span>
+                            </div>
+                          </td>
+                          <td className="mono muted">{node.branch}</td>
+                          <td className="tag">{node.kind}</td>
+                          <td className="row-actions">
+                            <button
+                              className="ghost"
+                              onClick={() => void restoreSnapshot(node.id)}
+                              disabled={snapshotAction === node.id}
+                            >
+                              回退
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            </section>
+          )}
+
           {containers === null ? (
             <p className="muted">读取中…</p>
           ) : containers.length === 0 ? (
             <div className="empty-panel">
               <h3>这里还没有环境</h3>
-              <p>创建入口会随环境管理功能上线。</p>
+              <p>点击上方「创建环境」开始。</p>
             </div>
           ) : (
             <table className="table">
@@ -110,44 +699,85 @@ export function Containers({ backends }: Props) {
                 </tr>
               </thead>
               <tbody>
-                {containers.map((container) => (
-                  <tr key={container.id}>
-                    <td>
-                      <span className={`state state-${container.state}`}>
-                        <span className="dot" />
-                        {STATE_LABEL[container.state] ?? container.state}
-                      </span>
-                    </td>
-                    <td>
-                      <div className="cell-stack">
-                        <span>{container.name}</span>
-                        <span className="mono muted">{container.id.slice(0, 12)}</span>
-                      </div>
-                    </td>
-                    <td>{container.agent?.name ?? <span className="muted">未标注</span>}</td>
-                    <td>
-                      {container.agent ? (
-                        <span className="tag">{MODE_LABEL[container.agent.mode]}</span>
-                      ) : (
-                        <span className="muted">—</span>
-                      )}
-                    </td>
-                    <td className="mono">{container.image}</td>
-                    <td className="mono">
-                      {container.ports.length === 0
-                        ? '—'
-                        : container.ports.map((port) => `${port.host}→${port.container}`).join(', ')}
-                    </td>
-                    <td className="row-actions">
-                      <button className="ghost" disabled title="画面接入后可用">
-                        监看
-                      </button>
-                      <button className="ghost" disabled title="终端接入后可用">
-                        终端
-                      </button>
-                    </td>
-                  </tr>
-                ))}
+                {containers.map((container) => {
+                  const connection = connections[container.id]
+                  return (
+                    <tr key={container.id}>
+                      <td>
+                        <span className={`state state-${container.state}`}>
+                          <span className="dot" />
+                          {STATE_LABEL[container.state] ?? container.state}
+                        </span>
+                      </td>
+                      <td>
+                        <div className="cell-stack">
+                          <span>{container.name}</span>
+                          <span className="mono muted">
+                            {connection ? connection.addr : container.id.slice(0, 12)}
+                          </span>
+                        </div>
+                      </td>
+                      <td>{container.agent?.name ?? <span className="muted">未标注</span>}</td>
+                      <td>
+                        {container.agent ? (
+                          <span className="tag">{MODE_LABEL[container.agent.mode]}</span>
+                        ) : (
+                          <span className="muted">—</span>
+                        )}
+                      </td>
+                      <td className="mono">{container.image}</td>
+                      <td className="mono">
+                        {container.ports.length === 0
+                          ? '—'
+                          : container.ports
+                              .map((port) => `${port.host}→${port.container}`)
+                              .join(', ')}
+                      </td>
+                      <td className="row-actions">
+                        <button
+                          className="ghost"
+                          onClick={() =>
+                            connection ? void browse(container) : openEditor(container)
+                          }
+                        >
+                          {connection ? '监看' : '连接'}
+                        </button>
+                        {canManage && container.state !== 'running' && container.state !== 'paused' && (
+                          <button
+                            className="ghost"
+                            onClick={() => void runAction(container, 'start')}
+                            disabled={actionId === container.id}
+                          >
+                            启动
+                          </button>
+                        )}
+                        {canManage && container.state === 'running' && (
+                          <button
+                            className="ghost"
+                            onClick={() => void runAction(container, 'stop')}
+                            disabled={actionId === container.id}
+                          >
+                            停止
+                          </button>
+                        )}
+                        <button
+                          className="ghost"
+                          onClick={() => void runAction(container, 'remove')}
+                          disabled={actionId === container.id}
+                        >
+                          删除
+                        </button>
+                        <button
+                          className="ghost"
+                          onClick={() => openTerminal(container)}
+                          title="运行一条命令（独立进程）"
+                        >
+                          终端
+                        </button>
+                      </td>
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           )}
