@@ -7,6 +7,7 @@ import {
   listSurfaces,
   loadEnvironmentConnections,
   openSurfaceWindow,
+  runtimeLogs,
   runEnvironmentCommand,
   removeEnvironment,
   removeEnvironmentConnection,
@@ -306,6 +307,20 @@ export function Containers({ backends }: Props) {
     }
   }
 
+  const loadLogs = async () => {
+    if (!terminal || !kind) return
+    setTerminalRunning(true)
+    setTerminalError(null)
+    try {
+      const lines = await runtimeLogs(kind, terminal.id)
+      setTerminalLines((previous) => [...previous, '--- 环境日志 ---', ...lines])
+    } catch (err) {
+      setTerminalError(errorText(err))
+    } finally {
+      setTerminalRunning(false)
+    }
+  }
+
   const createSnapshot = async () => {
     if (!browser) return
     setSnapshotAction('create')
@@ -341,7 +356,7 @@ export function Containers({ backends }: Props) {
       <div className="section-head">
         <div>
           <h2>全部环境</h2>
-          <p>连接环境后可以打开它的窗口；WSL 环境支持创建、启动和停止，终端入口后续接入。</p>
+          <p>连接环境后可以打开窗口、运行命令；运行软件支持创建、启动、停止和删除环境。</p>
         </div>
         <div className="row-actions">
           {canManage && (
@@ -448,9 +463,14 @@ export function Containers({ backends }: Props) {
                   <h3>{terminal.name} · 命令终端</h3>
                   <p>每条命令在环境里独立执行；后续会接入持久 PTY。</p>
                 </div>
-                <button className="ghost" onClick={() => setTerminal(null)}>
-                  关闭
-                </button>
+                <div className="row-actions">
+                  <button className="ghost" onClick={() => void loadLogs()} disabled={terminalRunning}>
+                    加载环境日志
+                  </button>
+                  <button className="ghost" onClick={() => setTerminal(null)}>
+                    关闭
+                  </button>
+                </div>
               </div>
               <pre className="terminal-output">
                 {terminalLines.length > 0 ? terminalLines.join('\n') : '输入命令并回车。'}
@@ -663,7 +683,7 @@ export function Containers({ backends }: Props) {
           ) : containers.length === 0 ? (
             <div className="empty-panel">
               <h3>这里还没有环境</h3>
-              <p>创建入口会随环境管理功能上线。</p>
+              <p>点击上方「创建环境」开始。</p>
             </div>
           ) : (
             <table className="table">

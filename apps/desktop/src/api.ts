@@ -66,6 +66,39 @@ export const snapshotFork = (containerId: string, node: string, branch: string) 
     ? demoDelay({ branch })
     : invoke<unknown>('environment_snapshot_fork', { containerId, node, branch })
 
+export type AgentProfile = {
+  id: string
+  name: string
+  kind: string
+  mode: string
+  core: string
+  command: string
+}
+
+export const loadAgentProfiles = () =>
+  isDemo() ? demoDelay<AgentProfile[]>([]) : invoke<AgentProfile[]>('load_agent_profiles')
+
+export const saveAgentProfile = (profile: AgentProfile) =>
+  isDemo() ? demoDelay(undefined) : invoke<void>('save_agent_profile', { profile })
+
+export const removeAgentProfile = (id: string) =>
+  isDemo() ? demoDelay(undefined) : invoke<void>('remove_agent_profile', { id })
+
+export const runtimeImages = (kind: RuntimeKind) =>
+  isDemo()
+    ? demoDelay(['mixumos:0.1.4'])
+    : invoke<string[]>('runtime_images', { kind })
+
+export const runtimeLogs = (kind: RuntimeKind, id: string, tail = 200) =>
+  isDemo()
+    ? demoDelay(['demo log line'])
+    : invoke<string[]>('runtime_logs', { kind, id, tail })
+
+export const runtimeDiskUsage = (kind: RuntimeKind) =>
+  isDemo()
+    ? demoDelay('Images 1.2GB · Containers 3.4GB · Volumes 0B')
+    : invoke<string>('runtime_disk_usage', { kind })
+
 export const startEnvironment = (kind: RuntimeKind, id: string) =>
   isDemo() ? demoDelay(undefined) : invoke<void>('start_environment', { kind, id })
 

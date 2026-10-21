@@ -56,6 +56,127 @@ pub async fn list_containers(
         .map_err(|err| err.to_string())
 }
 
+#[tauri::command]
+pub async fn runtime_images(
+    kind: RuntimeKind,
+    state: State<'_, AppState>,
+) -> Result<Vec<String>, String> {
+    let backend = state
+        .registry
+        .get(kind)
+        .ok_or_else(|| format!("没有注册 {kind} 后端"))?;
+    backend.images().await.map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn runtime_disk_usage(
+    kind: RuntimeKind,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let backend = state
+        .registry
+        .get(kind)
+        .ok_or_else(|| format!("没有注册 {kind} 后端"))?;
+    backend
+        .disk_usage()
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn runtime_logs(
+    kind: RuntimeKind,
+    id: String,
+    tail: usize,
+    state: State<'_, AppState>,
+) -> Result<Vec<String>, String> {
+    let backend = state
+        .registry
+        .get(kind)
+        .ok_or_else(|| format!("没有注册 {kind} 后端"))?;
+    backend
+        .logs(&id, tail)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+// ---------------------------------------------------------------------------
+// 本地 Agent 注册表：MART 只保存“怎么启动”的配置，不保存凭据。
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentProfile {
+    pub id: String,
+    pub name: String,
+    pub kind: String,
+    pub mode: String,
+    pub core: String,
+    #[serde(default)]
+    pub command: String,
+}
+
+fn agent_profiles_path(app: &AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_data_dir()
+        .map(|dir| dir.join("agents.json"))
+        .map_err(|error| format!("无法定位应用数据目录：{error}"))
+}
+
+fn load_agent_map(app: &AppHandle) -> Result<HashMap<String, AgentProfile>, String> {
+    let path = agent_profiles_path(app)?;
+    match std::fs::read_to_string(&path) {
+        Ok(text) => {
+            serde_json::from_str(&text).map_err(|error| format!("Agent 配置格式错误：{error}"))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(HashMap::new()),
+        Err(error) => Err(format!("读取 Agent 配置失败：{error}")),
+    }
+}
+
+fn save_agent_map(app: &AppHandle, profiles: &HashMap<String, AgentProfile>) -> Result<(), String> {
+    let path = agent_profiles_path(app)?;
+    let Some(dir) = path.parent() else {
+        return Err("Agent 配置路径没有父目录".into());
+    };
+    std::fs::create_dir_all(dir).map_err(|error| format!("创建应用数据目录失败：{error}"))?;
+    let temp = dir.join(format!(".agents-{}.tmp", std::process::id()));
+    let text = serde_json::to_string_pretty(profiles)
+        .map_err(|error| format!("序列化 Agent 配置失败：{error}"))?;
+    std::fs::write(&temp, text).map_err(|error| format!("写入 Agent 配置失败：{error}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o600))
+            .map_err(|error| format!("设置 Agent 配置权限失败：{error}"))?;
+    }
+    std::fs::rename(&temp, &path).map_err(|error| format!("提交 Agent 配置失败：{error}"))
+}
+
+#[tauri::command]
+pub fn load_agent_profiles(app: AppHandle) -> Result<Vec<AgentProfile>, String> {
+    let mut profiles: Vec<_> = load_agent_map(&app)?.into_values().collect();
+    profiles.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(profiles)
+}
+
+#[tauri::command]
+pub fn save_agent_profile(app: AppHandle, profile: AgentProfile) -> Result<(), String> {
+    if profile.name.trim().is_empty() {
+        return Err("Agent 名称不能为空".into());
+    }
+    let mut profiles = load_agent_map(&app)?;
+    profiles.insert(profile.id.clone(), profile);
+    save_agent_map(&app, &profiles)
+}
+
+#[tauri::command]
+pub fn remove_agent_profile(app: AppHandle, id: String) -> Result<(), String> {
+    let mut profiles = load_agent_map(&app)?;
+    profiles.remove(&id);
+    save_agent_map(&app, &profiles)
+}
+
 // ---------------------------------------------------------------------------
 // 环境写操作：当前仅 WSL2 后端实现，其它后端会返回 Unimplemented。
 // ---------------------------------------------------------------------------

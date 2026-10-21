@@ -1349,3 +1349,28 @@ input:focus {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
+
+.resource-disk {
+  margin: 8px 0 0;
+  max-height: 160px;
+  overflow: auto;
+  padding: 8px;
+  border-radius: 7px;
+  background: var(--surface-2);
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
+.field select {
+  width: 100%;
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  background: var(--surface-2);
+  color: var(--ink);
+  padding: 7px 9px;
+  font: inherit;
+  font-size: 13px;
+}

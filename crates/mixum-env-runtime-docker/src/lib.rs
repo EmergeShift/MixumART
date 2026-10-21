@@ -106,6 +106,46 @@ impl RuntimeBackend for DockerBackend {
         let out = process::run("docker", &["rm", "-f", id], WRITE_TIMEOUT).await?;
         out.into_stdout("docker rm").map(|_| ())
     }
+
+    async fn images(&self) -> Result<Vec<String>, EnvError> {
+        let out = process::run(
+            "docker",
+            &["images", "--format", "{{.Repository}}:{{.Tag}}"],
+            LIST_TIMEOUT,
+        )
+        .await?;
+        let stdout = out.into_stdout("docker images")?;
+        Ok(stdout
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.contains(":<none>"))
+            .map(ToOwned::to_owned)
+            .collect())
+    }
+
+    async fn disk_usage(&self) -> Result<String, EnvError> {
+        let out = process::run("docker", &["system", "df"], LIST_TIMEOUT).await?;
+        out.into_stdout("docker system df")
+    }
+
+    async fn logs(&self, id: &str, tail: usize) -> Result<Vec<String>, EnvError> {
+        let tail = tail.to_string();
+        let out = process::run("docker", &["logs", "--tail", &tail, id], LIST_TIMEOUT).await?;
+        if !out.success {
+            return Err(EnvError::CommandFailed {
+                command: format!("docker logs {id}"),
+                stderr: out.stderr,
+            });
+        }
+        let mut lines: Vec<String> = out
+            .stdout
+            .lines()
+            .chain(out.stderr.lines())
+            .map(str::to_owned)
+            .collect();
+        lines.truncate(tail.parse().unwrap_or(usize::MAX));
+        Ok(lines)
+    }
 }
 
 fn first_line(text: &str) -> Option<String> {
