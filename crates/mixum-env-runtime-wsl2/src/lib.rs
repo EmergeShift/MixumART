@@ -208,6 +208,89 @@ impl RuntimeBackend for Wsl2Backend {
         }
         Ok(())
     }
+
+    /// WSL 2 没有镜像仓库：节点来自本地 rootfs tar，导入之后就不存在「镜像」这一层。
+    /// 返回空列表而不是报错——否则设置页会把一个正常的后端显示成异常。
+    async fn images(&self) -> Result<Vec<String>, EnvError> {
+        ensure_windows()?;
+        Ok(Vec::new())
+    }
+
+    /// 磁盘占用 = 各节点安装目录里 `ext4.vhdx` 的大小之和。
+    ///
+    /// WSL 没有 `system df` 这类命令，vhdx 是唯一能反映真实占用的东西。
+    async fn disk_usage(&self) -> Result<String, EnvError> {
+        ensure_windows()?;
+        let distros = list_distributions().await?;
+        let mut nodes = 0usize;
+        let mut total = 0u64;
+        for distro in distros.iter().filter(|distro| is_node_name(&distro.name)) {
+            nodes += 1;
+            if let Ok(dir) = install_dir(&distro.name) {
+                total += directory_size(&dir);
+            }
+        }
+        Ok(format!(
+            "{nodes} 个节点 · {}\n{}",
+            human_bytes(total),
+            install_root().display()
+        ))
+    }
+
+    /// WSL 2 没有容器日志接口：节点内部是 systemd journal，取最近 N 行。
+    ///
+    /// 节点里没有 systemd（例如只用 rootfs tar 导入的测试节点）时返回空列表，
+    /// 不当成错误——「没有日志」和「读取日志失败」是两件事。
+    async fn logs(&self, id: &str, tail: usize) -> Result<Vec<String>, EnvError> {
+        ensure_windows()?;
+        check_managed("logs", id)?;
+        let tail = tail.max(1).to_string();
+        let args = [
+            "-d",
+            id,
+            "--",
+            "journalctl",
+            "-n",
+            &tail,
+            "--no-pager",
+            "-o",
+            "cat",
+        ];
+        let (success, stdout, _) = run_wsl(&args, WRITE_TIMEOUT).await?;
+        if !success {
+            return Ok(Vec::new());
+        }
+        Ok(stdout.lines().map(str::to_owned).collect())
+    }
+}
+
+/// 目录内文件大小之和。安装目录里就一个 `ext4.vhdx`，不递归。
+fn directory_size(dir: &Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| entry.metadata().ok())
+        .filter(|meta| meta.is_file())
+        .map(|meta| meta.len())
+        .sum()
+}
+
+/// 人类可读的字节数，够设置页展示即可。
+fn human_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 4] = ["B", "KiB", "MiB", "GiB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit + 1 < UNITS.len() {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
 }
 
 fn unsupported() -> EnvError {
@@ -754,6 +837,27 @@ mod tests {
         assert!(container.status.is_some());
     }
 
+    #[test]
+    fn formats_human_bytes() {
+        assert_eq!(human_bytes(0), "0 B");
+        assert_eq!(human_bytes(512), "512 B");
+        assert_eq!(human_bytes(2048), "2.0 KiB");
+        assert_eq!(human_bytes(3 * 1024 * 1024), "3.0 MiB");
+        assert_eq!(human_bytes(5 * 1024 * 1024 * 1024), "5.0 GiB");
+    }
+
+    #[test]
+    fn sums_install_directory_bytes() {
+        let dir = std::env::temp_dir().join(format!("mixum-wsl-size-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("ext4.vhdx"), vec![0u8; 4096]).unwrap();
+        assert_eq!(directory_size(&dir), 4096);
+        // 目录不存在时返回 0，不 panic。
+        assert_eq!(directory_size(&dir.join("missing")), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// 真实后端冒烟：需要 Windows 宿主与已启用的 WSL。
     /// `cargo test -p mixum-env-runtime-wsl2 -- --ignored`
     #[tokio::test]
@@ -764,6 +868,15 @@ mod tests {
         assert!(status.is_ready(), "wsl 不可用：{status:?}");
         let containers = backend.list_containers().await.unwrap();
         println!("mixumOS 节点（mixum-* 发行版）数：{}", containers.len());
+
+        // 资源类方法必须给出可用结果，否则设置页会把 WSL 2 显示成异常。
+        assert!(
+            backend.images().await.unwrap().is_empty(),
+            "WSL 2 没有镜像概念"
+        );
+        let disk = backend.disk_usage().await.unwrap();
+        assert!(disk.contains("个节点"), "磁盘摘要：{disk}");
+        println!("磁盘占用：{disk}");
     }
 
     /// 真实幂等冒烟：
