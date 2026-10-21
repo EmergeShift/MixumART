@@ -76,7 +76,7 @@ export function Containers({ backends }: Props) {
   const [surfaceError, setSurfaceError] = useState<string | null>(null)
   const [surfaceLoading, setSurfaceLoading] = useState(false)
   const [creating, setCreating] = useState(false)
-  const [createDraft, setCreateDraft] = useState({ name: 'mixum-node', image: '' })
+  const [createDraft, setCreateDraft] = useState({ name: 'mixum-node', image: '', hostPort: '17601' })
   const [actionId, setActionId] = useState<string | null>(null)
   const [snapshots, setSnapshots] = useState<SnapshotTree | null>(null)
   const [snapshotError, setSnapshotError] = useState<string | null>(null)
@@ -84,7 +84,7 @@ export function Containers({ backends }: Props) {
   const [snapshotLabel, setSnapshotLabel] = useState('')
   const [snapshotAction, setSnapshotAction] = useState<string | null>(null)
 
-  const canManage = kind === 'wsl2'
+  const canManage = kind !== null
 
   useEffect(() => {
     if (kind === null && ready.length > 0) setKind(ready[0].kind)
@@ -231,7 +231,10 @@ export function Containers({ backends }: Props) {
       await createEnvironment(kind, {
         name: createDraft.name.trim(),
         image: createDraft.image.trim(),
-        ports: [],
+        ports:
+          kind === 'wsl2'
+            ? []
+            : [{ host: Number(createDraft.hostPort) || 17601, container: 7601, protocol: 'tcp' }],
         mounts: [],
         env: {},
         command: [],
@@ -336,8 +339,12 @@ export function Containers({ backends }: Props) {
             <section className="connect-panel" aria-label="创建环境">
               <div className="section-head">
                 <div>
-                  <h3>创建 WSL 2 环境</h3>
-                  <p>从 rootfs tar 导入一个 mixumOS 节点。导入完成后还需要连接它的 MAP 地址。</p>
+                  <h3>创建 {kind === 'docker' ? 'Docker' : kind === 'wsl2' ? 'WSL 2' : 'Apple Container'} 环境</h3>
+                  <p>
+                    {kind === 'wsl2'
+                      ? '从 rootfs tar 导入一个 mixumOS 节点；完成后在环境行连接 MAP。'
+                      : '用本机镜像启动一个环境；完成后在环境行连接 MAP。'}
+                  </p>
                 </div>
               </div>
               <div className="connect-grid">
@@ -352,16 +359,31 @@ export function Containers({ backends }: Props) {
                   />
                 </div>
                 <div className="field">
-                  <label htmlFor="create-image">rootfs tar 路径</label>
+                  <label htmlFor="create-image">
+                    {kind === 'wsl2' ? 'rootfs tar 路径' : '镜像名'}
+                  </label>
                   <input
                     id="create-image"
                     className="mono"
                     value={createDraft.image}
                     onChange={(event) => setCreateDraft({ ...createDraft, image: event.target.value })}
-                    placeholder="C:\mixum\rootfs.tar"
+                    placeholder={kind === 'wsl2' ? 'C:\mixum\rootfs.tar' : 'mixumos:0.1.4'}
                     spellCheck={false}
                   />
                 </div>
+                {kind !== 'wsl2' && (
+                  <div className="field">
+                    <label htmlFor="create-port">MAP 端口</label>
+                    <input
+                      id="create-port"
+                      className="mono"
+                      value={createDraft.hostPort}
+                      onChange={(event) => setCreateDraft({ ...createDraft, hostPort: event.target.value })}
+                      placeholder="17601"
+                      spellCheck={false}
+                    />
+                  </div>
+                )}
               </div>
               {error && <div className="error">{error}</div>}
               <div className="connect-actions">
