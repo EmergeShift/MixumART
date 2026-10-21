@@ -42,7 +42,7 @@ agent 用。界面承载三件事：
 | 总览 | `src/views/Cockpit.tsx` | `list_containers`（聚合可用运行时） | 已实现；环境操作跳转到环境页 |
 | 容器 | `src/views/Containers.tsx` | `list_containers` + 连接档案 | 已实现：创建/启动/停止/删除、连接/监看、快照、命令终端、日志 |
 | 窗口 | `src/views/Surfaces.tsx` / `SurfaceView.tsx` | `list_surfaces` / `open_surface_window` | 已实现；接管支持按钮或 Ctrl/Cmd+Shift+T |
-| Agent | `src/views/Agents.tsx` | 本地 Agent 配置 | 已实现配置持久化；外部连接器与凭据仍由外部 Agent 负责 |
+| Agent | `src/views/Agents.tsx` | 本地 Agent 配置 + 系统钥匙串 | 已实现配置持久化；凭据写入系统钥匙串，外部连接器仍由外部 Agent 负责 |
 | 设置 | `src/views/Settings.tsx` | `runtime_status` + 资源命令 | 已实现运行时状态、镜像列表、磁盘占用 |
 
 ## 3. 数据与演示模式

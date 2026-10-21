@@ -24,6 +24,7 @@ mixum-env-runtime-docker.workspace = true
 mixum-env-runtime-wsl2.workspace = true
 mixum-env-surface.workspace = true
 mixum-env-map.workspace = true
+keyring = "4"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2_02 = { package = "objc2", version = "0.5.2", default-features = false, features = ["std"] }

@@ -1,10 +1,13 @@
 import { useEffect, useState } from 'react'
 
 import {
+  deleteAgentCredential,
   errorText,
+  hasAgentCredential,
   loadAgentProfiles,
   removeAgentProfile,
   saveAgentProfile,
+  setAgentCredential,
   type AgentProfile,
 } from '../api'
 
@@ -52,6 +55,10 @@ export function Agents() {
   const [editing, setEditing] = useState<AgentProfile | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+  const [credentialProfile, setCredentialProfile] = useState<AgentProfile | null>(null)
+  const [secret, setSecret] = useState('')
+  const [credentialSaved, setCredentialSaved] = useState<boolean | null>(null)
+  const [credentialBusy, setCredentialBusy] = useState(false)
 
   const load = async () => {
     setError(null)
@@ -96,6 +103,46 @@ export function Agents() {
     }
   }
 
+  const openCredential = async (profile: AgentProfile) => {
+    setCredentialProfile(profile)
+    setSecret('')
+    setCredentialSaved(null)
+    try {
+      setCredentialSaved(await hasAgentCredential(profile.id))
+    } catch (err) {
+      setError(errorText(err))
+    }
+  }
+
+  const saveCredential = async () => {
+    if (!credentialProfile || !secret) return
+    setCredentialBusy(true)
+    setError(null)
+    try {
+      await setAgentCredential(credentialProfile.id, secret)
+      setCredentialSaved(true)
+      setSecret('')
+    } catch (err) {
+      setError(errorText(err))
+    } finally {
+      setCredentialBusy(false)
+    }
+  }
+
+  const removeCredential = async () => {
+    if (!credentialProfile) return
+    if (!window.confirm(`删除 ${credentialProfile.name} 的系统钥匙串凭据？`)) return
+    setCredentialBusy(true)
+    try {
+      await deleteAgentCredential(credentialProfile.id)
+      setCredentialSaved(false)
+    } catch (err) {
+      setError(errorText(err))
+    } finally {
+      setCredentialBusy(false)
+    }
+  }
+
   return (
     <div className="agents-page">
       <section>
@@ -120,8 +167,8 @@ export function Agents() {
           <div>
             <h2>本机 Agent 配置</h2>
             <p>
-              这里只保存启动方式和工作模式；凭据由外部 Agent 或系统钥匙串管理，
-              MART 不保存登录令牌。
+              这里保存启动方式和工作模式；登录凭据单独写入系统钥匙串，不进入
+              MART 配置文件或环境快照。
             </p>
           </div>
           <button className="ghost" onClick={() => setEditing(emptyDraft())}>
@@ -208,6 +255,45 @@ export function Agents() {
             </div>
           </section>
         )}
+        {credentialProfile && (
+          <section className="connect-panel" aria-label="Agent 凭据">
+            <div className="section-head">
+              <div>
+                <h3>{credentialProfile.name} · 凭据</h3>
+                <p>保存到系统钥匙串，不写入 connections.json 或快照。</p>
+              </div>
+              <button className="ghost" onClick={() => setCredentialProfile(null)}>
+                关闭
+              </button>
+            </div>
+            {credentialSaved !== null && (
+              <p className="muted">
+                {credentialSaved ? '钥匙串中已有凭据' : '钥匙串中还没有凭据'}
+              </p>
+            )}
+            <div className="connect-grid">
+              <div className="field">
+                <label htmlFor="agent-secret">新凭据</label>
+                <input
+                  id="agent-secret"
+                  type="password"
+                  value={secret}
+                  onChange={(event) => setSecret(event.target.value)}
+                  placeholder="只写入系统钥匙串，不会回显"
+                  spellCheck={false}
+                />
+              </div>
+            </div>
+            <div className="connect-actions">
+              <button className="primary" onClick={() => void saveCredential()} disabled={credentialBusy || !secret}>
+                {credentialBusy ? '保存中…' : '保存到钥匙串'}
+              </button>
+              <button className="ghost" onClick={() => void removeCredential()} disabled={credentialBusy}>
+                删除凭据
+              </button>
+            </div>
+          </section>
+        )}
         {profiles === null ? (
           <p className="muted">读取中…</p>
         ) : profiles.length === 0 ? (
@@ -246,6 +332,9 @@ export function Agents() {
                   </td>
                   <td className="mono muted">{profile.command || '—'}</td>
                   <td className="row-actions">
+                    <button className="ghost" onClick={() => void openCredential(profile)}>
+                      凭据
+                    </button>
                     <button className="ghost" onClick={() => setEditing(profile)}>
                       编辑
                     </button>
@@ -264,15 +353,15 @@ export function Agents() {
         <div className="section-head">
           <div>
             <h2>登录凭据</h2>
-            <p>凭据由外部 Agent 自己或系统钥匙串管理，不进入 MART 配置文件和快照。</p>
+            <p>凭据写入系统钥匙串；MART 配置文件与快照不保存登录令牌。</p>
           </div>
         </div>
         <div className="callout">
           <div>
-            <strong>MART 不代管 Agent 登录令牌</strong>
+            <strong>凭据只在系统钥匙串里</strong>
             <p>
-              需要隔离凭据时，请把 Agent 放进专属环境，并由环境内的 Agent 自己完成登录。
-              这样切换 Agent 不会把令牌带进别的工作区。
+              需要隔离凭据时，请把 Agent 放进专属环境；MART 只保存启动配置，
+              不会把令牌带进别的工作区。
             </p>
           </div>
         </div>

@@ -75,6 +75,15 @@ export type AgentProfile = {
   command: string
 }
 
+export const setAgentCredential = (agentId: string, secret: string) =>
+  isDemo() ? demoDelay(undefined) : invoke<void>('set_agent_credential', { agentId, secret })
+
+export const deleteAgentCredential = (agentId: string) =>
+  isDemo() ? demoDelay(undefined) : invoke<void>('delete_agent_credential', { agentId })
+
+export const hasAgentCredential = (agentId: string) =>
+  isDemo() ? demoDelay(false) : invoke<boolean>('has_agent_credential', { agentId })
+
 export const loadAgentProfiles = () =>
   isDemo() ? demoDelay<AgentProfile[]>([]) : invoke<AgentProfile[]>('load_agent_profiles')
 
