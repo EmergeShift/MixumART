@@ -142,6 +142,8 @@ pub struct AgentProfile {
     pub core: String,
     #[serde(default)]
     pub command: String,
+    #[serde(default)]
+    pub environment_id: String,
 }
 
 fn agent_profiles_path(app: &AppHandle) -> Result<PathBuf, String> {
