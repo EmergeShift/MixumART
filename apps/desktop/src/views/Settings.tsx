@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 
-import { errorText, runtimeDiskUsage, runtimeImages, runtimePrune, runtimePullImage } from '../api'
+import { errorText, runtimeDiskUsage, runtimeImages, runtimeLoadImage, runtimePrune, runtimePullImage } from '../api'
 import { statusDetail } from '../status'
 import { StatusBadge } from '../components/StatusBadge'
 import type { BackendStatus, HostInfo, RuntimeKind } from '../types'
@@ -20,6 +20,8 @@ export function Settings({ backends, host, appearance, onRefresh }: Props) {
   const [pruning, setPruning] = useState<string | null>(null)
   const [pulling, setPulling] = useState<string | null>(null)
   const [imageDrafts, setImageDrafts] = useState<Record<string, string>>({})
+  const [tarDrafts, setTarDrafts] = useState<Record<string, string>>({})
+  const [loadingImage, setLoadingImage] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -56,6 +58,21 @@ export function Settings({ backends, host, appearance, onRefresh }: Props) {
       window.alert(errorText(error))
     } finally {
       setPulling(null)
+    }
+  }
+
+  const loadImage = async (kind: RuntimeKind) => {
+    const path = (tarDrafts[kind] ?? '').trim()
+    if (!path) return
+    setLoadingImage(kind)
+    try {
+      await runtimeLoadImage(kind, path)
+      setTarDrafts((previous) => ({ ...previous, [kind]: '' }))
+      setRefreshTick((value) => value + 1)
+    } catch (error) {
+      window.alert(errorText(error))
+    } finally {
+      setLoadingImage(null)
     }
   }
 
@@ -191,6 +208,26 @@ export function Settings({ backends, host, appearance, onRefresh }: Props) {
                             disabled={pulling === backend.kind}
                           >
                             {pulling === backend.kind ? '拉取中…' : '拉取'}
+                          </button>
+                        </div>
+                        <div className="snapshot-create">
+                          <input
+                            value={tarDrafts[backend.kind] ?? ''}
+                            onChange={(event) =>
+                              setTarDrafts((previous) => ({
+                                ...previous,
+                                [backend.kind]: event.target.value,
+                              }))
+                            }
+                            placeholder="本地 OCI/tar 路径"
+                            spellCheck={false}
+                          />
+                          <button
+                            className="ghost"
+                            onClick={() => void loadImage(backend.kind)}
+                            disabled={loadingImage === backend.kind}
+                          >
+                            {loadingImage === backend.kind ? '导入中…' : '导入 tar'}
                           </button>
                         </div>
                         <button
