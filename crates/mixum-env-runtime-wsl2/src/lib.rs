@@ -216,7 +216,7 @@ impl RuntimeBackend for Wsl2Backend {
         Ok(Vec::new())
     }
 
-    /// 磁盘占用 = 各节点安装目录里 `ext4.vhdx` 的大小之和。
+    /// 磁盘占用 = 各节点安装目录内文件大小之和。
     ///
     /// WSL 没有 `system df` 这类命令，vhdx 是唯一能反映真实占用的东西。
     async fn disk_usage(&self) -> Result<String, EnvError> {
@@ -236,35 +236,9 @@ impl RuntimeBackend for Wsl2Backend {
             install_root().display()
         ))
     }
-
-    /// WSL 2 没有容器日志接口：节点内部是 systemd journal，取最近 N 行。
-    ///
-    /// 节点里没有 systemd（例如只用 rootfs tar 导入的测试节点）时返回空列表，
-    /// 不当成错误——「没有日志」和「读取日志失败」是两件事。
-    async fn logs(&self, id: &str, tail: usize) -> Result<Vec<String>, EnvError> {
-        ensure_windows()?;
-        check_managed("logs", id)?;
-        let tail = tail.max(1).to_string();
-        let args = [
-            "-d",
-            id,
-            "--",
-            "journalctl",
-            "-n",
-            &tail,
-            "--no-pager",
-            "-o",
-            "cat",
-        ];
-        let (success, stdout, _) = run_wsl(&args, WRITE_TIMEOUT).await?;
-        if !success {
-            return Ok(Vec::new());
-        }
-        Ok(stdout.lines().map(str::to_owned).collect())
-    }
 }
 
-/// 目录内文件大小之和。安装目录里就一个 `ext4.vhdx`，不递归。
+/// 目录内文件大小之和。WSL 导入后安装目录通常只有 `ext4.vhdx`，不递归。
 fn directory_size(dir: &Path) -> u64 {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return 0;
