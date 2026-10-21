@@ -73,6 +73,7 @@ export type AgentProfile = {
   mode: string
   core: string
   command: string
+  environmentId?: string
 }
 
 export const setAgentCredential = (agentId: string, secret: string) =>
