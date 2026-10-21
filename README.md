@@ -8,8 +8,9 @@
 
 ## 当前状态
 
-**M0 骨架**：三种运行时已注册，Docker 与 Apple Container 可探测、可列出容器
-（含已停止）；写操作只留了契约。WSL 2 后端已接入（探测、列举、导入 / 启停 / 注销）。
+**运行时管理**：三种运行时已注册；Docker、Apple Container、WSL 2 均支持
+探测、列举、创建/导入、启停和删除。环境页还支持连接档案、监看、快照、
+命令终端和日志。
 
 **显示原型（B0/B1/B2）**：`crates/mixum-env-compositor` 在容器内跑 Smithay
 headless 合成器，把每个 surface 的 buffer+damage 经 TCP/MAP 发给宿主。
@@ -19,9 +20,9 @@ PNG 帧（非 macOS 或 `MIXUM_NATIVE_METAL=0` 时回退 WebView canvas）。
 
 Tauri 的「窗口」页通过 MAP WSS（`mixum-env-map`）连接 agentd：
 输入地址/令牌/可选指纹，扫描 surface、为每个 surface 开独立窗口。
-令牌复用 A 的 MAP 令牌；**display.takeover 的 UI 尚未接入**。agentd 已支持
-多个 comp 源，mixcomp（A）与 B compositor 可以同时显示，窗口页以 A/B
-标签区分并支持 A 回退筛选。host→remote 粘贴走键/文本事件，remote→host
+令牌复用 A 的 MAP 令牌；`display.takeover` 已接入窗口页，支持按钮或
+Ctrl/Cmd+Shift+T。agentd 已支持多个 comp 源，mixcomp（A）与 B compositor
+可以同时显示，窗口页以 A/B 标签区分并支持 A 回退筛选。host→remote 粘贴走键/文本事件，remote→host
 剪贴板用 `Cmd/Ctrl+Alt+V` 拉取。
 `mixum-env-display` 的 minifb 查看器保留作直连 TCP 调试。
 
@@ -38,9 +39,9 @@ XTEST/keymap 直接注入。agentd 任务和登录 shell 会从
 
 | 运行时 | 探测 | 列容器 | 创建 / 启停 |
 |--------|------|--------|-------------|
-| Docker | ✅ | ✅ | 契约预留（M1） |
-| Apple Container | ✅ | ✅ | 契约预留（M2） |
-| WSL 2 | ✅ | ✅ | ✅ 导入 / 启停 / 注销（M3，无 UI 入口） |
+| Docker | ✅ | ✅ | ✅ 创建 / 启停 / 删除 |
+| Apple Container | ✅ | ✅ | ✅ 创建 / 启停 / 删除 |
+| WSL 2 | ✅ | ✅ | ✅ 导入 / 启停 / 注销 |
 
 ## 快速开始
 
