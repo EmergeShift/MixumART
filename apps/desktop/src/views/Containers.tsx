@@ -8,6 +8,7 @@ import {
   loadEnvironmentConnections,
   openSurfaceWindow,
   runEnvironmentCommand,
+  removeEnvironment,
   removeEnvironmentConnection,
   saveEnvironmentConnection,
   snapshotCreate,
@@ -255,13 +256,17 @@ export function Containers({ backends }: Props) {
     }
   }
 
-  const runAction = async (container: Container, action: 'start' | 'stop') => {
+  const runAction = async (container: Container, action: 'start' | 'stop' | 'remove') => {
     if (!kind) return
     setActionId(container.id)
     setError(null)
     try {
       if (action === 'start') await startEnvironment(kind, container.id)
-      else await stopEnvironment(kind, container.id)
+      else if (action === 'stop') await stopEnvironment(kind, container.id)
+      else {
+        if (!window.confirm(`删除环境 ${container.name}？`)) return
+        await removeEnvironment(kind, container.id)
+      }
       await load()
     } catch (err) {
       setError(errorText(err))
@@ -735,6 +740,13 @@ export function Containers({ backends }: Props) {
                             停止
                           </button>
                         )}
+                        <button
+                          className="ghost"
+                          onClick={() => void runAction(container, 'remove')}
+                          disabled={actionId === container.id}
+                        >
+                          删除
+                        </button>
                         <button
                           className="ghost"
                           onClick={() => openTerminal(container)}
