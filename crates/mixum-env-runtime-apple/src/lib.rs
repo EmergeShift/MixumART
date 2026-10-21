@@ -136,6 +136,16 @@ impl RuntimeBackend for AppleContainerBackend {
         out.into_stdout("container image pull").map(|_| ())
     }
 
+    async fn load_image(&self, path: &str) -> Result<(), EnvError> {
+        let out = process::run(
+            "container",
+            &["image", "load", "--input", path],
+            CREATE_TIMEOUT,
+        )
+        .await?;
+        out.into_stdout("container image load").map(|_| ())
+    }
+
     async fn prune(&self) -> Result<String, EnvError> {
         let containers = process::run("container", &["prune"], WRITE_TIMEOUT).await?;
         let containers = containers.into_stdout("container prune")?;
