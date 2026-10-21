@@ -8,6 +8,7 @@ import {
   errorText,
   listContainers,
   listMigrations,
+  migrateSnapshot,
   type MigrationFile,
   listSurfaces,
   loadEnvironmentConnections,
@@ -96,6 +97,7 @@ export function Containers({ backends }: Props) {
   const [migrations, setMigrations] = useState<MigrationFile[]>([])
   const [migrationPath, setMigrationPath] = useState('')
   const [migrationNotice, setMigrationNotice] = useState('')
+  const [migrationTarget, setMigrationTarget] = useState('')
   const [terminal, setTerminal] = useState<Container | null>(null)
   const [terminalId, setTerminalId] = useState<number | null>(null)
   const [terminalLines, setTerminalLines] = useState<string[]>([])
@@ -424,6 +426,22 @@ export function Containers({ backends }: Props) {
     }
   }
 
+  const migrateToTarget = async (node: string) => {
+    if (!browser || !migrationTarget) return
+    if (!window.confirm(`把快照 ${node} 迁移到所选环境？`)) return
+    setSnapshotAction(`migrate:${node}`)
+    setSnapshotError(null)
+    setMigrationNotice('')
+    try {
+      const targetNode = await migrateSnapshot(browser.id, migrationTarget, node)
+      setMigrationNotice(`已迁移，目标节点 ${targetNode}`)
+    } catch (err) {
+      setSnapshotError(errorText(err))
+    } finally {
+      setSnapshotAction(null)
+    }
+  }
+
   return (
     <section>
       <div className="section-head">
@@ -730,6 +748,21 @@ export function Containers({ backends }: Props) {
                     导入
                   </button>
                 </div>
+                <div className="snapshot-create">
+                  <select
+                    value={migrationTarget}
+                    onChange={(event) => setMigrationTarget(event.target.value)}
+                  >
+                    <option value="">迁移目标环境…</option>
+                    {(containers ?? [])
+                      .filter((container) => container.id !== browser.id)
+                      .map((container) => (
+                        <option key={container.id} value={container.id}>
+                          {container.name}
+                        </option>
+                      ))}
+                  </select>
+                </div>
                 {migrationNotice && <p className="muted">{migrationNotice}</p>}
                 {snapshotError && <div className="error">{snapshotError}</div>}
                 {snapshotLoading ? (
@@ -771,6 +804,13 @@ export function Containers({ backends }: Props) {
                               disabled={snapshotAction === `export:${node.id}`}
                             >
                               导出
+                            </button>
+                            <button
+                              className="ghost"
+                              onClick={() => void migrateToTarget(node.id)}
+                              disabled={!migrationTarget || snapshotAction === `migrate:${node.id}`}
+                            >
+                              迁移
                             </button>
                           </td>
                         </tr>

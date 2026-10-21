@@ -630,6 +630,62 @@ pub async fn environment_snapshot_export(
     })
 }
 
+/// 直接从源环境导出 `.mart` 并迁移到目标环境（不需要落盘/手工拖文件）。
+#[tauri::command]
+pub async fn environment_migrate(
+    app: AppHandle,
+    source_container_id: String,
+    target_container_id: String,
+    node: String,
+    origin: Option<String>,
+) -> Result<String, String> {
+    let source = snapshot_client(&app, &source_container_id).await?;
+    let reply = source
+        .snapshot_export(&node)
+        .await
+        .map_err(|error| error.to_string())?;
+    let file = reply
+        .get("file")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "snap.export 未返回 file".to_string())?
+        .to_owned();
+    let expected = reply
+        .get("sha256")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let data = source
+        .get_file(&format!("transfers/{file}"))
+        .await
+        .map_err(|error| error.to_string())?;
+    let actual: String = Sha256::digest(&data)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    if !expected.is_empty() && actual != expected {
+        return Err("迁移文件 sha256 校验失败".into());
+    }
+
+    let name = Path::new(&file)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "迁移文件名无效".to_string())?;
+    let target = snapshot_client(&app, &target_container_id).await?;
+    target
+        .put_file(name, &data)
+        .await
+        .map_err(|error| error.to_string())?;
+    let reply = target
+        .snapshot_import(name, origin.as_deref().unwrap_or("mixumart"))
+        .await
+        .map_err(|error| error.to_string())?;
+    reply
+        .get("node")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| "snap.import 未返回 node".to_string())
+}
+
 /// 把本机 `.mart` 上传到目标环境并导入为快照节点。
 #[tauri::command]
 pub async fn environment_snapshot_import(

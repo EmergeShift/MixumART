@@ -140,6 +140,7 @@ pub fn run() {
             commands::environment_snapshot_export,
             commands::list_migrations,
             commands::environment_snapshot_import,
+            commands::environment_migrate,
             commands::environment_run_command,
             commands::list_surfaces,
             commands::open_surface_window,
