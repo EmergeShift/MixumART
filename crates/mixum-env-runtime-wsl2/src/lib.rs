@@ -492,6 +492,13 @@ mod tests {
         }
     }
 
+    /// 需要真实导入的 live 用例靠它拿到 rootfs；没配就返回 `None`。
+    fn test_rootfs() -> Option<String> {
+        std::env::var("MIXUM_TEST_ROOTFS")
+            .ok()
+            .filter(|path| Path::new(path).is_file())
+    }
+
     #[test]
     fn decodes_utf16le_console_output() {
         let raw = utf16le(
@@ -737,10 +744,15 @@ mod tests {
         println!("mixumOS 节点（mixum-* 发行版）数：{}", containers.len());
     }
 
-    /// 真实幂等冒烟：只碰不存在的名字，不改动任何发行版。
+    /// 真实幂等冒烟：
+    /// - 不存在的名字：`remove` / `stop` 成功，`start` 报「不存在」；
+    /// - **存在但已 Stopped** 的名字：`stop` 直接成功（契约 §3）——这一段需要
+    ///   真实发行版，故需 `MIXUM_TEST_ROOTFS`，未设置时跳过；
+    /// - 宿主自己的发行版：拒绝操作。
+    ///
     /// `cargo test -p mixum-env-runtime-wsl2 -- --ignored live_write_idempotency`
     #[tokio::test]
-    #[ignore = "需要本机 WSL 与 Windows 宿主"]
+    #[ignore = "需要本机 WSL 与 Windows 宿主（可选 MIXUM_TEST_ROOTFS）"]
     async fn live_write_idempotency() {
         let backend = backend();
         let absent = "mixum-live-absent";
@@ -760,6 +772,35 @@ mod tests {
             .to_string();
         assert!(err.contains("不存在"), "start 不存在应报错：{err}");
 
+        // 已存在但已经 Stopped：stop 必须成功，而不是把 terminate 的非零退出
+        // 当成失败（单测只覆盖了 is_stopped 纯函数，这里走真实 wsl.exe）。
+        if let Some(tar) = test_rootfs() {
+            let name = "mixum-live-idem";
+            let _ = backend.remove_container(name).await;
+
+            let mut spec = spec(name);
+            spec.image = tar;
+            backend.create_container(spec).await.expect("import");
+            let listed = backend.list_containers().await.unwrap();
+            let node = listed
+                .iter()
+                .find(|container| container.name == name)
+                .expect("导入后应能列出");
+            assert_eq!(
+                node.state,
+                ContainerState::Stopped,
+                "新导入的节点应当是 Stopped"
+            );
+
+            backend
+                .stop_container(name)
+                .await
+                .expect("stop 一个已存在且已 Stopped 的节点应成功");
+            backend.remove_container(name).await.expect("remove");
+        } else {
+            eprintln!("跳过「存在但已 Stopped」用例：未设置 MIXUM_TEST_ROOTFS");
+        }
+
         // 宿主自己的发行版不在管理范围，必须拒绝（契约 §9）。
         let err = backend
             .remove_container("Ubuntu-24.04")
@@ -775,12 +816,9 @@ mod tests {
     #[tokio::test]
     #[ignore = "需要 Windows + WSL + MIXUM_TEST_ROOTFS"]
     async fn live_write_cycle() {
-        let tar = match std::env::var("MIXUM_TEST_ROOTFS") {
-            Ok(path) if Path::new(&path).is_file() => path,
-            _ => {
-                eprintln!("跳过：未设置 MIXUM_TEST_ROOTFS 或文件不存在");
-                return;
-            }
+        let Some(tar) = test_rootfs() else {
+            eprintln!("跳过：未设置 MIXUM_TEST_ROOTFS 或文件不存在");
+            return;
         };
         let backend = backend();
         let name = "mixum-live-test";
