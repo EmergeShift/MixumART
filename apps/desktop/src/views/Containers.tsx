@@ -575,7 +575,7 @@ export function Containers({ backends }: Props) {
               ) : surfaces.length === 0 ? (
                 <p className="muted">这个环境里暂时没有窗口。</p>
               ) : (
-                <table className="table">
+                <div className="table-scroll"><table className="table">
                   <thead>
                     <tr>
                       <th>窗口</th>
@@ -600,7 +600,7 @@ export function Containers({ backends }: Props) {
                       </tr>
                     ))}
                   </tbody>
-                </table>
+                </table></div>
               )}
 
               <div className="snapshot-panel">
@@ -640,7 +640,7 @@ export function Containers({ backends }: Props) {
                 ) : !snapshots || (snapshots.nodes ?? []).length === 0 ? (
                   <p className="muted">暂无快照。</p>
                 ) : (
-                  <table className="table snapshot-table">
+                  <div className="table-scroll"><table className="table snapshot-table">
                     <thead>
                       <tr>
                         <th>快照</th>
@@ -672,7 +672,7 @@ export function Containers({ backends }: Props) {
                         </tr>
                       ))}
                     </tbody>
-                  </table>
+                  </table></div>
                 )}
               </div>
             </section>
@@ -686,7 +686,7 @@ export function Containers({ backends }: Props) {
               <p>点击上方「创建环境」开始。</p>
             </div>
           ) : (
-            <table className="table">
+            <div className="table-scroll"><table className="table">
               <thead>
                 <tr>
                   <th>状态</th>
@@ -779,7 +779,7 @@ export function Containers({ backends }: Props) {
                   )
                 })}
               </tbody>
-            </table>
+            </table></div>
           )}
         </>
       )}

@@ -302,7 +302,7 @@ export function Agents() {
             <p>添加一个外部 Agent，记录它使用哪个环境、以什么方式工作。</p>
           </div>
         ) : (
-          <table className="table">
+          <div className="table-scroll"><table className="table">
             <thead>
               <tr>
                 <th>Agent</th>
@@ -345,7 +345,7 @@ export function Agents() {
                 </tr>
               ))}
             </tbody>
-          </table>
+          </table></div>
         )}
       </section>
 
