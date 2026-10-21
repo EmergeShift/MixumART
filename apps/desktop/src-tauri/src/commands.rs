@@ -84,6 +84,34 @@ pub async fn runtime_disk_usage(
 }
 
 #[tauri::command]
+pub async fn runtime_pull_image(
+    kind: RuntimeKind,
+    reference: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let backend = state
+        .registry
+        .get(kind)
+        .ok_or_else(|| format!("没有注册 {kind} 后端"))?;
+    backend
+        .pull_image(&reference)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn runtime_prune(
+    kind: RuntimeKind,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let backend = state
+        .registry
+        .get(kind)
+        .ok_or_else(|| format!("没有注册 {kind} 后端"))?;
+    backend.prune().await.map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 pub async fn runtime_logs(
     kind: RuntimeKind,
     id: String,
@@ -296,6 +324,31 @@ pub struct EnvironmentConnection {
     pub fingerprint: Option<String>,
 }
 
+const CONNECTION_KEYRING_SERVICE: &str = "mixum-art-env";
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ConnectionFileEntry {
+    addr: String,
+    #[serde(default)]
+    fingerprint: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyConnectionEntry {
+    addr: String,
+    #[serde(default)]
+    token: Option<String>,
+    #[serde(default)]
+    fingerprint: Option<String>,
+}
+
+fn connection_keyring_entry(container_id: &str) -> Result<keyring::Entry, String> {
+    keyring::Entry::new(CONNECTION_KEYRING_SERVICE, container_id)
+        .map_err(|error| format!("打开环境令牌钥匙串失败：{error}"))
+}
+
 fn connections_path(app: &AppHandle) -> Result<PathBuf, String> {
     app.path()
         .app_data_dir()
@@ -303,18 +356,7 @@ fn connections_path(app: &AppHandle) -> Result<PathBuf, String> {
         .map_err(|error| format!("无法定位应用数据目录：{error}"))
 }
 
-fn load_connection_map(app: &AppHandle) -> Result<HashMap<String, EnvironmentConnection>, String> {
-    let path = connections_path(app)?;
-    match std::fs::read_to_string(&path) {
-        Ok(text) => {
-            serde_json::from_str(&text).map_err(|error| format!("连接档案格式错误：{error}"))
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(HashMap::new()),
-        Err(error) => Err(format!("读取连接档案失败：{error}")),
-    }
-}
-
-fn save_connection_map(
+fn write_connection_file(
     app: &AppHandle,
     connections: &HashMap<String, EnvironmentConnection>,
 ) -> Result<(), String> {
@@ -323,8 +365,20 @@ fn save_connection_map(
         return Err("连接档案路径没有父目录".into());
     };
     std::fs::create_dir_all(dir).map_err(|error| format!("创建应用数据目录失败：{error}"))?;
+    let entries: HashMap<String, ConnectionFileEntry> = connections
+        .iter()
+        .map(|(id, connection)| {
+            (
+                id.clone(),
+                ConnectionFileEntry {
+                    addr: connection.addr.clone(),
+                    fingerprint: connection.fingerprint.clone(),
+                },
+            )
+        })
+        .collect();
     let temp = dir.join(format!(".connections-{}.tmp", std::process::id()));
-    let text = serde_json::to_string_pretty(connections)
+    let text = serde_json::to_string_pretty(&entries)
         .map_err(|error| format!("序列化连接档案失败：{error}"))?;
     std::fs::write(&temp, text).map_err(|error| format!("写入连接档案失败：{error}"))?;
     #[cfg(unix)]
@@ -334,6 +388,63 @@ fn save_connection_map(
             .map_err(|error| format!("设置连接档案权限失败：{error}"))?;
     }
     std::fs::rename(&temp, &path).map_err(|error| format!("提交连接档案失败：{error}"))
+}
+
+fn load_connection_map(app: &AppHandle) -> Result<HashMap<String, EnvironmentConnection>, String> {
+    let path = connections_path(app)?;
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(HashMap::new()),
+        Err(error) => return Err(format!("读取连接档案失败：{error}")),
+    };
+    let data: HashMap<String, LegacyConnectionEntry> =
+        serde_json::from_str(&text).map_err(|error| format!("连接档案格式错误：{error}"))?;
+    let mut connections = HashMap::new();
+    let mut migrated = false;
+    for (id, entry) in data {
+        let token = if let Some(token) = entry.token.filter(|token| !token.is_empty()) {
+            connection_keyring_entry(&id)?
+                .set_password(&token)
+                .map_err(|error| format!("迁移环境令牌到钥匙串失败：{error}"))?;
+            migrated = true;
+            token
+        } else {
+            match connection_keyring_entry(&id)?.get_password() {
+                Ok(token) => token,
+                Err(keyring::Error::NoEntry) => {
+                    return Err(format!("环境 {id} 的钥匙串令牌不存在"))
+                }
+                Err(error) => return Err(format!("读取环境令牌钥匙串失败：{error}")),
+            }
+        };
+        connections.insert(
+            id,
+            EnvironmentConnection {
+                addr: entry.addr,
+                token,
+                fingerprint: entry.fingerprint,
+            },
+        );
+    }
+    if migrated {
+        write_connection_file(app, &connections)?;
+    }
+    Ok(connections)
+}
+
+fn save_connection_map(
+    app: &AppHandle,
+    connections: &HashMap<String, EnvironmentConnection>,
+) -> Result<(), String> {
+    for (id, connection) in connections {
+        if connection.token.trim().is_empty() {
+            return Err(format!("环境 {id} 的令牌为空"));
+        }
+        connection_keyring_entry(id)?
+            .set_password(&connection.token)
+            .map_err(|error| format!("写入环境令牌钥匙串失败：{error}"))?;
+    }
+    write_connection_file(app, connections)
 }
 
 fn connection_for(app: &AppHandle, container_id: &str) -> Result<EnvironmentConnection, String> {
@@ -533,6 +644,10 @@ pub fn save_environment_connection(
 pub fn remove_environment_connection(app: AppHandle, container_id: String) -> Result<(), String> {
     let mut connections = load_connection_map(&app)?;
     connections.remove(&container_id);
+    match connection_keyring_entry(&container_id)?.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => {}
+        Err(error) => return Err(format!("删除环境令牌失败：{error}")),
+    }
     save_connection_map(&app, &connections)
 }
 

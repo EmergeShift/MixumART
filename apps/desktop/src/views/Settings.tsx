@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react'
 
-import { runtimeDiskUsage, runtimeImages } from '../api'
+import { errorText, runtimeDiskUsage, runtimeImages, runtimePrune, runtimePullImage } from '../api'
 import { statusDetail } from '../status'
 import { StatusBadge } from '../components/StatusBadge'
-import type { BackendStatus, HostInfo } from '../types'
+import type { BackendStatus, HostInfo, RuntimeKind } from '../types'
 
 type Props = {
   backends: BackendStatus[] | null
@@ -16,6 +16,10 @@ export function Settings({ backends, host, appearance, onRefresh }: Props) {
   const [resources, setResources] = useState<
     Record<string, { images: string[]; disk: string; error: string | null }>
   >({})
+  const [refreshTick, setRefreshTick] = useState(0)
+  const [pruning, setPruning] = useState<string | null>(null)
+  const [pulling, setPulling] = useState<string | null>(null)
+  const [imageDrafts, setImageDrafts] = useState<Record<string, string>>({})
 
   useEffect(() => {
     let cancelled = false
@@ -35,10 +39,38 @@ export function Settings({ backends, host, appearance, onRefresh }: Props) {
     ).then((entries) => {
       if (!cancelled) setResources(Object.fromEntries(entries))
     })
-    return () => {
+  return () => {
       cancelled = true
     }
-  }, [backends])
+  }, [backends, refreshTick])
+
+  const pull = async (kind: RuntimeKind) => {
+    const reference = (imageDrafts[kind] ?? '').trim()
+    if (!reference) return
+    setPulling(kind)
+    try {
+      await runtimePullImage(kind, reference)
+      setImageDrafts((previous) => ({ ...previous, [kind]: '' }))
+      setRefreshTick((value) => value + 1)
+    } catch (error) {
+      window.alert(errorText(error))
+    } finally {
+      setPulling(null)
+    }
+  }
+
+  const prune = async (kind: RuntimeKind) => {
+    if (!window.confirm(`清理 ${kind} 未使用的容器/镜像？这会删除未使用的数据。`)) return
+    setPruning(kind)
+    try {
+      await runtimePrune(kind)
+      setRefreshTick((value) => value + 1)
+    } catch (error) {
+      window.alert(errorText(error))
+    } finally {
+      setPruning(null)
+    }
+  }
 
   return (
     <div className="settings-page">
@@ -141,6 +173,33 @@ export function Settings({ backends, host, appearance, onRefresh }: Props) {
                           {resource.images.length > 0 ? `：${resource.images.slice(0, 3).join('、')}` : ''}
                         </p>
                         <pre className="resource-disk">{resource.disk}</pre>
+                        <div className="snapshot-create">
+                          <input
+                            value={imageDrafts[backend.kind] ?? ''}
+                            onChange={(event) =>
+                              setImageDrafts((previous) => ({
+                                ...previous,
+                                [backend.kind]: event.target.value,
+                              }))
+                            }
+                            placeholder="拉取镜像，例如 alpine:3.20"
+                            spellCheck={false}
+                          />
+                          <button
+                            className="ghost"
+                            onClick={() => void pull(backend.kind)}
+                            disabled={pulling === backend.kind}
+                          >
+                            {pulling === backend.kind ? '拉取中…' : '拉取'}
+                          </button>
+                        </div>
+                        <button
+                          className="ghost"
+                          onClick={() => void prune(backend.kind)}
+                          disabled={pruning === backend.kind}
+                        >
+                          {pruning === backend.kind ? '清理中…' : '清理未使用'}
+                        </button>
                       </>
                     )}
                   </article>

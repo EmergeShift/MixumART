@@ -98,6 +98,16 @@ export const runtimeImages = (kind: RuntimeKind) =>
     ? demoDelay(['mixumos:0.1.4'])
     : invoke<string[]>('runtime_images', { kind })
 
+export const runtimePullImage = (kind: RuntimeKind, reference: string) =>
+  isDemo()
+    ? demoDelay(undefined)
+    : invoke<void>('runtime_pull_image', { kind, reference })
+
+export const runtimePrune = (kind: RuntimeKind) =>
+  isDemo()
+    ? demoDelay('demo prune ok')
+    : invoke<string>('runtime_prune', { kind })
+
 export const runtimeLogs = (kind: RuntimeKind, id: string, tail = 200) =>
   isDemo()
     ? demoDelay(['demo log line'])
