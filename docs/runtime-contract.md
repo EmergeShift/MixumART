@@ -199,7 +199,7 @@ WSL 2 没有「容器」这一层：一个 mixumOS 节点 = 一个 `mixum-*` 发
 |------|--------------|--------|
 | `images` | 返回空列表 | WSL 没有镜像仓库，节点来自本地 rootfs tar，导入后不存在「镜像」这一层 |
 | `disk_usage` | `N 个节点 · X GiB` + 安装根目录 | WSL 没有 `system df`，`ext4.vhdx` 是唯一能反映真实占用的东西 |
-| `logs` | `wsl -d <id> -- journalctl -n <tail> --no-pager -o cat` | 节点内部就是 systemd journal；节点里没有 systemd 时返回空列表，**不报错** |
+| `logs` | `journalctl -u mixumd …`，回退 `/var/log/mixumd.log` / `dmesg` | 节点内部是 systemd journal；优先 mixumd 服务日志，读取失败返回 `Err`（日志实现已随 #34 合入） |
 
 这三个方法以前走 trait 默认实现（`Unimplemented`），设置页会把一个正常的
 WSL 2 后端显示成「能力尚未实现」。**「没有这个概念」和「读取失败」必须区分**：
