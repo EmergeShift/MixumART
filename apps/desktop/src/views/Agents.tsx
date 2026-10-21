@@ -5,11 +5,14 @@ import {
   errorText,
   hasAgentCredential,
   loadAgentProfiles,
+  loadEnvironmentConnections,
+  runEnvironmentCommand,
   removeAgentProfile,
   saveAgentProfile,
   setAgentCredential,
   type AgentProfile,
 } from '../api'
+import type { EnvironmentConnection } from '../types'
 
 const MODES = [
   {
@@ -48,6 +51,7 @@ const emptyDraft = (): AgentProfile => ({
   mode: 'as-tool',
   core: 'mixum',
   command: '',
+  environmentId: '',
 })
 
 export function Agents() {
@@ -59,6 +63,10 @@ export function Agents() {
   const [secret, setSecret] = useState('')
   const [credentialSaved, setCredentialSaved] = useState<boolean | null>(null)
   const [credentialBusy, setCredentialBusy] = useState(false)
+  const [connections, setConnections] = useState<Record<string, EnvironmentConnection>>({})
+  const [launching, setLaunching] = useState<string | null>(null)
+  const [launchLines, setLaunchLines] = useState<string[] | null>(null)
+  const [launchName, setLaunchName] = useState('')
 
   const load = async () => {
     setError(null)
@@ -72,6 +80,9 @@ export function Agents() {
 
   useEffect(() => {
     void load()
+    void loadEnvironmentConnections()
+      .then(setConnections)
+      .catch((err: unknown) => setError(errorText(err)))
   }, [])
 
   const save = async () => {
@@ -140,6 +151,30 @@ export function Agents() {
       setError(errorText(err))
     } finally {
       setCredentialBusy(false)
+    }
+  }
+
+  const startAgent = async (profile: AgentProfile) => {
+    if (!profile.command.trim()) {
+      setError('这个 Agent 还没有启动命令')
+      return
+    }
+    if (!profile.environmentId || !connections[profile.environmentId]) {
+      setError('请先给 Agent 绑定一个已连接的环境')
+      return
+    }
+    setLaunching(profile.id)
+    setLaunchName(profile.name)
+    setError(null)
+    setLaunchLines([`[启动] ${profile.name}`, `环境: ${connections[profile.environmentId].addr}`, `$ ${profile.command}`])
+    try {
+      const result = await runEnvironmentCommand(profile.environmentId, profile.command)
+      setLaunchLines((previous) => [...(previous ?? []), ...result.lines])
+      if (result.error) setError(result.error)
+    } catch (err) {
+      setError(errorText(err))
+    } finally {
+      setLaunching(null)
     }
   }
 
@@ -247,6 +282,21 @@ export function Agents() {
                   spellCheck={false}
                 />
               </div>
+              <div className="field">
+                <label htmlFor="agent-environment">绑定环境</label>
+                <select
+                  id="agent-environment"
+                  value={editing.environmentId ?? ''}
+                  onChange={(event) => setEditing({ ...editing, environmentId: event.target.value })}
+                >
+                  <option value="">不绑定</option>
+                  {Object.entries(connections).map(([id, connection]) => (
+                    <option key={id} value={id}>
+                      {connection.addr}
+                    </option>
+                  ))}
+                </select>
+              </div>
             </div>
             <div className="connect-actions">
               <button className="primary" onClick={() => void save()} disabled={saving}>
@@ -309,6 +359,7 @@ export function Agents() {
                 <th>类型</th>
                 <th>使用方式</th>
                 <th>执行引擎</th>
+                <th>环境</th>
                 <th>启动命令</th>
                 <th />
               </tr>
@@ -330,8 +381,20 @@ export function Agents() {
                   <td className="muted">
                     {CORES.find((core) => core.key === profile.core)?.name ?? profile.core}
                   </td>
+                  <td className="mono muted">
+                    {profile.environmentId
+                      ? connections[profile.environmentId]?.addr ?? '连接已失效'
+                      : '未绑定'}
+                  </td>
                   <td className="mono muted">{profile.command || '—'}</td>
                   <td className="row-actions">
+                    <button
+                      className="ghost"
+                      onClick={() => void startAgent(profile)}
+                      disabled={launching === profile.id}
+                    >
+                      {launching === profile.id ? '启动中…' : '启动'}
+                    </button>
                     <button className="ghost" onClick={() => void openCredential(profile)}>
                       凭据
                     </button>
@@ -348,6 +411,21 @@ export function Agents() {
           </table></div>
         )}
       </section>
+
+      {launchLines && (
+        <section className="connect-panel terminal-panel" aria-label="Agent 启动输出">
+          <div className="section-head">
+            <div>
+              <h3>{launchName} · 启动输出</h3>
+              <p>一次性启动；凭据仍由环境/外部 Agent 负责。</p>
+            </div>
+            <button className="ghost" onClick={() => setLaunchLines(null)}>
+              关闭
+            </button>
+          </div>
+          <pre className="terminal-output">{launchLines.join('\n')}</pre>
+        </section>
+      )}
 
       <section>
         <div className="section-head">
