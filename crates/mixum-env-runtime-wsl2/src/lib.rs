@@ -774,29 +774,45 @@ mod tests {
 
         // 已存在但已经 Stopped：stop 必须成功，而不是把 terminate 的非零退出
         // 当成失败（单测只覆盖了 is_stopped 纯函数，这里走真实 wsl.exe）。
+        // live_write_cycle 也覆盖 import→stop，但这条额外走 list_containers()
+        // 解析出的 Stopped 状态，避免只依赖 create_container 的返回值。
         if let Some(tar) = test_rootfs() {
             let name = "mixum-live-idem";
-            let _ = backend.remove_container(name).await;
+            let backend_cleanup = backend.clone();
+            let backend_task = backend.clone();
+            let result = tokio::spawn(async move {
+                let _ = backend_task.remove_container(name).await;
 
-            let mut spec = spec(name);
-            spec.image = tar;
-            backend.create_container(spec).await.expect("import");
-            let listed = backend.list_containers().await.unwrap();
-            let node = listed
-                .iter()
-                .find(|container| container.name == name)
-                .expect("导入后应能列出");
-            assert_eq!(
-                node.state,
-                ContainerState::Stopped,
-                "新导入的节点应当是 Stopped"
-            );
+                let mut spec = spec(name);
+                spec.image = tar;
+                backend_task.create_container(spec).await.expect("import");
+                let listed = backend_task.list_containers().await.unwrap();
+                let node = listed
+                    .iter()
+                    .find(|container| container.name == name)
+                    .expect("导入后应能列出");
+                assert_eq!(
+                    node.state,
+                    ContainerState::Stopped,
+                    "新导入的节点应当是 Stopped"
+                );
 
-            backend
-                .stop_container(name)
-                .await
-                .expect("stop 一个已存在且已 Stopped 的节点应成功");
-            backend.remove_container(name).await.expect("remove");
+                backend_task
+                    .stop_container(name)
+                    .await
+                    .expect("stop 一个已存在且已 Stopped 的节点应成功");
+                backend_task
+                    .stop_container(name)
+                    .await
+                    .expect("重复 stop 已 Stopped 的节点也应成功");
+                backend_task.remove_container(name).await.expect("remove");
+            })
+            .await;
+            // 断言/中间步骤 panic 时也清掉 distro，避免污染下一次 live 运行。
+            let _ = backend_cleanup.remove_container(name).await;
+            if let Err(error) = result {
+                panic!("live_write_idempotency 子任务失败: {error}");
+            }
         } else {
             eprintln!("跳过「存在但已 Stopped」用例：未设置 MIXUM_TEST_ROOTFS");
         }
