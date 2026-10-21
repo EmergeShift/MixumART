@@ -192,3 +192,15 @@ WSL 2 没有「容器」这一层：一个 mixumOS 节点 = 一个 `mixum-*` 发
 - 解析以「最后一列是版本号」锚定，不写死 STATE 枚举：WSL 新增状态时
   （如 `Uninstalling`）该行仍会列出，展示层降级为 `Unknown`；
 - 「一个发行版都没有」不是错误：`list_containers` 返回空 `Vec`。
+
+### 资源类方法（设置页 / 环境终端）
+
+| 方法 | WSL 2 的实现 | 为什么 |
+|------|--------------|--------|
+| `images` | 返回空列表 | WSL 没有镜像仓库，节点来自本地 rootfs tar，导入后不存在「镜像」这一层 |
+| `disk_usage` | `N 个节点 · X GiB` + 安装根目录 | WSL 没有 `system df`，`ext4.vhdx` 是唯一能反映真实占用的东西 |
+| `logs` | `journalctl -u mixumd …`，回退 `/var/log/mixumd.log` / `dmesg` | 节点内部是 systemd journal；优先 mixumd 服务日志，读取失败返回 `Err`（日志实现已随 #34 合入） |
+
+这三个方法以前走 trait 默认实现（`Unimplemented`），设置页会把一个正常的
+WSL 2 后端显示成「能力尚未实现」。**「没有这个概念」和「读取失败」必须区分**：
+前者返回空/零值，后者才返回 `Err`。
