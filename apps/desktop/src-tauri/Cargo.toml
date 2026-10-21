@@ -1,6 +1,6 @@
 [package]
 name = "mixum-env-desktop"
-description = "mixum Agent Env 桌面端：宿主机运行时管理器与 GUI"
+description = "mixum Agent Runtime 桌面端：宿主机运行时管理器与 GUI"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

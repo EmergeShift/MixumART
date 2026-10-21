@@ -1,12 +1,28 @@
 import { useCallback, useEffect, useState } from 'react'
 
+import logo from './assets/logo.png'
 import { errorText, hostInfo, runtimeStatus } from './api'
+import { isDemo } from './demo'
+import { statusLabel, statusTone } from './status'
+import { ThemeToggle, WindowControls } from './components/Chrome'
+import { Icon, type IconName } from './components/Icons'
+import { Agents } from './views/Agents'
+import { Cockpit } from './views/Cockpit'
 import { Containers } from './views/Containers'
-import { Environments } from './views/Environments'
+import { Settings } from './views/Settings'
 import { Surfaces } from './views/Surfaces'
 import type { BackendStatus, HostInfo } from './types'
+import { detectPlatform } from './platform'
+import {
+  applyTheme,
+  getStoredThemeMode,
+  resolveTheme,
+  storeThemeMode,
+  type ResolvedTheme,
+  type ThemeMode,
+} from './theme'
 
-type Tab = 'environments' | 'containers' | 'surfaces'
+type Tab = 'cockpit' | 'containers' | 'surfaces' | 'agents' | 'settings'
 
 const OS_LABELS: Record<string, string> = {
   macos: 'macOS',
@@ -14,12 +30,26 @@ const OS_LABELS: Record<string, string> = {
   linux: 'Linux',
 }
 
+const PLATFORM = detectPlatform()
+
+const NAV: { tab: Tab; label: string; sub: string; icon: IconName }[] = [
+  { tab: 'cockpit', label: '首页', sub: '这台电脑上的所有 Agent 环境', icon: 'home' },
+  { tab: 'containers', label: '环境', sub: '每个环境在哪、由谁使用', icon: 'layers' },
+  { tab: 'surfaces', label: '窗口', sub: '监看与接管环境里的应用', icon: 'monitor' },
+  { tab: 'agents', label: 'Agent', sub: '对接外部 Agent，决定谁在环境里干活', icon: 'agent' },
+  { tab: 'settings', label: '设置', sub: '运行软件、环境系统与应用设置', icon: 'settings' },
+]
+
 export default function App() {
-  const [tab, setTab] = useState<Tab>('environments')
+  const [tab, setTab] = useState<Tab>('cockpit')
   const [host, setHost] = useState<HostInfo | null>(null)
   const [backends, setBackends] = useState<BackendStatus[] | null>(null)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [themeMode, setThemeMode] = useState<ThemeMode>(getStoredThemeMode)
+  const [resolvedTheme, setResolvedTheme] = useState<ResolvedTheme>(() =>
+    resolveTheme(getStoredThemeMode()),
+  )
 
   const refresh = useCallback(async () => {
     setRefreshing(true)
@@ -39,60 +69,138 @@ export default function App() {
     void refresh()
   }, [refresh])
 
-  const title =
-    tab === 'environments' ? '宿主机环境' : tab === 'containers' ? '容器' : '窗口'
+  useEffect(() => {
+    document.documentElement.dataset.platform = PLATFORM
+  }, [])
+
+  useEffect(() => {
+    const media = window.matchMedia('(prefers-color-scheme: dark)')
+    const sync = () => {
+      const next = themeMode === 'system'
+        ? (media.matches ? 'dark' : 'light')
+        : themeMode
+      applyTheme(next)
+      setResolvedTheme(next)
+    }
+    sync()
+    media.addEventListener('change', sync)
+    return () => media.removeEventListener('change', sync)
+  }, [themeMode])
+
+  const toggleTheme = useCallback(() => {
+    setThemeMode((previous) => {
+      const next: ThemeMode = resolveTheme(previous) === 'dark' ? 'light' : 'dark'
+      storeThemeMode(next)
+      return next
+    })
+  }, [])
+
+  const current = NAV.find((item) => item.tab === tab)!
+  const isHome = tab === 'cockpit'
   const hostMeta = host
     ? [OS_LABELS[host.os] ?? host.os, host.arch, `v${host.appVersion}`].join(' · ')
-    : '正在读取宿主信息…'
+    : '读取中…'
+
+  const chromeActions = (
+    <div className="chrome-actions">
+      {isDemo() && <span className="demo-badge">演示数据</span>}
+      <span className="host-meta">{hostMeta}</span>
+      <button
+        type="button"
+        className="icon-btn"
+        onClick={() => void refresh()}
+        disabled={refreshing}
+        title="刷新"
+        aria-label="刷新"
+      >
+        <Icon name="refresh" size={15} className={refreshing ? 'spin' : undefined} />
+      </button>
+      <ThemeToggle theme={resolvedTheme} onToggle={toggleTheme} />
+      {PLATFORM === 'windows' && <WindowControls />}
+    </div>
+  )
 
   return (
     <div className="app">
-      <aside className="sidebar">
-        <div className="brand">
-          mixum <span>Agent Env</span>
-        </div>
-        <nav className="nav">
-          <button
-            className={tab === 'environments' ? 'active' : ''}
-            onClick={() => setTab('environments')}
-          >
-            环境
-          </button>
-          <button
-            className={tab === 'containers' ? 'active' : ''}
-            onClick={() => setTab('containers')}
-          >
-            容器
-          </button>
-          <button
-            className={tab === 'surfaces' ? 'active' : ''}
-            onClick={() => setTab('surfaces')}
-          >
-            窗口
-          </button>
-        </nav>
-        <div className="sidebar-foot">{host ? `v${host.appVersion}` : '—'}</div>
-      </aside>
+      <div className="app-body">
+        <aside className="sidebar">
+          <div className="sidebar-drag" data-tauri-drag-region="deep" aria-hidden="true" />
 
-      <div className="main">
-        <header className="topbar">
-          <h1>{title}</h1>
-          <span className="muted">{hostMeta}</span>
-        </header>
+          <div className="brand">
+            <img src={logo} alt="mixum ART" className="brand-logo" />
+            <div className="brand-text">
+              <strong>mixum ART</strong>
+              <span>Agent Runtime</span>
+            </div>
+          </div>
 
-        <main className="content">
-          {error && <div className="error">{error}</div>}
-          {tab === 'environments' ? (
-            <Environments
-              backends={backends}
-              refreshing={refreshing}
-              onRefresh={() => void refresh()}
-            />
-          ) : tab === 'containers' ? (
-            <Containers backends={backends} />
-          ) : (
-            <Surfaces />
-          )}
+          <nav className="nav">
+            {NAV.map((item) => (
+              <button
+                key={item.tab}
+                type="button"
+                className={tab === item.tab ? 'active' : ''}
+                onClick={() => setTab(item.tab)}
+                aria-current={tab === item.tab ? 'page' : undefined}
+              >
+                <Icon name={item.icon} size={15} />
+                <span>{item.label}</span>
+              </button>
+            ))}
+          </nav>
+
+          <div className="sidebar-foot">
+            <div className="runtime-pills">
+              {backends === null ? (
+                <span className="pill">检测运行软件…</span>
+              ) : (
+                backends.map((backend) => (
+                  <span className={`pill ${statusTone(backend.status)}`} key={backend.kind}>
+                    <span className="dot" />
+                    {backend.name.replace(' Container', '')}
+                    <em>{statusLabel(backend.status)}</em>
+                  </span>
+                ))
+              )}
+            </div>
+            <div className="version">{host ? `MART v${host.appVersion}` : '—'}</div>
+          </div>
+        </aside>
+
+        <main className="content-frame">
+          <div className="panel-header" data-tauri-drag-region="deep">
+            <div className="panel-header-left">
+              {isHome ? (
+                <span className="panel-crumb">首页</span>
+              ) : (
+                <>
+                  <span className="panel-title">{current.label}</span>
+                  <span className="panel-sub">{current.sub}</span>
+                </>
+              )}
+            </div>
+            {chromeActions}
+          </div>
+
+          <div className={`content ${isHome ? 'content-home' : 'content-page'}`}>
+            {error && <div className="error">{error}</div>}
+            {tab === 'cockpit' && <Cockpit backends={backends} />}
+            {tab === 'containers' && <Containers backends={backends} />}
+            {tab === 'surfaces' && <Surfaces />}
+            {tab === 'agents' && <Agents />}
+            {tab === 'settings' && (
+              <Settings
+                backends={backends}
+                host={host}
+                appearance={
+                  themeMode === 'system'
+                    ? '跟随系统'
+                    : resolvedTheme === 'dark' ? '深色' : '浅色'
+                }
+                onRefresh={() => void refresh()}
+              />
+            )}
+          </div>
         </main>
       </div>
     </div>

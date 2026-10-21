@@ -1,4 +1,4 @@
-//! mixum Agent Env 领域层：运行时后端契约与共享类型。
+//! mixum Agent Runtime 领域层：运行时后端契约与共享类型。
 //!
 //! 本 crate 只放三件事：领域类型、后端契约、跨后端公共工具。
 //! 各 runtime 的 CLI/API 细节必须留在 `mixum-env-runtime-*` 中，
