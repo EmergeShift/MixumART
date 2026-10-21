@@ -131,6 +131,19 @@ impl RuntimeBackend for AppleContainerBackend {
         out.into_stdout("container system df")
     }
 
+    async fn pull_image(&self, reference: &str) -> Result<(), EnvError> {
+        let out = process::run("container", &["image", "pull", reference], CREATE_TIMEOUT).await?;
+        out.into_stdout("container image pull").map(|_| ())
+    }
+
+    async fn prune(&self) -> Result<String, EnvError> {
+        let containers = process::run("container", &["prune"], WRITE_TIMEOUT).await?;
+        let containers = containers.into_stdout("container prune")?;
+        let images = process::run("container", &["image", "prune"], WRITE_TIMEOUT).await?;
+        let images = images.into_stdout("container image prune")?;
+        Ok(format!("{containers}\n{images}"))
+    }
+
     async fn logs(&self, id: &str, tail: usize) -> Result<Vec<String>, EnvError> {
         let tail = tail.to_string();
         let out = process::run("container", &["logs", "-n", &tail, id], LIST_TIMEOUT).await?;
