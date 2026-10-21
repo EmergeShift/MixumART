@@ -341,15 +341,17 @@ fn decode_png(data: &[u8]) -> Result<(usize, usize, Vec<u32>)> {
     let mut pixels = vec![0u32; width * height];
     match info.color_type {
         png::ColorType::Rgba => {
-            for (index, pixel) in bytes.chunks_exact(4).enumerate() {
-                pixels[index] =
-                    ((pixel[0] as u32) << 16) | ((pixel[1] as u32) << 8) | pixel[2] as u32;
+            // 用 chunks + 切片模式而不是 chunks_exact：后者会被 clippy 要求换成
+            // as_chunks（Rust 1.88+），而本仓库 MSRV 是 1.77。
+            for (pixel, out) in bytes.chunks(4).zip(pixels.iter_mut()) {
+                let [r, g, b, _a] = pixel else { break };
+                *out = ((*r as u32) << 16) | ((*g as u32) << 8) | *b as u32;
             }
         }
         png::ColorType::Rgb => {
-            for (index, pixel) in bytes.chunks_exact(3).enumerate() {
-                pixels[index] =
-                    ((pixel[0] as u32) << 16) | ((pixel[1] as u32) << 8) | pixel[2] as u32;
+            for (pixel, out) in bytes.chunks(3).zip(pixels.iter_mut()) {
+                let [r, g, b] = pixel else { break };
+                *out = ((*r as u32) << 16) | ((*g as u32) << 8) | *b as u32;
             }
         }
         other => bail!("unsupported PNG color type {other:?}"),
