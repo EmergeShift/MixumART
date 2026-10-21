@@ -87,6 +87,7 @@ pub fn run() {
                             addr.clone(),
                             token.clone(),
                             fingerprint.clone(),
+                            None,
                         )
                         .await
                         {
@@ -97,6 +98,7 @@ pub fn run() {
                                         addr,
                                         token,
                                         fingerprint,
+                                        node: None,
                                         surface: surface.id,
                                         title: surface.title.clone(),
                                         width: surface.width,
@@ -155,6 +157,11 @@ pub fn run() {
             commands::approve_browser_approval,
             commands::deny_approval,
             commands::list_surfaces,
+            commands::gateway_nodes,
+            commands::gateway_pair_create,
+            commands::gateway_pair_claim,
+            commands::gateway_devices,
+            commands::gateway_revoke_device,
             commands::open_surface_window,
             commands::surface_input,
             commands::surface_takeover,
