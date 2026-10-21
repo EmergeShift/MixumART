@@ -41,6 +41,31 @@ export type CommandResult = {
   error?: string | null
 }
 
+export const openContainerTerminal = (
+  kind: RuntimeKind,
+  containerId: string,
+  cols = 100,
+  rows = 30,
+) =>
+  isDemo()
+    ? demoDelay(1)
+    : invoke<number>('open_container_terminal', { kind, containerId, cols, rows })
+
+export const containerTerminalInput = (terminal: number, data: string) =>
+  isDemo()
+    ? demoDelay(undefined)
+    : invoke<void>('container_terminal_input', { terminal, data })
+
+export const containerTerminalResize = (terminal: number, cols: number, rows: number) =>
+  isDemo()
+    ? demoDelay(undefined)
+    : invoke<void>('container_terminal_resize', { terminal, cols, rows })
+
+export const closeContainerTerminal = (terminal: number) =>
+  isDemo()
+    ? demoDelay(undefined)
+    : invoke<void>('close_container_terminal', { terminal })
+
 export const runEnvironmentCommand = (containerId: string, command: string) =>
   isDemo()
     ? demoDelay<CommandResult>({ taskId: 'demo', state: 'completed', lines: [`$ ${command}`, '(demo)'], error: null })

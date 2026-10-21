@@ -952,6 +952,41 @@ pub async fn surface_takeover(
 }
 
 #[tauri::command]
+pub fn open_container_terminal(
+    app: AppHandle,
+    kind: RuntimeKind,
+    container_id: String,
+    cols: u16,
+    rows: u16,
+) -> Result<u32, String> {
+    app.state::<AppState>()
+        .terminals
+        .open(app.clone(), kind, &container_id, cols, rows)
+}
+
+#[tauri::command]
+pub fn container_terminal_input(app: AppHandle, terminal: u32, data: String) -> Result<(), String> {
+    app.state::<AppState>().terminals.input(terminal, &data)
+}
+
+#[tauri::command]
+pub fn container_terminal_resize(
+    app: AppHandle,
+    terminal: u32,
+    cols: u16,
+    rows: u16,
+) -> Result<(), String> {
+    app.state::<AppState>()
+        .terminals
+        .resize(terminal, cols, rows)
+}
+
+#[tauri::command]
+pub fn close_container_terminal(app: AppHandle, terminal: u32) -> Result<(), String> {
+    app.state::<AppState>().terminals.close(terminal)
+}
+
+#[tauri::command]
 pub fn surface_input(app: AppHandle, surface: u32, event: InputEvent) -> Result<(), String> {
     let state = app.state::<AppState>();
     let inputs = state
