@@ -16,6 +16,8 @@ use std::{
 
 use mixum_env_core::{BackendRegistry, RuntimeKind};
 use mixum_env_surface::InputEvent;
+#[cfg(target_os = "windows")]
+use tauri::Manager;
 
 /// 全局状态：后端注册表 + 每个 surface 窗口的输入/关闭通道。
 pub struct AppState {
@@ -64,6 +66,13 @@ pub fn run() {
     tauri::Builder::default()
         .manage(AppState::new())
         .setup(|app| {
+            // Windows 没有 overlay 标题栏：去掉系统装饰，窗口控件由前端标题栏绘制。
+            // Linux 保留系统装饰，避免无边框窗口丢失缩放与窗口管理器集成。
+            #[cfg(target_os = "windows")]
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.set_decorations(false);
+            }
+
             // 开发用：MIXUM_ART_AUTOTEST=<addr> + MIXUM_MAP_TOKEN（可选
             // MIXUM_MAP_FP）时自动扫描并打开第一个 surface，方便冒烟。
             if let Ok(addr) = std::env::var("MIXUM_ART_AUTOTEST") {
@@ -109,7 +118,7 @@ pub fn run() {
             commands::surface_put_file,
         ])
         .run(tauri::generate_context!())
-        .expect("启动 mixum Agent Env 失败");
+        .expect("启动 mixum Agent Runtime 失败");
 }
 
 /// 从 Finder / 开始菜单启动时，进程拿不到登录 shell 的 PATH，

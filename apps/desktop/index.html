@@ -4,6 +4,25 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" type="image/png" href="/favicon.png" />
+    <script>
+      // 首帧前定好主题与平台，避免深色下闪白和标题栏高度跳变。
+      (() => {
+        try {
+          const mode = localStorage.getItem('mixum.theme') || 'system'
+          const dark = mode === 'dark'
+            || (mode === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches)
+          const root = document.documentElement
+          root.dataset.theme = dark ? 'dark' : 'light'
+          root.style.colorScheme = dark ? 'dark' : 'light'
+          const ua = navigator.userAgent
+          root.dataset.platform = /Mac|iPhone|iPad/.test(ua)
+            ? 'macos'
+            : /Win/.test(ua) ? 'windows' : 'linux'
+        } catch {
+          // 受限 webview 下按浅色渲染
+        }
+      })()
+    </script>
     <title>mixum ART</title>
   </head>
   <body>

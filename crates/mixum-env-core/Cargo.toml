@@ -1,6 +1,6 @@
 [package]
 name = "mixum-env-core"
-description = "mixum Agent Env 领域层：运行时后端契约与共享类型"
+description = "mixum Agent Runtime 领域层：运行时后端契约与共享类型"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

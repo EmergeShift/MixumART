@@ -5,10 +5,11 @@ import type { BackendStatus, HostInfo } from '../types'
 type Props = {
   backends: BackendStatus[] | null
   host: HostInfo | null
+  appearance: string
   onRefresh: () => void
 }
 
-export function Settings({ backends, host, onRefresh }: Props) {
+export function Settings({ backends, host, appearance, onRefresh }: Props) {
   return (
     <div className="settings-page">
       <section>
@@ -89,9 +90,9 @@ export function Settings({ backends, host, onRefresh }: Props) {
           <div className="setting-row">
             <div>
               <strong>外观</strong>
-              <span className="muted">暖纸色，跟随系统字体大小</span>
+              <span className="muted">中性黑白灰，跟随系统，也可在标题栏手动切换</span>
             </div>
-            <span className="mono muted">浅色</span>
+            <span className="mono muted">{appearance}</span>
           </div>
           <div className="setting-row">
             <div>
