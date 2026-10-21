@@ -161,6 +161,17 @@ export function SurfaceView({ surface, addr }: Props) {
     }
   }
 
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === 't') {
+        event.preventDefault()
+        void toggleTakeover()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [takeoverMode, takeoverPending])
+
   return (
     <div className="surface-view">
       <div className="surface-toolbar">
@@ -169,6 +180,7 @@ export function SurfaceView({ surface, addr }: Props) {
           className="ghost"
           onClick={() => void toggleTakeover()}
           disabled={takeoverPending}
+          title="快捷键：Ctrl/Cmd+Shift+T"
         >
           {takeoverMode === 'user' ? '释放窗口' : '接管窗口'}
         </button>
