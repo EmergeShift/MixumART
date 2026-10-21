@@ -45,6 +45,7 @@ export function Cockpit({ backends }: Props) {
 
   const running = (containers ?? []).filter((container) => container.state === 'running')
   const others = (containers ?? []).filter((container) => container.state !== 'running')
+  const sources = (backends ?? []).map((backend) => backend.name.replace(' Container', ''))
 
   return (
     <div>
@@ -54,10 +55,15 @@ export function Cockpit({ backends }: Props) {
         <p className="muted">正在读取…</p>
       ) : (
         <>
-          <p className="summary-line">
-            <strong>{running.length}</strong>
-            个环境正在运行，共 {containers.length} 个
-          </p>
+          <header className="home-hero">
+            <p className="home-eyebrow">本机环境</p>
+            <h1 className="home-title">
+              <em>{running.length}</em> 个环境正在运行
+            </h1>
+            <p className="home-sub">
+              共 {containers.length} 个环境{sources.length > 0 ? ` · ${sources.join(' / ')}` : ''}
+            </p>
+          </header>
 
           <section>
             <div className="section-head">

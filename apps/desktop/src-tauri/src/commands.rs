@@ -116,19 +116,24 @@ pub fn open_surface_window(app: AppHandle, request: OpenSurfaceRequest) -> Resul
     let init_script =
         format!("window.__MIXUM_SURFACE__ = {{ surface: {surface}, addr: {addr_json} }};");
     let (ready_tx, mut ready_rx) = watch::channel(false);
-    let window = WebviewWindowBuilder::new(&app, &label, WebviewUrl::App("index.html".into()))
+    let builder = WebviewWindowBuilder::new(&app, &label, WebviewUrl::App("index.html".into()))
         .title(if title.is_empty() {
             "MixumART surface".to_string()
         } else {
             format!("MixumART · {title}")
         })
         .inner_size(width.max(320) as f64, height.max(240) as f64)
+        // 沉浸式标题栏只属于 MART 主窗口；容器应用窗口保留普通系统标题栏。
+        .decorations(true)
         .initialization_script(init_script)
         .on_page_load(move |_window, payload| {
             if payload.event() == PageLoadEvent::Finished {
                 let _ = ready_tx.send(true);
             }
-        })
+        });
+    #[cfg(target_os = "macos")]
+    let builder = builder.title_bar_style(tauri::TitleBarStyle::Visible);
+    let window = builder
         .build()
         .map_err(|error| format!("创建窗口失败：{error}"))?;
 

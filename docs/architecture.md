@@ -2,7 +2,7 @@
 
 ## 1. 这个项目是什么
 
-mixum Agent Env 是**宿主机上安装的那一层**：一个 Tauri 桌面应用，负责
+mixum Agent Runtime 是**宿主机上安装的那一层**：一个 Tauri 桌面应用，负责
 
 1. 把 mixumOS 接到宿主已有的容器运行时上（WSL 2 / Docker / Apple Container）；
 2. 作为 mixumOS 容器的管理器（列表、生命周期、后续的镜像与内核准备）；
@@ -13,7 +13,7 @@ mixumOS（`../mixumos`）是底座：容器里的 `mixumd`、合成器 mixcomp�
 
 ## 2. 与 mixumOS 的分工
 
-| 关注点 | mixumOS（底座） | Agent Env（本仓库） |
+| 关注点 | mixumOS（底座） | Agent Runtime（本仓库） |
 |--------|----------------|---------------------|
 | 容器内守护进程 | `mixum-agentd` / `mixumd` | 不涉及 |
 | 协议 | 协议 v1（WSS + envelope） | M4 起作为客户端接入 |

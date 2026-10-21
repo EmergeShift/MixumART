@@ -1,4 +1,4 @@
-# mixum Agent Env
+# mixum Agent Runtime
 
 宿主机上的 mixumOS 入口。一个 Tauri 2 桌面应用：
 
