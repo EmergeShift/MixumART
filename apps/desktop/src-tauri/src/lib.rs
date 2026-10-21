@@ -122,6 +122,7 @@ pub fn run() {
             commands::environment_snapshot_create,
             commands::environment_snapshot_restore,
             commands::environment_snapshot_fork,
+            commands::environment_run_command,
             commands::list_surfaces,
             commands::open_surface_window,
             commands::surface_input,

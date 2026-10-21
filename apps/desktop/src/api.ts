@@ -34,6 +34,18 @@ export function errorText(err: unknown): string {
   return JSON.stringify(err)
 }
 
+export type CommandResult = {
+  taskId: string
+  state: string
+  lines: string[]
+  error?: string | null
+}
+
+export const runEnvironmentCommand = (containerId: string, command: string) =>
+  isDemo()
+    ? demoDelay<CommandResult>({ taskId: 'demo', state: 'completed', lines: [`$ ${command}`, '(demo)'], error: null })
+    : invoke<CommandResult>('environment_run_command', { containerId, command })
+
 export const snapshotTree = (containerId: string) =>
   isDemo()
     ? demoDelay({ head: 'demo', branch: 'main', nodes: [] })

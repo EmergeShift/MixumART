@@ -108,11 +108,18 @@ struct ListResponse {
     windows: Vec<WindowInfo>,
 }
 
+#[derive(Debug, Clone)]
+pub struct PushEvent {
+    pub op: String,
+    pub payload: Value,
+}
+
 #[derive(Clone)]
 pub struct MapClient {
     tx: mpsc::Sender<Message>,
     pending: Arc<Mutex<HashMap<String, oneshot::Sender<Envelope>>>>,
     frames: broadcast::Sender<Frame>,
+    events: broadcast::Sender<PushEvent>,
     pub fingerprint: String,
 }
 
@@ -178,10 +185,12 @@ impl MapClient {
         let (mut write, mut read) = stream.split();
         let (tx, mut outgoing) = mpsc::channel::<Message>(64);
         let (frame_tx, _) = broadcast::channel(128);
+        let (event_tx, _) = broadcast::channel(256);
         let pending: Arc<Mutex<HashMap<String, oneshot::Sender<Envelope>>>> =
             Arc::new(Mutex::new(HashMap::new()));
         let reader_pending = Arc::clone(&pending);
         let reader_frames = frame_tx.clone();
+        let reader_events = event_tx.clone();
         tokio::spawn(async move {
             while let Some(message) = read.next().await {
                 match message {
@@ -199,6 +208,10 @@ impl MapClient {
                                 continue;
                             }
                         }
+                        let _ = reader_events.send(PushEvent {
+                            op: envelope.op,
+                            payload: envelope.payload,
+                        });
                     }
                     Ok(Message::Binary(data)) => {
                         if let Some(frame) = parse_video(&data) {
@@ -223,6 +236,7 @@ impl MapClient {
             tx,
             pending,
             frames: frame_tx,
+            events: event_tx,
             fingerprint,
         };
         let hello = client
@@ -276,6 +290,36 @@ impl MapClient {
             .unwrap_or_default()
             .to_owned();
         Ok(text)
+    }
+
+    /// Subscribe to push envelopes (task events, window events, ...).
+    pub fn events(&self) -> broadcast::Receiver<PushEvent> {
+        self.events.subscribe()
+    }
+
+    pub async fn subscribe_task_events(&self) -> Result<(), MapError> {
+        self.call("task.events", json!({})).await?;
+        Ok(())
+    }
+
+    /// Run a command through agentd's shell task driver; returns the task id.
+    pub async fn submit_shell_task(&self, command: &str) -> Result<String, MapError> {
+        let reply = self
+            .call(
+                "task.submit",
+                json!({
+                    "instruction": command,
+                    "agent": "shell",
+                    "params": { "cmd": command }
+                }),
+            )
+            .await?;
+        reply
+            .payload
+            .get("id")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)
+            .ok_or_else(|| MapError::Protocol("task.submit 未返回 id".into()))
     }
 
     /// Snapshot tree for a connected node (`snap.tree`).

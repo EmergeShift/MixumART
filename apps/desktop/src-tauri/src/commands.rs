@@ -249,6 +249,112 @@ pub async fn environment_snapshot_fork(
         .map_err(|error| error.to_string())
 }
 
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommandResult {
+    pub task_id: String,
+    pub state: String,
+    pub lines: Vec<String>,
+    pub error: Option<String>,
+}
+
+#[tauri::command]
+pub async fn environment_run_command(
+    app: AppHandle,
+    container_id: String,
+    command: String,
+) -> Result<CommandResult, String> {
+    let connection = connection_for(&app, &container_id)?;
+    let client = MapClient::connect(
+        &connection.addr,
+        &connection.token,
+        connection.fingerprint.as_deref(),
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    let mut events = client.events();
+    client
+        .subscribe_task_events()
+        .await
+        .map_err(|error| error.to_string())?;
+    let task_id = client
+        .submit_shell_task(&command)
+        .await
+        .map_err(|error| error.to_string())?;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(600);
+    let mut lines = Vec::new();
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return Err(format!("命令执行超时，任务 {task_id} 仍在运行"));
+        }
+        let event = tokio::time::timeout(remaining, events.recv())
+            .await
+            .map_err(|_| format!("命令执行超时，任务 {task_id} 仍在运行"))?
+            .map_err(|error| format!("事件通道关闭：{error}"))?;
+        if event.op != "task.event" {
+            continue;
+        }
+        let Some(task_id_value) = event.payload.get("taskId").and_then(Value::as_str) else {
+            continue;
+        };
+        if task_id_value != task_id {
+            continue;
+        }
+        let event_type = event
+            .payload
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let data = event.payload.get("data").cloned().unwrap_or(Value::Null);
+        match event_type {
+            "log" => {
+                if let Some(line) = data.get("line").and_then(Value::as_str) {
+                    lines.push(line.to_owned());
+                }
+            }
+            "state" => {
+                let state = data
+                    .get("state")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned();
+                if state == "completed" {
+                    return Ok(CommandResult {
+                        task_id,
+                        state,
+                        lines,
+                        error: None,
+                    });
+                }
+                if state == "failed" || state == "canceled" {
+                    let error = event
+                        .payload
+                        .get("data")
+                        .and_then(|data| data.get("message"))
+                        .and_then(Value::as_str)
+                        .map(ToOwned::to_owned);
+                    return Ok(CommandResult {
+                        task_id,
+                        state,
+                        lines,
+                        error,
+                    });
+                }
+            }
+            "error" => {
+                lines.push(format!(
+                    "错误：{}",
+                    data.get("message")
+                        .and_then(Value::as_str)
+                        .unwrap_or("任务失败")
+                ));
+            }
+            _ => {}
+        }
+    }
+}
+
 #[tauri::command]
 pub fn load_environment_connections(
     app: AppHandle,
