@@ -447,7 +447,7 @@ pub fn open_surface_window(app: AppHandle, request: OpenSurfaceRequest) -> Resul
         .title(if title.is_empty() {
             "MixumART surface".to_string()
         } else {
-            format!("MixumART · {title}")
+            format!("MixumART · {title} · Ctrl/Cmd+Shift+T 接管")
         })
         .inner_size(width.max(320) as f64, height.max(240) as f64)
         // 沉浸式标题栏只属于 MART 主窗口；容器应用窗口保留普通系统标题栏。
