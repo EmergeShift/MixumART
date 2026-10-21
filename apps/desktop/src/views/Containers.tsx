@@ -1,14 +1,17 @@
 import { useEffect, useMemo, useState } from 'react'
+import { listen } from '@tauri-apps/api/event'
 
 import {
+  closeContainerTerminal,
+  containerTerminalInput,
   createEnvironment,
   errorText,
   listContainers,
   listSurfaces,
   loadEnvironmentConnections,
+  openContainerTerminal,
   openSurfaceWindow,
   runtimeLogs,
-  runEnvironmentCommand,
   removeEnvironment,
   removeEnvironmentConnection,
   saveEnvironmentConnection,
@@ -87,6 +90,7 @@ export function Containers({ backends }: Props) {
   const [snapshotLabel, setSnapshotLabel] = useState('')
   const [snapshotAction, setSnapshotAction] = useState<string | null>(null)
   const [terminal, setTerminal] = useState<Container | null>(null)
+  const [terminalId, setTerminalId] = useState<number | null>(null)
   const [terminalLines, setTerminalLines] = useState<string[]>([])
   const [terminalCommand, setTerminalCommand] = useState('')
   const [terminalRunning, setTerminalRunning] = useState(false)
@@ -103,6 +107,19 @@ export function Containers({ backends }: Props) {
       .then(setConnections)
       .catch((err: unknown) => setError(errorText(err)))
   }, [])
+
+  useEffect(() => {
+    if (terminalId === null) return
+    let disposed = false
+    const unlisten = listen<{ terminal: number; data: string }>('terminal-data', (event) => {
+      if (disposed || event.payload.terminal !== terminalId) return
+      setTerminalLines((previous) => [...previous, event.payload.data])
+    })
+    return () => {
+      disposed = true
+      void unlisten.then((stop) => stop())
+    }
+  }, [terminalId])
 
   const load = async () => {
     if (kind === null) return
@@ -276,34 +293,30 @@ export function Containers({ backends }: Props) {
     }
   }
 
-  const openTerminal = (container: Container) => {
-    if (!connections[container.id]) {
-      openEditor(container)
-      return
-    }
+  const openTerminal = async (container: Container) => {
+    if (!kind) return
     setBrowser(null)
     setEditor(null)
     setTerminal(container)
     setTerminalLines([])
     setTerminalCommand('')
     setTerminalError(null)
+    try {
+      const id = await openContainerTerminal(kind, container.id)
+      setTerminalId(id)
+    } catch (err) {
+      setTerminalError(errorText(err))
+    }
   }
 
   const runCommand = async () => {
-    if (!terminal || !terminalCommand.trim()) return
+    if (terminalId === null || !terminalCommand.trim()) return
     const command = terminalCommand.trim()
-    setTerminalRunning(true)
-    setTerminalError(null)
     setTerminalCommand('')
-    setTerminalLines((previous) => [...previous, `$ ${command}`])
     try {
-      const result = await runEnvironmentCommand(terminal.id, command)
-      setTerminalLines((previous) => [...previous, ...result.lines])
-      if (result.error) setTerminalError(result.error)
+      await containerTerminalInput(terminalId, `${command}\n`)
     } catch (err) {
       setTerminalError(errorText(err))
-    } finally {
-      setTerminalRunning(false)
     }
   }
 
@@ -319,6 +332,18 @@ export function Containers({ backends }: Props) {
     } finally {
       setTerminalRunning(false)
     }
+  }
+
+  const closeTerminal = async () => {
+    if (terminalId !== null) {
+      try {
+        await closeContainerTerminal(terminalId)
+      } catch (err) {
+        setTerminalError(errorText(err))
+      }
+    }
+    setTerminalId(null)
+    setTerminal(null)
   }
 
   const createSnapshot = async () => {
@@ -461,13 +486,13 @@ export function Containers({ backends }: Props) {
               <div className="section-head">
                 <div>
                   <h3>{terminal.name} · 命令终端</h3>
-                  <p>每条命令在环境里独立执行；后续会接入持久 PTY。</p>
+                  <p>持久 PTY：直接通过运行时的 exec 进入容器；关闭面板即结束会话。</p>
                 </div>
                 <div className="row-actions">
                   <button className="ghost" onClick={() => void loadLogs()} disabled={terminalRunning}>
                     加载环境日志
                   </button>
-                  <button className="ghost" onClick={() => setTerminal(null)}>
+                  <button className="ghost" onClick={() => void closeTerminal()}>
                     关闭
                   </button>
                 </div>
@@ -769,7 +794,7 @@ export function Containers({ backends }: Props) {
                         </button>
                         <button
                           className="ghost"
-                          onClick={() => openTerminal(container)}
+                          onClick={() => void openTerminal(container)}
                           title="运行一条命令（独立进程）"
                         >
                           终端

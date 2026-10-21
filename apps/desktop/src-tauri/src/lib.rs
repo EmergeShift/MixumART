@@ -8,6 +8,7 @@
 mod commands;
 #[cfg(target_os = "macos")]
 mod macos;
+mod terminal;
 
 use std::{
     collections::HashMap,
@@ -25,6 +26,7 @@ pub struct AppState {
     pub surface_inputs: Mutex<HashMap<u32, tokio::sync::mpsc::UnboundedSender<InputEvent>>>,
     pub surface_closes: Mutex<HashMap<u32, tokio::sync::oneshot::Sender<()>>>,
     pub surface_clients: Mutex<HashMap<u32, Arc<mixum_env_map::MapClient>>>,
+    pub terminals: crate::terminal::TerminalManager,
     #[cfg(target_os = "macos")]
     pub native_surfaces: Mutex<HashMap<u32, usize>>,
 }
@@ -36,6 +38,7 @@ impl AppState {
             surface_inputs: Mutex::new(HashMap::new()),
             surface_closes: Mutex::new(HashMap::new()),
             surface_clients: Mutex::new(HashMap::new()),
+            terminals: crate::terminal::TerminalManager::default(),
             #[cfg(target_os = "macos")]
             native_surfaces: Mutex::new(HashMap::new()),
         }
@@ -139,6 +142,10 @@ pub fn run() {
             commands::open_surface_window,
             commands::surface_input,
             commands::surface_takeover,
+            commands::open_container_terminal,
+            commands::container_terminal_input,
+            commands::container_terminal_resize,
+            commands::close_container_terminal,
             commands::remote_clipboard,
             commands::surface_put_file,
         ])
