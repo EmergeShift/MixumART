@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "mixum Agent Env 桌面端界面",
+  "description": "mixum Agent Runtime 桌面端界面",
   "license": "Apache-2.0",
   "scripts": {
     "dev": "vite",
