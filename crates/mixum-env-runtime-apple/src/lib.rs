@@ -114,6 +114,29 @@ impl RuntimeBackend for AppleContainerBackend {
         let out = process::run("container", &["delete", id], WRITE_TIMEOUT).await?;
         out.into_stdout("container delete").map(|_| ())
     }
+
+    async fn images(&self) -> Result<Vec<String>, EnvError> {
+        let out = process::run("container", &["image", "list", "--quiet"], LIST_TIMEOUT).await?;
+        let stdout = out.into_stdout("container image list")?;
+        Ok(stdout
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(ToOwned::to_owned)
+            .collect())
+    }
+
+    async fn disk_usage(&self) -> Result<String, EnvError> {
+        let out = process::run("container", &["system", "df"], LIST_TIMEOUT).await?;
+        out.into_stdout("container system df")
+    }
+
+    async fn logs(&self, id: &str, tail: usize) -> Result<Vec<String>, EnvError> {
+        let tail = tail.to_string();
+        let out = process::run("container", &["logs", "-n", &tail, id], LIST_TIMEOUT).await?;
+        let stdout = out.into_stdout("container logs")?;
+        Ok(stdout.lines().map(str::to_owned).collect())
+    }
 }
 
 fn first_line(text: &str) -> Option<String> {
