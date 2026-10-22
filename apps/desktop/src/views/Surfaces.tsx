@@ -441,11 +441,6 @@ export function Surfaces({ backends, onOpenEnvironments }: Props) {
             </p>
           </>
         )}
-        {deviceToken.trim() && (
-          <button className="ghost" onClick={() => void connectWithDevice()} disabled={loading}>
-            用设备令牌连接
-          </button>
-        )}
         <div className="chips">
           <button className="ghost" onClick={() => void loadDevices()} disabled={!token.trim()}>
             刷新设备
@@ -479,6 +474,12 @@ export function Surfaces({ backends, onOpenEnvironments }: Props) {
         )}
         <p className="mode-note">配对码 5 分钟有效；设备令牌独立于当前用户令牌，可单独吊销。</p>
       </details>
+        {deviceToken.trim() && (
+          <button className="ghost" onClick={() => void connectWithDevice()} disabled={loading}>
+            用设备令牌连接
+          </button>
+        )}
+
 
       <p className="mode-note">
         <strong>增强模式</strong>画面更清晰、流量更省，推荐使用。
