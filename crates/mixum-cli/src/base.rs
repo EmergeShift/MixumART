@@ -389,7 +389,7 @@ fn export_rootfs(kind: RuntimeKind, container: &Container, dest: &Path) -> Resul
                 "-c".into(),
                 "sync && tar --xattrs --acls --numeric-owner \
                  --exclude=./proc --exclude=./sys --exclude=./dev --exclude=./run \
-                 --exclude=./tmp --exclude=./var/lib/mixum \
+                 --exclude='./tmp/*' --exclude=./var/lib/mixum \
                  --exclude=./etc/machine-id --exclude='./etc/ssh/ssh_host_*' \
                  -cf /tmp/rootfs.tar ."
                     .into(),
@@ -404,7 +404,7 @@ fn export_rootfs(kind: RuntimeKind, container: &Container, dest: &Path) -> Resul
                 "-c".into(),
                 "sync && tar --xattrs --acls --numeric-owner \
                  --exclude=./proc --exclude=./sys --exclude=./dev --exclude=./run \
-                 --exclude=./tmp --exclude=./var/lib/mixum \
+                 --exclude='./tmp/*' --exclude=./var/lib/mixum \
                  --exclude=./etc/machine-id --exclude='./etc/ssh/ssh_host_*' \
                  -cf /tmp/rootfs.tar ."
                     .into(),
