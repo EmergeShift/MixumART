@@ -104,12 +104,39 @@ export type MigrationFile = {
   path: string
   size: number
   sha256: string
+  manifestPath?: string | null
 }
 
-export const snapshotExport = (containerId: string, node: string) =>
+export type ContainerSpec = {
+  name: string
+  image: string
+  ports: { host: number; container: number; protocol: string }[]
+  mounts: unknown[]
+  env: Record<string, string>
+  command: string[]
+}
+
+export const containerSpec = (kind: string, containerId: string) =>
+  isDemo()
+    ? demoDelay<ContainerSpec | null>(null)
+    : invoke<ContainerSpec>('environment_container_spec', { kind, containerId })
+
+export const snapshotExport = (
+  containerId: string,
+  node: string,
+  spec?: ContainerSpec | null,
+  runtime?: string,
+  branch?: string,
+) =>
   isDemo()
     ? demoDelay<MigrationFile>({ path: '/tmp/demo.mart', size: 0, sha256: '' })
-    : invoke<MigrationFile>('environment_snapshot_export', { containerId, node })
+    : invoke<MigrationFile>('environment_snapshot_export', {
+        containerId,
+        node,
+        spec: spec ?? null,
+        runtime: runtime ?? null,
+        branch: branch ?? null,
+      })
 
 export const snapshotImport = (containerId: string, path: string, origin?: string) =>
   isDemo()

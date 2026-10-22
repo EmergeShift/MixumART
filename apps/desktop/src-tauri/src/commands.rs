@@ -10,7 +10,10 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use mixum_env_core::{BackendStatus, Container, CreateSpec, RuntimeKind};
+use mixum_env_core::{
+    BackendStatus, Container, CreateSpec, MartRef, MigrationManifest, MigrationSource,
+    RuntimeKind, MIGRATION_VERSION,
+};
 use serde::Serialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -55,6 +58,22 @@ pub async fn list_containers(
         .list_containers()
         .await
         .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+pub async fn environment_container_spec(
+    kind: RuntimeKind,
+    container_id: String,
+    state: State<'_, AppState>,
+) -> Result<CreateSpec, String> {
+    let backend = state
+        .registry
+        .get(kind)
+        .ok_or_else(|| format!("没有注册 {kind} 后端"))?;
+    backend
+        .inspect_container(&container_id)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -575,6 +594,7 @@ pub async fn list_migrations() -> Result<Vec<MigrationFile>, String> {
             path: path.to_string_lossy().into_owned(),
             size: metadata.len(),
             sha256: String::new(),
+            manifest_path: None,
         });
     }
     out.sort_by(|a, b| a.path.cmp(&b.path));
@@ -587,6 +607,7 @@ pub struct MigrationFile {
     pub path: String,
     pub size: u64,
     pub sha256: String,
+    pub manifest_path: Option<String>,
 }
 
 /// 导出快照节点为 `.mart` 并下载到本机缓存。用户不需要手工拖文件。
@@ -595,6 +616,9 @@ pub async fn environment_snapshot_export(
     app: AppHandle,
     container_id: String,
     node: String,
+    spec: Option<CreateSpec>,
+    runtime: Option<String>,
+    branch: Option<String>,
 ) -> Result<MigrationFile, String> {
     let client = snapshot_client(&app, &container_id).await?;
     let reply = client
@@ -637,10 +661,46 @@ pub async fn environment_snapshot_export(
         .await
         .map_err(|error| format!("写入迁移文件: {error}"))?;
 
+    let manifest_path = if let Some(spec) = spec {
+        let manifest = MigrationManifest {
+            version: MIGRATION_VERSION,
+            source: MigrationSource {
+                container_id,
+                runtime: runtime.unwrap_or_default(),
+                node,
+                branch: branch.unwrap_or_default(),
+                exported_at: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|duration| duration.as_secs())
+                    .unwrap_or(0),
+            },
+            container: spec,
+            mart: MartRef {
+                file: name.to_owned(),
+                sha256: actual.clone(),
+                size: data.len() as u64,
+            },
+            gui_sessions: Vec::new(),
+        };
+        let stem = name.trim_end_matches(".mart");
+        let manifest_path = dir.join(format!("{stem}.migration.json"));
+        tokio::fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&manifest)
+                .map_err(|error| format!("序列化迁移元数据: {error}"))?,
+        )
+        .await
+        .map_err(|error| format!("写入迁移元数据: {error}"))?;
+        Some(manifest_path.to_string_lossy().into_owned())
+    } else {
+        None
+    };
+
     Ok(MigrationFile {
         path: path.to_string_lossy().into_owned(),
         size: data.len() as u64,
         sha256: actual,
+        manifest_path,
     })
 }
 

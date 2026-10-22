@@ -113,6 +113,11 @@ pub trait RuntimeBackend: Send + Sync {
         Err(EnvError::unimplemented("create_container"))
     }
 
+    /// 读取容器定义（镜像、env、ports、mounts、command），用于迁移。
+    async fn inspect_container(&self, _id: &str) -> Result<CreateSpec, EnvError> {
+        Err(EnvError::unimplemented("inspect_container"))
+    }
+
     async fn start_container(&self, _id: &str) -> Result<(), EnvError> {
         Err(EnvError::unimplemented("start_container"))
     }
