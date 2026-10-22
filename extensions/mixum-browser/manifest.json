@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "Mixum Browser Bridge",
+  "version": "1.0.0",
+  "description": "Lets MixumART share user-approved cookies and tabs with a container browser. Values stay in memory and are never logged.",
+  "minimum_chrome_version": "116",
+  "permissions": ["cookies", "tabs", "tabGroups", "nativeMessaging", "storage"],
+  "host_permissions": ["http://*/*", "https://*/*"],
+  "background": { "service_worker": "background.js", "type": "module" },
+  "action": { "default_title": "Mixum Browser Bridge", "default_popup": "popup.html" },
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEArRTfGIUHw3dB1LL9JSfRx1EPEOtHdEU/7p0OgzwElShebyazULnIwtG3y+n0D940VrK+/0Bah/aQvMrVnlhdQfbtIT1BJFY6Kh/T2NJX0ScaLx0C5kE23YKGeYlq9f+jL+9FkqG4zzmQLVYppUx+lKu2//ae0SkRUvxbn01UkqWqJc8+7usc3BC7ub8kdaYAS56UI1Z/PWsKgVKaDA6OObjgCKjrkb1wa3ezepYiSaw8+srJF7XdDZ5NBrSa5C1TWhmxW+55milCBQLXJrhcJX5+de02dBKiJRLghqEHxDr8XjZwA5q0ArCQ2midyfrWtIHUVRIAZv0gPw1ZcWPuzQIDAQAB"
+}

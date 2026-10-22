@@ -69,7 +69,10 @@ pub async fn wait_ready(
     }
 }
 
-async fn env_client(data_dir: &Path, selector: &str) -> Result<(env::ResolvedEnv, MapClient)> {
+pub(crate) async fn env_client(
+    data_dir: &Path,
+    selector: &str,
+) -> Result<(env::ResolvedEnv, MapClient)> {
     let registry = env::registry();
     let resolved = env::find_with(&registry, data_dir, selector).await?;
     if resolved.container.state != mixum_env_core::ContainerState::Running {
