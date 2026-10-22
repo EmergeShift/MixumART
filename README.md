@@ -86,6 +86,7 @@ docs/                         # 架构、模块归属、契约、界面、协作
 | [architecture.md](docs/architecture.md) | 定位、与 mixumOS 的分工、进程模型、路线图 |
 | [module-map.md](docs/module-map.md) | **每块代码该放在哪**、模块归属、并行协作规则 |
 | [runtime-contract.md](docs/runtime-contract.md) | 后端契约、状态语义、错误映射、序列化约定 |
+| [support-matrix.md](docs/support-matrix.md) | **宿主边界**：每个宿主支持什么、哪些物理上做不到 |
 | [display.md](docs/display.md) | B 路线：容器内合成器、surface/damage/input、B0/B1 运行方式 |
 | [ui.md](docs/ui.md) | 界面结构、视图表、设计 token、文案约定 |
 | [contributing.md](docs/contributing.md) | 环境、命令、跨平台规则、提交与已知坑 |
