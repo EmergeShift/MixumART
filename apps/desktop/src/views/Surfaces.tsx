@@ -149,7 +149,8 @@ export function Surfaces({ backends, onOpenEnvironments }: Props) {
   }, [backends])
 
   const scanManual = async () => {
-    if (!token.trim()) {
+    const scanToken = token.trim() || deviceToken.trim()
+    if (!scanToken) {
       setError('手动连接远程节点需要访问令牌；本机环境会自动配对，不需要填写。')
       return
     }
@@ -163,9 +164,9 @@ export function Surfaces({ backends, onOpenEnvironments }: Props) {
       // 会先失败,下拉框永远没有机会出现。
       let list: string[] = []
       // 直连 agentd 没有 gateway.node.list:先探测,避免把“不是 gateway”误报成错误。
-      const isGateway = await gatewayIsGateway(addr, token, fingerprint || undefined)
+      const isGateway = await gatewayIsGateway(addr, scanToken, fingerprint || undefined)
       if (isGateway) {
-        list = await gatewayNodes(addr, token, fingerprint || undefined)
+        list = await gatewayNodes(addr, scanToken, fingerprint || undefined)
         setNodes(list)
       } else {
         setNodes([])
@@ -277,8 +278,18 @@ export function Surfaces({ backends, onOpenEnvironments }: Props) {
     setLoading(true)
     setError(null)
     try {
+      // 设备令牌同样可以 node.list(RFC 0003);多节点时先选节点再列窗口。
+      const list = await gatewayNodes(addr, deviceToken, fingerprint || undefined)
+      setNodes(list)
+      const effective = node && list.includes(node) ? node : (list[0] ?? '')
+      if (effective !== node) setNode(effective)
       setManualSurfaces(
-        await listSurfaces(addr, deviceToken, fingerprint || undefined, node || undefined),
+        await listSurfaces(
+          addr,
+          deviceToken,
+          fingerprint || undefined,
+          effective || undefined,
+        ),
       )
     } catch (err) {
       setError(errorText(err))
@@ -426,12 +437,14 @@ export function Surfaces({ backends, onOpenEnvironments }: Props) {
           <>
             <p className="mode-note">
               已配对设备 <span className="mono">{claimResult.deviceId}</span>
-              （令牌已写入系统钥匙串并填入访问令牌）。
+              （设备令牌已写入系统钥匙串并填入设备令牌）。
             </p>
-            <button className="ghost" onClick={() => void connectWithDevice()} disabled={loading}>
-              用设备令牌连接
-            </button>
           </>
+        )}
+        {deviceToken.trim() && (
+          <button className="ghost" onClick={() => void connectWithDevice()} disabled={loading}>
+            用设备令牌连接
+          </button>
         )}
         <div className="chips">
           <button className="ghost" onClick={() => void loadDevices()} disabled={!token.trim()}>
