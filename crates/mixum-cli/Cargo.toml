@@ -1,0 +1,32 @@
+[package]
+name = "mixum-cli"
+description = "mixum CLI — local environment control plane"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "mixum"
+path = "src/main.rs"
+
+[dependencies]
+clap = { workspace = true }
+dirs = { workspace = true }
+fs2 = { workspace = true }
+portable-pty = { workspace = true }
+crossterm = "0.28"
+terminal_size = "0.4"
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+thiserror = "2"
+ulid = { workspace = true }
+mixum-env-core = { workspace = true }
+mixum-env-runtime-apple = { workspace = true }
+mixum-env-runtime-docker = { workspace = true }
+mixum-env-runtime-wsl2 = { workspace = true }
+mixum-env-map = { workspace = true }
+mixum-env-surface = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
