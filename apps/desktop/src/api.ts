@@ -383,6 +383,15 @@ export const openSurfaceWindow = (
       })
 
 // gateway 控制面(RFC 0003):节点列表、配对码、设备管理。
+export const gatewayIsGateway = (addr: string, token: string, fingerprint?: string) =>
+  isDemo()
+    ? Promise.resolve(true)
+    : invoke<boolean>('gateway_is_gateway', {
+        addr,
+        token,
+        fingerprint: fingerprint || null,
+      })
+
 export const gatewayNodes = (addr: string, token: string, fingerprint?: string) =>
   isDemo()
     ? Promise.resolve([] as string[])

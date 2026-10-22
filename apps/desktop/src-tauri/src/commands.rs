@@ -1252,6 +1252,19 @@ pub async fn list_surfaces(
     client.list().await.map_err(|error| error.to_string())
 }
 
+/// 探测对端是否 gateway(用于直连 agentd 时跳过节点列表)。
+#[tauri::command]
+pub async fn gateway_is_gateway(
+    addr: String,
+    token: String,
+    fingerprint: Option<String>,
+) -> Result<bool, String> {
+    let client = MapClient::connect(&addr, &token, fingerprint.as_deref())
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(client.is_gateway())
+}
+
 /// gateway.node.list:列出 gateway 背后的在线节点(RFC 0003)。
 #[tauri::command]
 pub async fn gateway_nodes(
