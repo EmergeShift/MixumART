@@ -237,3 +237,62 @@ fn native_manifest_dir() -> Result<PathBuf> {
         "browser bridge install is currently implemented for macOS and Linux",
     ))
 }
+
+
+/// Build the Web Store upload artifact. Chrome's `--load-extension` path is
+/// dev-only; store review consumes this zip.
+pub fn package(out: Option<&str>, json: bool) -> Result<()> {
+    let extension = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("extensions")
+        .join("mixum-browser");
+    if !extension.join("manifest.json").is_file() {
+        return Err(CliError::usage(format!(
+            "extension sources not found at {}",
+            extension.display()
+        )));
+    }
+    let out = match out {
+        Some(path) => PathBuf::from(path),
+        None => PathBuf::from("mixum-browser-extension.zip"),
+    };
+    if out.exists() {
+        return Err(CliError::conflict(format!(
+            "refusing to overwrite {}",
+            out.display()
+        )));
+    }
+    let output = std::process::Command::new("zip")
+        .arg("-q")
+        .arg("-r")
+        .arg(&out)
+        .arg(".")
+        .arg("-x")
+        .arg("*.tpl")
+        .current_dir(&extension)
+        .output()
+        .map_err(|error| CliError::runtime(format!("zip: {error}")))?;
+    if !output.status.success() {
+        return Err(CliError::runtime(format!(
+            "zip failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    let bytes = std::fs::metadata(&out)
+        .map_err(|error| CliError::io(format!("stat zip: {error}")))?
+        .len();
+    if json {
+        output::print_json(&serde_json::json!({
+            "extension": extension,
+            "zip": out,
+            "bytes": bytes,
+            "store": "upload this zip at https://chrome.google.com/webstore/devconsole",
+        }));
+    } else {
+        println!("packaged {}", out.display());
+        println!("bytes: {bytes}");
+        println!("upload at https://chrome.google.com/webstore/devconsole");
+    }
+    Ok(())
+}

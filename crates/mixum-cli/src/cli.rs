@@ -277,6 +277,11 @@ pub enum BrowserCommand {
     },
     /// Human-side: approve a request and perform the share.
     Approve { id: String },
+    /// Package the unpacked extension as a Chrome Web Store upload zip.
+    Package {
+        #[arg(long)]
+        out: Option<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
