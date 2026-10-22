@@ -22,6 +22,10 @@ mixum env start SELECTOR
 mixum env stop SELECTOR
 mixum env remove SELECTOR [--force]
 mixum env windows SELECTOR [--timeout 30]
+mixum env open SELECTOR [--window ID] [--port 0] [--no-open]
+mixum config show
+mixum config set KEY VALUE
+mixum config unset KEY
 mixum env logs SELECTOR [--tail 200]
 mixum env terminal SELECTOR [--shell /bin/sh]
 mixum env snapshot list SELECTOR
@@ -179,6 +183,17 @@ state.lock      create 的互斥锁
 - MAP 使用 TOFU + 指纹固定；首次指纹写入 `mixum-env-map` 的 known-hosts；
 - 终端使用宿主 `exec -it`，是本地特权路径；CLI 只允许交互式 TTY；
 - 这仍是 admin-token 方案，证书/公钥认证尚未实现；不要把 token 写进镜像或快照。
+
+## Config
+
+```bash
+mixum config set default-runtime apple
+mixum config set default-image 127.0.0.1:15000/mixumos:0.1.4
+mixum config show --json
+```
+
+可配置 `default-runtime`（docker/wsl2/apple）和 `default-image`。`env create`
+在未传 `--runtime` / `--image` 时使用这些默认；文件权限 0600。
 
 ## MCP
 
