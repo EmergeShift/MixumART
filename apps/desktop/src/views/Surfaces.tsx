@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import {
   connectEnvironment,
@@ -129,11 +129,23 @@ export function Surfaces({ backends, onOpenEnvironments }: Props) {
     }
   }
 
+  const prevAddr = useRef(addr)
+
   useEffect(() => {
     let cancelled = false
+    // 切换 gateway 地址时必须清掉上一个地址的 bearer token,避免把 A 的
+    // 用户/设备令牌发给 B;节点选择也一并重置。
+    if (prevAddr.current !== addr) {
+      prevAddr.current = addr
+      setToken('')
+      setDeviceToken('')
+      setNodes([])
+      setNode('')
+      localStorage.removeItem('mixum.map.node')
+    }
     void getAgentCredential(`gateway-device:${addr}`)
       .then((saved) => {
-        if (!cancelled && saved && !deviceToken) setDeviceToken(saved)
+        if (!cancelled && saved) setDeviceToken(saved)
       })
       .catch(() => {})
     return () => {
