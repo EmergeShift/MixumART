@@ -148,6 +148,7 @@ pub fn run() {
             commands::environment_migrate,
             commands::environment_migrate_new,
             commands::environment_run_command,
+            commands::environment_privilege_decide,
             commands::list_surfaces,
             commands::open_surface_window,
             commands::surface_input,

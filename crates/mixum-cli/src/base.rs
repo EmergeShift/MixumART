@@ -221,8 +221,14 @@ pub async fn commit(data_dir: &Path, name: &str, tag: Option<&str>, json: bool) 
     export_rootfs(kind, &container, &rootfs_tar)?;
     let config = image_config(kind, &meta.source_image)?;
     write_containerfile(&build_dir, &config)?;
-    let image = format!("mixum-base-{name}:{tag}");
-    build_image(kind, &build_dir, &image)?;
+    let image = if kind == RuntimeKind::Wsl2 {
+        rootfs_tar.display().to_string()
+    } else {
+        format!("mixum-base-{name}:{tag}")
+    };
+    if kind != RuntimeKind::Wsl2 {
+        build_image(kind, &build_dir, &image)?;
+    }
     let digest = image_digest(kind, &image)?;
     let version = BaseVersion {
         tag: tag.clone(),
@@ -598,10 +604,16 @@ fn build_image(kind: RuntimeKind, dir: &Path, tag: &str) -> Result<()> {
 }
 
 fn image_digest(kind: RuntimeKind, image: &str) -> Result<String> {
+    if kind == RuntimeKind::Wsl2 {
+        use sha2::{Digest, Sha256};
+        let data = std::fs::read(image)
+            .map_err(|error| CliError::io(format!("read WSL base tar: {error}")))?;
+        return Ok(format!("{:x}", Sha256::digest(&data)));
+    }
     let (program, args) = match kind {
         RuntimeKind::AppleContainer => ("container", vec!["image", "inspect", image]),
         RuntimeKind::Docker => ("docker", vec!["image", "inspect", image]),
-        RuntimeKind::Wsl2 => return Err(CliError::usage("WSL2 has no images")),
+        RuntimeKind::Wsl2 => unreachable!(),
     };
     let output = Command::new(program)
         .args(args)

@@ -1027,6 +1027,16 @@ pub async fn environment_run_command(
             .await
             .map_err(|_| format!("命令执行超时，任务 {task_id} 仍在运行"))?
             .map_err(|error| format!("事件通道关闭：{error}"))?;
+        if event.op == "privilege.request" {
+            let _ = app.emit(
+                "privilege-request",
+                serde_json::json!({
+                    "containerId": container_id,
+                    "request": event.payload,
+                }),
+            );
+            continue;
+        }
         if event.op != "task.event" {
             continue;
         }
@@ -1547,4 +1557,59 @@ pub async fn remote_clipboard(app: AppHandle, surface: u32) -> Result<String, St
         return Err(format!("surface {surface} 没有打开的窗口"));
     };
     client.clipboard().await.map_err(|error| error.to_string())
+}
+
+
+#[tauri::command]
+pub async fn environment_privilege_decide(
+    app: AppHandle,
+    container_id: String,
+    id: String,
+    approve: bool,
+    reason: String,
+) -> Result<(), String> {
+    if approve {
+        authenticate_host_privilege()?;
+    }
+    let connection = connection_for(&app, &container_id)?;
+    let client = MapClient::connect(
+        &connection.addr,
+        &connection.token,
+        connection.fingerprint.as_deref(),
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    client
+        .privilege_decision(&id, approve, &reason)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// Ask the OS for a human credential before approving an agent's sudo request.
+/// macOS uses the native administrator dialog; Linux falls back to polkit.
+fn authenticate_host_privilege() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let status = std::process::Command::new("/usr/bin/osascript")
+            .args(["-e", "do shell script \"true\" with administrator privileges"])
+            .status()
+            .map_err(|error| format!("host authentication unavailable: {error}"))?;
+        if !status.success() {
+            return Err("host authentication cancelled or failed".into());
+        }
+        return Ok(());
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let status = std::process::Command::new("pkexec")
+            .arg("true")
+            .status()
+            .map_err(|error| format!("host authentication unavailable: {error}"))?;
+        if !status.success() {
+            return Err("host authentication cancelled or failed".into());
+        }
+        return Ok(());
+    }
+    #[allow(unreachable_code)]
+    Err("host authentication is not implemented on this platform; use `mixum privilege approve`".into())
 }

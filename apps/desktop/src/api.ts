@@ -72,6 +72,16 @@ export const runEnvironmentCommand = (containerId: string, command: string) =>
     ? demoDelay<CommandResult>({ taskId: 'demo', state: 'completed', lines: [`$ ${command}`, '(demo)'], error: null })
     : invoke<CommandResult>('environment_run_command', { containerId, command })
 
+export const decidePrivilege = (
+  containerId: string,
+  id: string,
+  approve: boolean,
+  reason = '',
+) =>
+  isDemo()
+    ? demoDelay(undefined)
+    : invoke<void>('environment_privilege_decide', { containerId, id, approve, reason })
+
 export const snapshotTree = (containerId: string) =>
   isDemo()
     ? demoDelay({ head: 'demo', branch: 'main', nodes: [] })

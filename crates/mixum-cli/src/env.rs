@@ -543,7 +543,7 @@ pub async fn create(data_dir: &Path, args: CreateArgs, json: bool) -> Result<()>
         env.insert("MIXUM_TASK_USER".to_string(), "root".to_string());
     }
     let mut mounts = Vec::new();
-    if args.base.is_some() {
+    if args.base.is_some() && kind != mixum_env_core::RuntimeKind::Wsl2 {
         let work_volume = format!("{name}-work");
         let home_volume = format!("{name}-home");
         ensure_volume(kind, &work_volume)?;
@@ -610,7 +610,7 @@ pub async fn create(data_dir: &Path, args: CreateArgs, json: bool) -> Result<()>
             ))
         })?;
     // Volumes start root-owned; the task user must own its work/home.
-    if args.base.is_some() {
+    if args.base.is_some() && kind != mixum_env_core::RuntimeKind::Wsl2 {
         let _ = backend
             .exec_capture(
                 &container.id,

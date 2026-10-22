@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useState } from 'react'
+import { listen } from '@tauri-apps/api/event'
 
 import logo from './assets/logo.png'
 import { errorText, hostInfo, runtimeStatus } from './api'
 import { isDemo } from './demo'
 import { statusLabel, statusTone } from './status'
 import { ThemeToggle, WindowControls } from './components/Chrome'
+import { PrivilegeDialog, type PrivilegeEvent } from './components/PrivilegeDialog'
 import { Icon, type IconName } from './components/Icons'
 import { Agents } from './views/Agents'
 import { Cockpit } from './views/Cockpit'
@@ -46,6 +48,7 @@ export default function App() {
   const [backends, setBackends] = useState<BackendStatus[] | null>(null)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [privilege, setPrivilege] = useState<PrivilegeEvent | null>(null)
   const [themeMode, setThemeMode] = useState<ThemeMode>(getStoredThemeMode)
   const [resolvedTheme, setResolvedTheme] = useState<ResolvedTheme>(() =>
     resolveTheme(getStoredThemeMode()),
@@ -86,6 +89,14 @@ export default function App() {
     media.addEventListener('change', sync)
     return () => media.removeEventListener('change', sync)
   }, [themeMode])
+
+  useEffect(() => {
+    let dispose: (() => void) | undefined
+    listen<PrivilegeEvent>('privilege-request', (event) => setPrivilege(event.payload))
+      .then((unlisten) => { dispose = unlisten })
+      .catch(() => undefined)
+    return () => dispose?.()
+  }, [])
 
   const toggleTheme = useCallback(() => {
     setThemeMode((previous) => {
@@ -205,6 +216,9 @@ export default function App() {
           </div>
         </main>
       </div>
+      {privilege && (
+        <PrivilegeDialog event={privilege} onClose={() => setPrivilege(null)} />
+      )}
     </div>
   )
 }
