@@ -7,7 +7,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use mixum_env_core::container::{Container, ContainerState, CreateSpec, PortMapping};
+use mixum_env_core::container::{
+    Container, ContainerState, CreateSpec, InspectedContainer, Mount, PortMapping,
+};
 use mixum_env_core::error::EnvError;
 use mixum_env_core::process;
 use mixum_env_core::runtime::{RuntimeBackend, RuntimeKind, RuntimeStatus};
@@ -102,6 +104,17 @@ impl RuntimeBackend for DockerBackend {
         args.extend_from_slice(command);
         let out = process::run("docker", &args, WRITE_TIMEOUT).await?;
         out.into_stdout("docker exec")
+    }
+
+    async fn inspect_container(&self, id: &str) -> Result<InspectedContainer, EnvError> {
+        let out = process::run("docker", &["inspect", id], LIST_TIMEOUT).await?;
+        if !out.success {
+            return Err(EnvError::CommandFailed {
+                command: format!("docker inspect {id}"),
+                stderr: out.stderr,
+            });
+        }
+        parse_inspect(&out.stdout)
     }
 
     async fn stop_container(&self, id: &str) -> Result<(), EnvError> {
@@ -269,6 +282,104 @@ fn parse_port(side: &str) -> Option<u16> {
     port.parse().ok()
 }
 
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct DockerInspect {
+    name: String,
+    image: String,
+    config: DockerConfig,
+    host_config: DockerHostConfig,
+    #[serde(default)]
+    mounts: Vec<DockerMount>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct DockerConfig {
+    image: String,
+    #[serde(default)]
+    env: Vec<String>,
+    #[serde(default)]
+    cmd: Option<Vec<String>>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct DockerHostConfig {
+    #[serde(default)]
+    port_bindings: std::collections::BTreeMap<String, Option<Vec<DockerPortBinding>>>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct DockerPortBinding {
+    #[serde(default)]
+    host_port: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct DockerMount {
+    source: String,
+    destination: String,
+    #[serde(rename = "RW")]
+    rw: bool,
+}
+
+fn parse_inspect(raw: &str) -> Result<InspectedContainer, EnvError> {
+    let entries: Vec<DockerInspect> = serde_json::from_str(raw)?;
+    let entry = entries
+        .into_iter()
+        .next()
+        .ok_or_else(|| EnvError::Parse("docker inspect 返回空数组".into()))?;
+    let mut ports = Vec::new();
+    for (key, bindings) in &entry.host_config.port_bindings {
+        let Some((container, protocol)) = key.split_once('/') else {
+            continue;
+        };
+        let Ok(container) = container.parse::<u16>() else {
+            continue;
+        };
+        let Some(binding) = bindings.as_ref().and_then(|list| list.first()) else {
+            continue;
+        };
+        let Ok(host) = binding.host_port.parse::<u16>() else {
+            continue;
+        };
+        ports.push(PortMapping {
+            host,
+            container,
+            protocol: protocol.to_owned(),
+        });
+    }
+    let spec = CreateSpec {
+        name: entry.name.trim_start_matches('/').to_owned(),
+        image: entry.config.image,
+        ports,
+        mounts: entry
+            .mounts
+            .iter()
+            .map(|mount| Mount {
+                source: mount.source.clone(),
+                target: mount.destination.clone(),
+                read_only: !mount.rw,
+            })
+            .collect(),
+        env: entry
+            .config
+            .env
+            .iter()
+            .filter_map(|line| {
+                line.split_once('=')
+                    .map(|(key, value)| (key.to_owned(), value.to_owned()))
+            })
+            .collect(),
+        command: entry.config.cmd.unwrap_or_default(),
+    };
+    let image_digest = entry.image.starts_with("sha256:").then_some(entry.image);
+    Ok(InspectedContainer { spec, image_digest })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -306,5 +417,37 @@ mod tests {
         assert!(status.is_ready(), "docker 不可用：{status:?}");
         let containers = backend.list_containers().await.unwrap();
         println!("docker 容器数：{}", containers.len());
+    }
+
+    #[test]
+    fn parses_inspect() {
+        let raw = r#"[{"Name":"/demo","Image":"sha256:abc",
+            "Config":{"Image":"alpine:3.20","Env":["A=1"],"Cmd":["sleep","1"]},
+            "HostConfig":{"PortBindings":{"7601/tcp":[{"HostPort":"17601"}]}},
+            "Mounts":[{"Source":"/tmp","Destination":"/mnt","RW":false}]}]"#;
+        let inspected = parse_inspect(raw).unwrap();
+        let spec = inspected.spec;
+        assert_eq!(spec.name, "demo");
+        assert_eq!(spec.image, "alpine:3.20");
+        assert_eq!(spec.ports[0].container, 7601);
+        assert_eq!(spec.ports[0].host, 17601);
+        assert_eq!(spec.env.get("A").map(String::as_str), Some("1"));
+        assert_eq!(spec.command, vec!["sleep", "1"]);
+        assert!(spec.mounts[0].read_only);
+        assert_eq!(inspected.image_digest.as_deref(), Some("sha256:abc"));
+    }
+
+    #[tokio::test]
+    #[ignore = "需要本机 Docker 与 mixum-docker-test 容器"]
+    async fn live_inspect() {
+        let inspected = backend()
+            .inspect_container("mixum-docker-test")
+            .await
+            .unwrap();
+        println!("{inspected:?}");
+        assert_eq!(inspected.spec.name, "mixum-docker-test");
+        assert_eq!(inspected.spec.ports[0].container, 7601);
+        assert_eq!(inspected.spec.mounts[0].target, "/mnt");
+        assert_eq!(inspected.spec.env.get("A").map(String::as_str), Some("1"));
     }
 }
