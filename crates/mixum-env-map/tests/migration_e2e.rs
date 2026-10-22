@@ -30,11 +30,33 @@ async fn live_migrate_snapshot_between_envs() {
         .await
         .expect("connect target");
 
-    let tree = source.snapshot_tree().await.expect("source tree");
-    let nodes = tree
+    if std::env::var("MAP_CREATE").as_deref() == Ok("1") {
+        source
+            .snapshot_create(Some("e2e-seed"))
+            .await
+            .expect("create seed snapshot");
+    }
+    let mut tree = source.snapshot_tree().await.expect("source tree");
+    let mut nodes = tree
         .get("nodes")
         .and_then(serde_json::Value::as_array)
-        .expect("nodes");
+        .cloned()
+        .unwrap_or_default();
+    if !nodes
+        .iter()
+        .any(|node| node.get("kind").and_then(serde_json::Value::as_str) == Some("disk"))
+    {
+        source
+            .snapshot_create(Some("e2e-seed"))
+            .await
+            .expect("create seed snapshot");
+        tree = source.snapshot_tree().await.expect("source tree after create");
+        nodes = tree
+            .get("nodes")
+            .and_then(serde_json::Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+    }
     let node = nodes
         .iter()
         .rev()
@@ -75,6 +97,10 @@ async fn live_migrate_snapshot_between_envs() {
         .and_then(serde_json::Value::as_str)
         .expect("目标节点");
     eprintln!("target node: {target_node}");
+    target
+        .snapshot_restore(&target_node)
+        .await
+        .expect("target snap.restore");
 
     let target_tree = target.snapshot_tree().await.expect("target tree");
     let found = target_tree
