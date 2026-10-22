@@ -42,6 +42,8 @@ export function Surfaces() {
   }
 
   useEffect(() => {
+    // 旧版本曾把 MAP token 存在 localStorage；新流程只用钥匙串。
+    localStorage.removeItem('mixum.map.token')
     void refreshConnections()
   }, [])
 
