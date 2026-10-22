@@ -324,7 +324,37 @@ impl MapClient {
         Ok(())
     }
 
+    /// Approve or deny one pending host privilege request.
+    pub async fn privilege_decision(
+        &self,
+        id: &str,
+        approve: bool,
+        reason: &str,
+    ) -> Result<(), MapError> {
+        self.call(
+            "privilege.decision",
+            json!({ "id": id, "approve": approve, "reason": reason, "scope": "once" }),
+        )
+        .await?;
+        Ok(())
+    }
+
     /// Pull the node's current clipboard text (B2 remote selection).
+    pub async fn detach(&self, surface: u32) -> Result<(), MapError> {
+        self.call("display.detach", json!({ "window": surface }))
+            .await?;
+        Ok(())
+    }
+
+    /// Escape hatch for MAP input variants this client does not model yet.
+    pub async fn input_raw(&self, surface: u32, mut payload: Value) -> Result<(), MapError> {
+        if let Value::Object(map) = &mut payload {
+            map.insert("window".into(), json!(surface));
+        }
+        self.call("display.input", payload).await?;
+        Ok(())
+    }
+
     pub async fn clipboard(&self) -> Result<String, MapError> {
         let reply = self.call("display.clipboard", json!({})).await?;
         let text = reply

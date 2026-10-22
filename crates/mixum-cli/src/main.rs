@@ -11,7 +11,10 @@ mod terminal;
 
 use clap::Parser;
 
-use cli::{Cli, Command, ConfigCommand, EnvCommand, PortCommand, RuntimeCommand, SnapshotCommand};
+use cli::{
+    Cli, Command, ConfigCommand, EnvCommand, PortCommand, PrivilegeCommand, RuntimeCommand,
+    SnapshotCommand,
+};
 
 #[tokio::main]
 async fn main() {
@@ -104,10 +107,68 @@ async fn run(cli: Cli) -> Result<(), output::CliError> {
                     yes,
                 } => map_ops::snapshot_restore(&data_dir, &selector, &node, yes, cli.json).await,
             },
+            EnvCommand::Screenshot {
+                selector,
+                window,
+                out,
+            } => map_ops::screenshot(&data_dir, &selector, window, out.as_deref(), cli.json).await,
+            EnvCommand::Click {
+                selector,
+                window,
+                x,
+                y,
+                button,
+            } => map_ops::click(&data_dir, &selector, window, x, y, &button, cli.json).await,
+            EnvCommand::Move {
+                selector,
+                window,
+                x,
+                y,
+            } => map_ops::move_pointer(&data_dir, &selector, window, x, y, cli.json).await,
+            EnvCommand::Type {
+                selector,
+                window,
+                text,
+            } => map_ops::type_text(&data_dir, &selector, window, &text, cli.json).await,
+            EnvCommand::Key {
+                selector,
+                window,
+                keysym,
+                mods,
+            } => map_ops::key(&data_dir, &selector, window, &keysym, &mods, cli.json).await,
+            EnvCommand::Scroll {
+                selector,
+                window,
+                x,
+                y,
+                direction,
+            } => map_ops::scroll(&data_dir, &selector, window, x, y, &direction, cli.json).await,
+            EnvCommand::Focus { selector, window } => {
+                map_ops::focus(&data_dir, &selector, window, cli.json).await
+            }
         },
         Command::Port { command } => match command {
             PortCommand::Check { port } => ports::check_command(port, cli.json).await,
             PortCommand::List => env::port_list(cli.json).await,
+        },
+        Command::Privilege { command } => match command {
+            PrivilegeCommand::Watch { selector } => {
+                map_ops::privilege_watch(&data_dir, &selector, cli.json).await
+            }
+            PrivilegeCommand::Approve {
+                selector,
+                id,
+                reason,
+            } => {
+                map_ops::privilege_decide(&data_dir, &selector, &id, true, &reason, cli.json).await
+            }
+            PrivilegeCommand::Deny {
+                selector,
+                id,
+                reason,
+            } => {
+                map_ops::privilege_decide(&data_dir, &selector, &id, false, &reason, cli.json).await
+            }
         },
         Command::Mcp => mcp::serve(),
         Command::Desktop => launch_desktop(cli.json),

@@ -242,3 +242,351 @@ fn print_snapshot_tree(value: &Value) {
         .collect::<Vec<_>>();
     output::table(&["ID", "KIND", "BRANCH", "LABEL"], &rows);
 }
+
+pub async fn privilege_watch(data_dir: &Path, selector: &str, json: bool) -> Result<()> {
+    let (_resolved, client) = env_client(data_dir, selector).await?;
+    let mut events = client.events();
+    if !json {
+        println!("watching privilege requests for {selector}; Ctrl-C to stop");
+    }
+    loop {
+        match events.recv().await {
+            Ok(event) if event.op == "privilege.request" => {
+                if json {
+                    output::print_json(&event.payload);
+                } else {
+                    let id = event
+                        .payload
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .unwrap_or("?");
+                    let risk = event
+                        .payload
+                        .get("risk")
+                        .and_then(Value::as_str)
+                        .unwrap_or("unknown");
+                    let program = event
+                        .payload
+                        .get("program")
+                        .and_then(Value::as_str)
+                        .unwrap_or("?");
+                    let args = event
+                        .payload
+                        .get("args")
+                        .and_then(Value::as_array)
+                        .map(|values| {
+                            values
+                                .iter()
+                                .filter_map(Value::as_str)
+                                .collect::<Vec<_>>()
+                                .join(" ")
+                        })
+                        .unwrap_or_default();
+                    println!("{id}  [{risk}]  {program} {args}");
+                    if let Some(reason) = event.payload.get("reason").and_then(Value::as_str) {
+                        if !reason.is_empty() {
+                            println!("  reason: {reason}");
+                        }
+                    }
+                    println!("  approve: mixum privilege approve {selector} {id}");
+                }
+            }
+            Ok(_) => {}
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                if !json {
+                    eprintln!("warning: skipped {skipped} events");
+                }
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+        }
+    }
+    Ok(())
+}
+
+pub async fn privilege_decide(
+    data_dir: &Path,
+    selector: &str,
+    id: &str,
+    approve: bool,
+    reason: &str,
+    json: bool,
+) -> Result<()> {
+    if approve {
+        authenticate_host()?;
+    }
+    let (_resolved, client) = env_client(data_dir, selector).await?;
+    client
+        .privilege_decision(id, approve, reason)
+        .await
+        .map_err(|error| CliError::map(format!("privilege.decision failed: {error}")))?;
+    if json {
+        output::print_json(&serde_json::json!({
+            "id": id,
+            "approved": approve,
+            "reason": reason,
+        }));
+    } else {
+        println!(
+            "{} privilege request {id}",
+            if approve { "approved" } else { "denied" }
+        );
+    }
+    Ok(())
+}
+
+/// Host-password gate for the CLI-only approval path.
+/// `sudo -v` validates the current OS user without running a privileged command;
+/// the agent cannot invoke this because it runs inside the container.
+fn authenticate_host() -> Result<()> {
+    let status = std::process::Command::new("sudo")
+        .arg("-v")
+        .status()
+        .map_err(|error| CliError::runtime(format!("host authentication unavailable: {error}")))?;
+    if !status.success() {
+        return Err(CliError::conflict(
+            "host authentication failed; request was not approved",
+        ));
+    }
+    Ok(())
+}
+
+pub async fn screenshot(
+    data_dir: &Path,
+    selector: &str,
+    window: u32,
+    out: Option<&Path>,
+    json: bool,
+) -> Result<()> {
+    use base64::Engine as _;
+    use tokio::sync::broadcast::error::RecvError;
+
+    let (_resolved, client) = env_client(data_dir, selector).await?;
+    let mut frames = client.frames();
+    client
+        .attach(window)
+        .await
+        .map_err(|error| CliError::map(format!("display.attach failed: {error}")))?;
+    let frame = tokio::time::timeout(std::time::Duration::from_secs(8), async {
+        loop {
+            match frames.recv().await {
+                Ok(frame) if frame.surface == window => return Some(frame),
+                Ok(_) => continue,
+                Err(RecvError::Lagged(_)) => continue,
+                Err(RecvError::Closed) => return None,
+            }
+        }
+    })
+    .await
+    .map_err(|_| CliError::map("screenshot timed out waiting for the first PNG frame"))?
+    .ok_or_else(|| CliError::map("frame stream closed before a screenshot arrived"))?;
+    let _ = client.detach(window).await;
+    if frame.format != mixum_env_surface::FORMAT_PNG || frame.data.is_empty() {
+        return Err(CliError::map(
+            "node did not return a PNG frame; screenshot requires codec=png support",
+        ));
+    }
+    let encoded = base64::engine::general_purpose::STANDARD.encode(&frame.data);
+    if let Some(path) = out {
+        std::fs::write(path, &frame.data)
+            .map_err(|error| CliError::io(format!("write screenshot: {error}")))?;
+    }
+    if json {
+        let mut value = serde_json::json!({
+            "window": window,
+            "width": frame.full_w,
+            "height": frame.full_h,
+            "bytes": frame.data.len(),
+        });
+        if let Some(path) = out {
+            value["path"] = serde_json::json!(path);
+        } else {
+            value["pngBase64"] = serde_json::json!(encoded);
+        }
+        output::print_json(&value);
+    } else if let Some(path) = out {
+        println!(
+            "wrote {} ({}x{})",
+            path.display(),
+            frame.full_w,
+            frame.full_h
+        );
+    } else {
+        return Err(CliError::usage(
+            "screenshot requires --out, or --json for base64 output",
+        ));
+    }
+    Ok(())
+}
+
+pub async fn click(
+    data_dir: &Path,
+    selector: &str,
+    window: u32,
+    x: f64,
+    y: f64,
+    button: &str,
+    json: bool,
+) -> Result<()> {
+    use mixum_env_surface::InputEvent;
+    let (_resolved, client) = env_client(data_dir, selector).await?;
+    client
+        .input(
+            window,
+            &InputEvent::PointerMotion {
+                surface: window,
+                x,
+                y,
+            },
+        )
+        .await
+        .map_err(|error| CliError::map(format!("pointer_motion failed: {error}")))?;
+    client
+        .input(
+            window,
+            &InputEvent::PointerButton {
+                surface: window,
+                button: button.to_owned(),
+                action: "click".into(),
+            },
+        )
+        .await
+        .map_err(|error| CliError::map(format!("pointer_button failed: {error}")))?;
+    output_ok(
+        json,
+        serde_json::json!({"window": window, "clicked": [x, y]}),
+    )
+}
+
+pub async fn move_pointer(
+    data_dir: &Path,
+    selector: &str,
+    window: u32,
+    x: f64,
+    y: f64,
+    json: bool,
+) -> Result<()> {
+    use mixum_env_surface::InputEvent;
+    let (_resolved, client) = env_client(data_dir, selector).await?;
+    client
+        .input(
+            window,
+            &InputEvent::PointerMotion {
+                surface: window,
+                x,
+                y,
+            },
+        )
+        .await
+        .map_err(|error| CliError::map(format!("pointer_motion failed: {error}")))?;
+    output_ok(json, serde_json::json!({"window": window, "moved": [x, y]}))
+}
+
+pub async fn type_text(
+    data_dir: &Path,
+    selector: &str,
+    window: u32,
+    text: &str,
+    json: bool,
+) -> Result<()> {
+    use mixum_env_surface::InputEvent;
+    let (_resolved, client) = env_client(data_dir, selector).await?;
+    client
+        .input(
+            window,
+            &InputEvent::Text {
+                surface: window,
+                text: text.to_owned(),
+            },
+        )
+        .await
+        .map_err(|error| CliError::map(format!("text input failed: {error}")))?;
+    output_ok(
+        json,
+        serde_json::json!({"window": window, "typed": text.chars().count()}),
+    )
+}
+
+pub async fn key(
+    data_dir: &Path,
+    selector: &str,
+    window: u32,
+    keysym: &str,
+    mods: &[String],
+    json: bool,
+) -> Result<()> {
+    let (_resolved, client) = env_client(data_dir, selector).await?;
+    client
+        .input_raw(
+            window,
+            serde_json::json!({
+                "type": "key",
+                "keysym": keysym,
+                "action": "click",
+                "mods": mods,
+            }),
+        )
+        .await
+        .map_err(|error| CliError::map(format!("key input failed: {error}")))?;
+    output_ok(
+        json,
+        serde_json::json!({"window": window, "keysym": keysym, "mods": mods}),
+    )
+}
+
+pub async fn scroll(
+    data_dir: &Path,
+    selector: &str,
+    window: u32,
+    x: f64,
+    y: f64,
+    direction: &str,
+    json: bool,
+) -> Result<()> {
+    let action = match direction {
+        "up" | "scroll_up" => "scroll_up",
+        "down" | "scroll_down" => "scroll_down",
+        other => {
+            return Err(CliError::usage(format!(
+                "unsupported scroll direction: {other}"
+            )))
+        }
+    };
+    let (_resolved, client) = env_client(data_dir, selector).await?;
+    client
+        .input_raw(
+            window,
+            serde_json::json!({"type":"pointer_motion","x":x,"y":y}),
+        )
+        .await
+        .map_err(|error| CliError::map(format!("pointer_motion failed: {error}")))?;
+    client
+        .input_raw(
+            window,
+            serde_json::json!({"type":"pointer_axis","action":action}),
+        )
+        .await
+        .map_err(|error| CliError::map(format!("pointer_axis failed: {error}")))?;
+    output_ok(
+        json,
+        serde_json::json!({"window": window, "scrolled": action}),
+    )
+}
+
+pub async fn focus(data_dir: &Path, selector: &str, window: u32, json: bool) -> Result<()> {
+    use mixum_env_surface::InputEvent;
+    let (_resolved, client) = env_client(data_dir, selector).await?;
+    client
+        .input(window, &InputEvent::Focus { surface: window })
+        .await
+        .map_err(|error| CliError::map(format!("focus failed: {error}")))?;
+    output_ok(json, serde_json::json!({"window": window, "focused": true}))
+}
+
+fn output_ok(json: bool, value: serde_json::Value) -> Result<()> {
+    if json {
+        output::print_json(&value);
+    } else {
+        println!("ok");
+    }
+    Ok(())
+}
