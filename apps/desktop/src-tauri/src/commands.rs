@@ -1613,3 +1613,140 @@ fn authenticate_host_privilege() -> Result<(), String> {
     #[allow(unreachable_code)]
     Err("host authentication is not implemented on this platform; use `mixum privilege approve`".into())
 }
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApprovalView {
+    pub kind: String,
+    pub id: String,
+    pub title: String,
+    pub selector: Option<String>,
+    pub domains: Vec<String>,
+    pub agent_stance: Option<String>,
+    pub agent_reason: Option<String>,
+    pub created_at_ms: u128,
+    pub approved: bool,
+    pub action: String,
+}
+
+fn approvals_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let base = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("无法定位应用数据目录：{error}"))?;
+    Ok(base.join("mixum-cli").join("approvals"))
+}
+
+#[tauri::command]
+pub fn list_approvals(app: AppHandle) -> Result<Vec<ApprovalView>, String> {
+    let dir = approvals_dir(&app)?;
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(dir).map_err(|error| error.to_string())? {
+        let path = entry.map_err(|error| error.to_string())?.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        let Ok(data) = std::fs::read(&path) else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_slice::<Value>(&data) else {
+            continue;
+        };
+        if value.get("consumed").and_then(Value::as_bool) == Some(true) {
+            continue;
+        }
+        let id = value
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        if id.is_empty() {
+            continue;
+        }
+        if let Some(domains) = value.get("domains").and_then(Value::as_array) {
+            out.push(ApprovalView {
+                kind: "browser".into(),
+                id: id.clone(),
+                title: value
+                    .get("selector")
+                    .and_then(Value::as_str)
+                    .unwrap_or("browser")
+                    .to_owned(),
+                selector: value
+                    .get("selector")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned),
+                domains: domains
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(ToOwned::to_owned)
+                    .collect(),
+                agent_stance: None,
+                agent_reason: value
+                    .get("reason")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned),
+                created_at_ms: value
+                    .get("createdAtMs")
+                    .and_then(Value::as_u64)
+                    .unwrap_or_default() as u128,
+                approved: value.get("approved").and_then(Value::as_bool).unwrap_or(false),
+                action: format!("mixum browser approve {id}"),
+            });
+        } else {
+            out.push(ApprovalView {
+                kind: "root".into(),
+                id: id.clone(),
+                title: value
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .unwrap_or("root container")
+                    .to_owned(),
+                selector: None,
+                domains: Vec::new(),
+                agent_stance: value
+                    .get("agentStance")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned),
+                agent_reason: value
+                    .get("agentReason")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned),
+                created_at_ms: value
+                    .get("createdAtMs")
+                    .and_then(Value::as_u64)
+                    .unwrap_or_default() as u128,
+                approved: value.get("approved").and_then(Value::as_bool).unwrap_or(false),
+                action: format!("mixum root approve {id}"),
+            });
+        }
+    }
+    out.sort_by_key(|item| item.created_at_ms);
+    Ok(out)
+}
+
+#[tauri::command]
+pub fn approve_root_approval(app: AppHandle, id: String) -> Result<(), String> {
+    if !id.starts_with("root-") {
+        return Err("not a root approval".into());
+    }
+    authenticate_host_privilege()?;
+    let path = approvals_dir(&app)?.join(format!("{id}.json"));
+    let data = std::fs::read(&path).map_err(|error| error.to_string())?;
+    let mut value: Value = serde_json::from_slice(&data).map_err(|error| error.to_string())?;
+    value["approved"] = Value::Bool(true);
+    std::fs::write(path, serde_json::to_vec_pretty(&value).map_err(|error| error.to_string())?)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn deny_approval(app: AppHandle, id: String) -> Result<(), String> {
+    if !id.starts_with("root-") && !id.starts_with("browser-") {
+        return Err("invalid approval id".into());
+    }
+    let path = approvals_dir(&app)?.join(format!("{id}.json"));
+    std::fs::remove_file(path).map_err(|error| error.to_string())
+}
