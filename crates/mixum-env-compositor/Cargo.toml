@@ -9,6 +9,9 @@ repository.workspace = true
 [dependencies]
 mixum-env-surface = { workspace = true }
 serde_json.workspace = true
+# 纯 Rust，不依赖系统库：pixels 模块要在宿主机上跑单元测试与基准，
+# 所以不能跟着 Wayland 一起门控到 Linux。
+png = "0.17"
 
 # Wayland 只在 Linux 上编译：源码已经用 `#[cfg(target_os = "linux")] mod linux`
 # 门控，依赖也必须跟着门控，否则 Windows/macOS 上 `cargo test --workspace`
@@ -17,6 +20,5 @@ serde_json.workspace = true
 wayland-client = "0.31"
 wayland-protocols-misc = { version = "0.3", features = ["client"] }
 smithay = { version = "0.7", default-features = false, features = ["wayland_frontend", "desktop", "xwayland"] }
-png = "0.17"
 x11rb = { version = "0.13", features = ["xtest"] }
 xim = { version = "0.5", features = ["x11rb-server"] }

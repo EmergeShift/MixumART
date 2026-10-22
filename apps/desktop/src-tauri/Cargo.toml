@@ -20,6 +20,8 @@ serde_json.workspace = true
 sha2.workspace = true
 dirs.workspace = true
 tokio.workspace = true
+# surface 帧走 base64 送 WebView；见 commands::SurfaceFrameEvent。
+base64 = "0.22"
 mixum-env-core.workspace = true
 mixum-env-runtime-apple.workspace = true
 mixum-env-runtime-docker.workspace = true

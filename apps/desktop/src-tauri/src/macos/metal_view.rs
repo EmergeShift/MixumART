@@ -168,11 +168,12 @@ impl Renderer {
         if full_w == 0 || full_h == 0 || w == 0 || h == 0 {
             return Ok(());
         }
-        if full
+        // 纹理是新建的时候必须整张上传；只有尺寸没变、纹理还在时才能只传脏区。
+        let recreated = full
             || self.width != full_w
             || self.height != full_h
-            || self.pixels.len() != full_w * full_h * 4
-        {
+            || self.pixels.len() != full_w * full_h * 4;
+        if recreated {
             self.width = full_w;
             self.height = full_h;
             self.pixels = vec![0u8; full_w * full_h * 4];
@@ -195,7 +196,12 @@ impl Renderer {
             }
         }
         self.ensure_texture()?;
-        self.upload()?;
+        // 只上传损坏矩形：补丁帧原本会把整张纹理重传一遍。
+        if recreated {
+            self.upload_region(0, 0, self.width, self.height)?;
+        } else {
+            self.upload_region(x, y, w, h)?;
+        }
         Ok(())
     }
 
@@ -221,21 +227,26 @@ impl Renderer {
         Ok(())
     }
 
-    fn upload(&self) -> Result<(), String> {
+    /// Upload only `(x, y, w, h)` out of the cached RGBA buffer.
+    fn upload_region(&self, x: usize, y: usize, w: usize, h: usize) -> Result<(), String> {
         let texture = self.texture.as_ref().ok_or("texture 未创建")?;
+        if w == 0 || h == 0 || x + w > self.width || y + h > self.height {
+            return Err("upload region out of bounds".into());
+        }
         let region = objc2_metal_02::MTLRegion {
-            origin: objc2_metal_02::MTLOrigin { x: 0, y: 0, z: 0 },
+            origin: objc2_metal_02::MTLOrigin { x, y, z: 0 },
             size: objc2_metal_02::MTLSize {
-                width: self.width,
-                height: self.height,
+                width: w,
+                height: h,
                 depth: 1,
             },
         };
+        let offset = (y * self.width + x) * 4;
         unsafe {
             texture.replaceRegion_mipmapLevel_withBytes_bytesPerRow(
                 region,
                 0,
-                std::ptr::NonNull::new(self.pixels.as_ptr() as *mut std::ffi::c_void)
+                std::ptr::NonNull::new(self.pixels.as_ptr().add(offset) as *mut std::ffi::c_void)
                     .ok_or("frame buffer empty")?,
                 self.width * 4,
             );
