@@ -222,6 +222,9 @@ export const setAgentCredential = (agentId: string, secret: string) =>
 export const deleteAgentCredential = (agentId: string) =>
   isDemo() ? demoDelay(undefined) : invoke<void>('delete_agent_credential', { agentId })
 
+export const getAgentCredential = (agentId: string) =>
+  isDemo() ? demoDelay('') : invoke<string>('get_agent_credential', { agentId })
+
 export const hasAgentCredential = (agentId: string) =>
   isDemo() ? demoDelay(false) : invoke<boolean>('has_agent_credential', { agentId })
 

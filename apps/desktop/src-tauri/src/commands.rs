@@ -266,6 +266,15 @@ pub fn delete_agent_credential(agent_id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub fn get_agent_credential(agent_id: String) -> Result<String, String> {
+    match keyring_entry(&agent_id)?.get_password() {
+        Ok(secret) => Ok(secret),
+        Err(keyring::Error::NoEntry) => Ok(String::new()),
+        Err(error) => Err(format!("读取系统钥匙串失败：{error}")),
+    }
+}
+
+#[tauri::command]
 pub fn has_agent_credential(agent_id: String) -> Result<bool, String> {
     match keyring_entry(&agent_id)?.get_password() {
         Ok(_) => Ok(true),

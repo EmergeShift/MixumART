@@ -5,6 +5,7 @@ import {
   errorText,
   gatewayDevices,
   gatewayNodes,
+  getAgentCredential,
   gatewayPairClaim,
   gatewayPairCreate,
   gatewayRevokeDevice,
@@ -13,6 +14,7 @@ import {
   listSurfaces,
   openEnvironmentSurface,
   openSurfaceWindow,
+  setAgentCredential,
   startEnvironment,
 } from '../api'
 import type { DeviceInfo, PairClaim } from '../api'
@@ -126,6 +128,19 @@ export function Surfaces({ backends, onOpenEnvironments }: Props) {
   }
 
   useEffect(() => {
+    let cancelled = false
+    void getAgentCredential(`gateway:${addr}`)
+      .then((saved) => {
+        if (!cancelled && saved && !token) setToken(saved)
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [addr])
+
+  useEffect(() => {
     localStorage.removeItem('mixum.map.token')
     void discover()
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -142,17 +157,21 @@ export function Surfaces({ backends, onOpenEnvironments }: Props) {
     setLoading(true)
     setError(null)
     try {
-      setManualSurfaces(
-        await listSurfaces(addr, token, fingerprint || undefined, node || undefined),
-      )
+      // 先取节点列表,再按选中的节点列窗口;否则多节点 gateway 在 node 为空时
+      // 会先失败,下拉框永远没有机会出现。
+      let list: string[] = []
       try {
-        const list = await gatewayNodes(addr, token, fingerprint || undefined)
+        list = await gatewayNodes(addr, token, fingerprint || undefined)
         setNodes(list)
-        if (node && !list.includes(node)) setNode('')
       } catch {
         // 直连 agentd 不是 gateway:没有节点可选。
         setNodes([])
       }
+      const effective = node && list.includes(node) ? node : (list[0] ?? '')
+      if (effective !== node) setNode(effective)
+      setManualSurfaces(
+        await listSurfaces(addr, token, fingerprint || undefined, effective || undefined),
+      )
     } catch (err) {
       setError(errorText(err))
       setManualSurfaces([])
@@ -206,6 +225,12 @@ export function Surfaces({ backends, onOpenEnvironments }: Props) {
       )
       setClaimResult(claim)
       setClaimCode('')
+      setToken(claim.token)
+      try {
+        await setAgentCredential(`gateway:${addr}`, claim.token)
+      } catch (err) {
+        setError(`设备已配对，但写入系统钥匙串失败：${errorText(err)}`)
+      }
     } catch (err) {
       setError(errorText(err))
     }
@@ -296,8 +321,17 @@ export function Surfaces({ backends, onOpenEnvironments }: Props) {
                 id="map-node"
                 value={node}
                 onChange={(event) => {
-                  setNode(event.target.value)
-                  localStorage.setItem('mixum.map.node', event.target.value)
+                  const next = event.target.value
+                  setNode(next)
+                  localStorage.setItem('mixum.map.node', next)
+                  setManualSurfaces(null)
+                  if (!token.trim()) return
+                  setLoading(true)
+                  setError(null)
+                  void listSurfaces(addr, token, fingerprint || undefined, next || undefined)
+                    .then(setManualSurfaces)
+                    .catch((err) => setError(errorText(err)))
+                    .finally(() => setLoading(false))
                 }}
               >
                 <option value="">自动</option>
@@ -351,10 +385,15 @@ export function Surfaces({ backends, onOpenEnvironments }: Props) {
           </button>
         </div>
         {claimResult && (
-          <p className="mode-note">
-            已配对设备 <span className="mono">{claimResult.deviceId}</span>
-            （设备令牌已生成，请在新设备保存）。
-          </p>
+          <>
+            <p className="mode-note">
+              已配对设备 <span className="mono">{claimResult.deviceId}</span>
+              （令牌已写入系统钥匙串并填入访问令牌）。
+            </p>
+            <button className="ghost" onClick={() => void scanManual()} disabled={loading}>
+              用设备令牌连接
+            </button>
+          </>
         )}
         <div className="chips">
           <button className="ghost" onClick={() => void loadDevices()} disabled={!token.trim()}>
