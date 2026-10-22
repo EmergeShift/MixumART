@@ -283,13 +283,12 @@ impl MapClient {
             files: reader_files,
             fingerprint,
         };
+        // 旧镜像只认 `hello`，新 agentd 两者都认；用 `hello` 兼容两端，
+        // 应答前缀可能是 `hello.ok` 或 `session.hello.ok`。
         let hello = client
-            .call(
-                "session.hello",
-                json!({ "token": token, "client": CLIENT_NAME }),
-            )
+            .call("hello", json!({ "token": token, "client": CLIENT_NAME }))
             .await?;
-        if hello.op != "session.hello.ok" {
+        if hello.op != "hello.ok" && hello.op != "session.hello.ok" {
             return Err(MapError::Protocol(format!("handshake: {}", hello.op)));
         }
         Ok(client)
