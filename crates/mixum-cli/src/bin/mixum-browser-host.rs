@@ -99,6 +99,7 @@ fn handle_client(mut stream: UnixStream, writer: Writer, pending: Pending) {
         "id": id,
         "type": request.get("type").and_then(Value::as_str).unwrap_or("export"),
         "domains": request.get("domains").cloned().unwrap_or_else(|| json!([])),
+        "urls": request.get("urls").cloned().unwrap_or_else(|| json!([])),
     });
     if let Err(error) = write_native(&writer, &message) {
         pending.lock().unwrap().remove(&id);
