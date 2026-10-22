@@ -282,6 +282,11 @@ pub enum BrowserCommand {
         #[arg(long)]
         out: Option<String>,
     },
+    /// Write a Chrome enterprise-policy fragment for force-installing the extension.
+    Policy {
+        #[arg(long)]
+        out: Option<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]

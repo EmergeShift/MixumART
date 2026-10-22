@@ -43,6 +43,17 @@ Upload that zip at the Chrome Web Store developer console. The native host
 manifest is still installed per machine by `mixum browser install`; enterprise
 deployment can push the same manifest with MDM.
 
+For managed Chrome, generate the force-install policy fragment:
+
+```bash
+mixum browser policy --out chrome-policy.json
+```
+
+It contains `ExtensionSettings` for extension
+`ahimdgpdmhhbhkokcablggjjidkdlnhl` with `installation_mode=force_installed`.
+Feed it through MDM as a Chrome policy; consumer installs still require the
+Web Store listing.
+
 The extension requests broad host permissions because `chrome.cookies` needs them.
 The native broker still refuses any domain the user did not approve, and the lease
 contains only those domains' cookies. Narrow `optional_host_permissions` can be
