@@ -351,10 +351,15 @@ fn print_snapshot_tree(value: &Value) {
                     .and_then(Value::as_str)
                     .unwrap_or("")
                     .to_string(),
+                node.get("tags")
+                    .and_then(|tags| tags.get("base"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
             ]
         })
         .collect::<Vec<_>>();
-    output::table(&["ID", "KIND", "BRANCH", "LABEL"], &rows);
+    output::table(&["ID", "KIND", "BRANCH", "LABEL", "BASE"], &rows);
 }
 
 pub async fn privilege_watch(data_dir: &Path, selector: &str, json: bool) -> Result<()> {
