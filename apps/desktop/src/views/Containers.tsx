@@ -63,6 +63,9 @@ const defaultAddress = (container: Container) => {
   return port ? `127.0.0.1:${port.host}` : '127.0.0.1:7601'
 }
 
+/** 只有 mixumOS 镜像里才有 agentd/MAP；普通容器只能开终端。 */
+const isMapImage = (image: string) => image.toLowerCase().includes('mixumos')
+
 export function Containers({ backends }: Props) {
   const ready = useMemo(
     () => (backends ?? []).filter((backend) => backend.status.state === 'ready'),
@@ -283,8 +286,20 @@ export function Containers({ backends }: Props) {
     }
   }
 
+  const openManual = (container: Container) => {
+    setEditor(container)
+    setBrowser(null)
+    setDraft({ addr: defaultAddress(container), token: '', fingerprint: '' })
+  }
+
   const openEnvironment = async (container: Container) => {
     if (!kind) return
+    if (!isMapImage(container.image)) {
+      setSurfaceError('这是普通容器，没有 mixumOS agentd/MAP；只能打开终端，不能查看窗口。')
+      setBrowser(container)
+      setSurfaces([])
+      return
+    }
     setActionId(container.id)
     setSurfaceError(null)
     try {
@@ -306,9 +321,11 @@ export function Containers({ backends }: Props) {
       }
       await browse(container)
     } catch (err) {
-      setSurfaceError(errorText(err))
-      setEditor(container)
-      setDraft({ addr: defaultAddress(container), token: '', fingerprint: '' })
+      setSurfaceError(
+        `${errorText(err)}。只有带 mixumOS agentd 的容器能提供 MAP 窗口；普通容器请用终端。`,
+      )
+      setBrowser(container)
+      setSurfaces([])
     } finally {
       setActionId(null)
     }
@@ -622,6 +639,11 @@ export function Containers({ backends }: Props) {
                   <p className="mono muted">{connections[browser.id]?.addr}</p>
                 </div>
                 <div className="row-actions">
+                  {surfaceError && !surfaces?.length && (
+                    <button className="ghost" onClick={() => openManual(browser)}>
+                      手动远程连接
+                    </button>
+                  )}
                   <button className="ghost" onClick={() => void openTerminal(browser)}>
                     终端
                   </button>
@@ -795,17 +817,23 @@ export function Containers({ backends }: Props) {
                               .join(', ')}
                       </td>
                       <td className="row-actions">
-                        <button
-                          className="ghost"
-                          onClick={() => void openEnvironment(container)}
-                          disabled={actionId === container.id}
-                        >
-                          {actionId === container.id
-                            ? '连接中…'
-                            : connection
-                              ? '查看窗口'
-                              : '打开'}
-                        </button>
+                        {isMapImage(container.image) ? (
+                          <button
+                            className="ghost"
+                            onClick={() => void openEnvironment(container)}
+                            disabled={actionId === container.id}
+                          >
+                            {actionId === container.id
+                              ? '连接中…'
+                              : connection
+                                ? '查看窗口'
+                                : '打开'}
+                          </button>
+                        ) : (
+                          <span className="muted" title="没有 mixumOS agentd/MAP">
+                            无 MAP
+                          </span>
+                        )}
                         {canManage && container.state !== 'running' && container.state !== 'paused' && (
                           <button
                             className="ghost"

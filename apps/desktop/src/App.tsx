@@ -188,7 +188,7 @@ export default function App() {
               <Cockpit backends={backends} onOpenEnvironments={() => setTab('containers')} />
             )}
             {tab === 'containers' && <Containers backends={backends} />}
-            {tab === 'surfaces' && <Surfaces />}
+            {tab === 'surfaces' && <Surfaces backends={backends} onOpenEnvironments={() => setTab('containers')} />}
             {tab === 'agents' && <Agents />}
             {tab === 'settings' && (
               <Settings
