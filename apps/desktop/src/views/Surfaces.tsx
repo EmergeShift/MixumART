@@ -1,23 +1,46 @@
 import { useEffect, useState } from 'react'
 
 import {
+  connectEnvironment,
   errorText,
+  listContainers,
   listEnvironmentSurfaces,
   listSurfaces,
-  loadEnvironmentConnections,
   openEnvironmentSurface,
   openSurfaceWindow,
+  startEnvironment,
 } from '../api'
-import type { ConnectionInfo, SurfaceInfo } from '../types'
+import type { BackendStatus, Container, RuntimeKind, SurfaceInfo } from '../types'
 
 const DEFAULT_ADDR = '127.0.0.1:7601'
 
 /** A = mixcomp 兼容通道，B = 合成器增强通道。对用户只展示「增强 / 兼容」。 */
 const isEnhanced = (surface: SurfaceInfo) => surface.id >= 1000
 
-export function Surfaces() {
-  const [connections, setConnections] = useState<Record<string, ConnectionInfo>>({})
-  const [selected, setSelected] = useState('')
+const isMapImage = (image: string) => image.toLowerCase().includes('mixumos')
+
+const defaultAddress = (container: Container) => {
+  const port =
+    container.ports.find((item) => item.container === 7601) ?? container.ports[0]
+  return port ? `127.0.0.1:${port.host}` : DEFAULT_ADDR
+}
+
+type Group = {
+  kind: RuntimeKind
+  container: Container
+  surfaces: SurfaceInfo[] | null
+  error: string | null
+  busy: boolean
+}
+
+type Props = {
+  backends?: BackendStatus[] | null
+  onOpenEnvironments?: () => void
+}
+
+export function Surfaces({ backends, onOpenEnvironments }: Props) {
+  const [groups, setGroups] = useState<Group[]>([])
+  const [discovering, setDiscovering] = useState(false)
   const [manual, setManual] = useState(false)
   const [addr, setAddr] = useState(
     () => localStorage.getItem('mixum.map.addr') ?? DEFAULT_ADDR,
@@ -26,72 +49,119 @@ export function Surfaces() {
   const [fingerprint, setFingerprint] = useState(
     () => localStorage.getItem('mixum.map.fp') ?? '',
   )
-  const [surfaces, setSurfaces] = useState<SurfaceInfo[] | null>(null)
+  const [manualSurfaces, setManualSurfaces] = useState<SurfaceInfo[] | null>(null)
   const [route, setRoute] = useState<'all' | 'enhanced' | 'compat'>('all')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const refreshConnections = async () => {
+  const patchGroup = (containerId: string, patch: Partial<Group>) => {
+    setGroups((previous) =>
+      previous.map((group) =>
+        group.container.id === containerId ? { ...group, ...patch } : group,
+      ),
+    )
+  }
+
+  const connectGroup = async (group: Group, start: boolean) => {
+    patchGroup(group.container.id, { busy: true, error: null })
     try {
-      const next = await loadEnvironmentConnections()
-      setConnections(next)
-      setSelected((previous) => previous || Object.keys(next)[0] || '')
+      if (start && group.container.state !== 'running') {
+        await startEnvironment(group.kind, group.container.id)
+        await new Promise((resolve) => setTimeout(resolve, 700))
+      }
+      await connectEnvironment(group.kind, group.container.id, defaultAddress(group.container))
+      const surfaces = await listEnvironmentSurfaces(group.container.id)
+      patchGroup(group.container.id, { surfaces, error: null, busy: false })
+    } catch (err) {
+      patchGroup(group.container.id, {
+        surfaces: [],
+        busy: false,
+        error: `${errorText(err)}。只有带 mixumOS agentd 的容器能提供 MAP 窗口。`,
+      })
+    }
+  }
+
+  const discover = async () => {
+    setDiscovering(true)
+    setError(null)
+    try {
+      const ready = (backends ?? []).filter((backend) => backend.status.state === 'ready')
+      const discovered: Group[] = []
+      for (const backend of ready) {
+        const containers = await listContainers(backend.kind)
+        for (const container of containers) {
+          if (!isMapImage(container.image)) continue
+          discovered.push({
+            kind: backend.kind,
+            container,
+            surfaces: null,
+            error: null,
+            busy: false,
+          })
+        }
+      }
+      setGroups(discovered)
+      // 运行中的环境直接自动配对并列出窗口；停止的只展示“启动并查看”。
+      for (const group of discovered) {
+        if (group.container.state === 'running') await connectGroup(group, false)
+      }
     } catch (err) {
       setError(errorText(err))
+    } finally {
+      setDiscovering(false)
     }
   }
 
   useEffect(() => {
-    // 旧版本曾把 MAP token 存在 localStorage；新流程只用钥匙串。
     localStorage.removeItem('mixum.map.token')
-    void refreshConnections()
-  }, [])
+    void discover()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [backends])
 
-  const useManual = manual || Object.keys(connections).length === 0
-  const scan = async () => {
+  const scanManual = async () => {
+    if (!token.trim()) {
+      setError('手动连接远程节点需要访问令牌；本机环境会自动配对，不需要填写。')
+      return
+    }
+    localStorage.setItem('mixum.map.addr', addr)
+    localStorage.setItem('mixum.map.fp', fingerprint)
     setLoading(true)
     setError(null)
     try {
-      if (useManual) {
-        if (!token.trim()) {
-          setError('手动连接远程节点需要访问令牌；本机环境请在环境页自动连接。')
-          return
-        }
-        localStorage.setItem('mixum.map.addr', addr)
-        localStorage.setItem('mixum.map.fp', fingerprint)
-        setSurfaces(await listSurfaces(addr, token, fingerprint || undefined))
-      } else {
-        if (!selected) {
-          setError('请选择一个已连接的环境')
-          return
-        }
-        setSurfaces(await listEnvironmentSurfaces(selected))
-      }
+      setManualSurfaces(await listSurfaces(addr, token, fingerprint || undefined))
     } catch (err) {
       setError(errorText(err))
-      setSurfaces([])
+      setManualSurfaces([])
     } finally {
       setLoading(false)
     }
   }
 
-  const shown = (surfaces ?? []).filter((surface) => {
-    if (route === 'all') return true
-    return route === 'enhanced' ? isEnhanced(surface) : !isEnhanced(surface)
-  })
+  const shown = (surfaces: SurfaceInfo[]) =>
+    surfaces.filter((surface) => {
+      if (route === 'all') return true
+      return route === 'enhanced' ? isEnhanced(surface) : !isEnhanced(surface)
+    })
 
-  const open = async (surface: SurfaceInfo) => {
+  const open = async (group: Group, surface: SurfaceInfo) => {
     setError(null)
     try {
-      if (useManual) {
-        await openSurfaceWindow(addr, token, fingerprint || undefined, surface)
-      } else {
-        await openEnvironmentSurface(selected, surface)
-      }
+      await openEnvironmentSurface(group.container.id, surface)
     } catch (err) {
       setError(errorText(err))
     }
   }
+
+  const openManual = async (surface: SurfaceInfo) => {
+    setError(null)
+    try {
+      await openSurfaceWindow(addr, token, fingerprint || undefined, surface)
+    } catch (err) {
+      setError(errorText(err))
+    }
+  }
+
+  const totalWindows = groups.reduce((total, group) => total + (group.surfaces?.length ?? 0), 0)
 
   return (
     <section>
@@ -99,89 +169,61 @@ export function Surfaces() {
         <div>
           <h2>环境里的窗口</h2>
           <p>
-            已连接的环境不需要再填令牌；MART 通过本机钥匙串里的配对信息连接。
-            远程节点可以切到手动模式。
+            自动发现带 mixumOS agentd 的容器；已运行的环境直接列出窗口，不需要填写令牌。
           </p>
         </div>
         <div className="row-actions">
-          <button className="ghost" onClick={() => void refreshConnections()}>
-            刷新环境
+          <button className="ghost" onClick={() => void discover()} disabled={discovering}>
+            {discovering ? '发现中…' : '刷新环境'}
           </button>
-          <button className="ghost" onClick={() => void scan()} disabled={loading}>
-            {loading ? '查找中…' : '查找窗口'}
+          <button className="ghost" onClick={() => setManual((value) => !value)}>
+            {manual ? '收起远程连接' : '远程节点'}
           </button>
         </div>
       </div>
 
-      <div className="chips" style={{ alignItems: 'flex-end' }}>
-        {!useManual ? (
-          <div className="field">
-            <label htmlFor="map-environment">已连接环境</label>
-            <select
-              id="map-environment"
-              value={selected}
-              onChange={(event) => {
-                setSelected(event.target.value)
-                setSurfaces(null)
-              }}
-            >
-              {Object.entries(connections).map(([id, connection]) => (
-                <option key={id} value={id}>
-                  {connection.addr}
-                </option>
-              ))}
-            </select>
-          </div>
-        ) : (
-          <>
-            <div className="field">
-              <label htmlFor="map-addr">远程节点地址</label>
-              <input
-                id="map-addr"
-                className="mono"
-                value={addr}
-                onChange={(event) => setAddr(event.target.value)}
-                placeholder="例如 127.0.0.1:7601"
-                spellCheck={false}
-              />
-            </div>
-            <div className="field">
-              <label htmlFor="map-token">访问令牌</label>
-              <input
-                id="map-token"
-                className="mono"
-                type="password"
-                value={token}
-                onChange={(event) => setToken(event.target.value)}
-                placeholder="map1.…"
-                spellCheck={false}
-              />
-            </div>
-            <div className="field">
-              <label htmlFor="map-fp">证书指纹（可选）</label>
-              <input
-                id="map-fp"
-                className="mono"
-                value={fingerprint}
-                onChange={(event) => setFingerprint(event.target.value)}
-                placeholder="首次连接可留空"
-                spellCheck={false}
-              />
-            </div>
-          </>
-        )}
-        {Object.keys(connections).length > 0 && (
-          <button className="ghost" onClick={() => setManual((value) => !value)}>
-            {manual ? '使用已连接环境' : '手动连接远程节点'}
-          </button>
-        )}
-      </div>
+      {error && <div className="error">{error}</div>}
 
-      {Object.keys(connections).length === 0 && (
-        <p className="mode-note">
-          还没有已连接环境。请在「环境」页连接一个节点；本机环境会自动读取容器内 token，
-          不需要用户手动输入。
-        </p>
+      {manual && (
+        <div className="chips" style={{ alignItems: 'flex-end' }}>
+          <div className="field">
+            <label htmlFor="map-addr">远程节点地址</label>
+            <input
+              id="map-addr"
+              className="mono"
+              value={addr}
+              onChange={(event) => setAddr(event.target.value)}
+              placeholder="例如 127.0.0.1:7601"
+              spellCheck={false}
+            />
+          </div>
+          <div className="field">
+            <label htmlFor="map-token">访问令牌</label>
+            <input
+              id="map-token"
+              className="mono"
+              type="password"
+              value={token}
+              onChange={(event) => setToken(event.target.value)}
+              placeholder="map1.…"
+              spellCheck={false}
+            />
+          </div>
+          <div className="field">
+            <label htmlFor="map-fp">证书指纹（可选）</label>
+            <input
+              id="map-fp"
+              className="mono"
+              value={fingerprint}
+              onChange={(event) => setFingerprint(event.target.value)}
+              placeholder="首次连接可留空"
+              spellCheck={false}
+            />
+          </div>
+          <button className="ghost" onClick={() => void scanManual()} disabled={loading}>
+            {loading ? '查找中…' : '查找远程窗口'}
+          </button>
+        </div>
       )}
 
       <p className="mode-note">
@@ -207,18 +249,101 @@ export function Surfaces() {
         ))}
       </div>
 
-      {error && <div className="error">{error}</div>}
+      {manual && manualSurfaces && (
+        <EnvironmentWindows
+          title="远程节点"
+          subtitle={addr}
+          surfaces={shown(manualSurfaces)}
+          empty="这个远程环境里暂时没有窗口。"
+          onOpen={openManual}
+        />
+      )}
 
-      {surfaces === null ? (
+      {!manual && groups.length === 0 && !discovering && (
         <div className="empty">
-          {useManual
-            ? '填入远程地址与访问令牌后，点击「查找窗口」。'
-            : '选择一个已连接环境，点击「查找窗口」。'}
+          没有发现 mixumOS 环境。普通容器没有 MAP agentd，只能在环境页打开终端。
         </div>
-      ) : shown.length === 0 ? (
-        <div className="empty">
-          {surfaces.length === 0 ? '这个环境里暂时没有窗口。' : '当前筛选方式下没有窗口。'}
+      )}
+
+      {!manual &&
+        groups.map((group) => (
+          <EnvironmentWindows
+            key={`${group.kind}:${group.container.id}`}
+            title={group.container.name}
+            subtitle={`${group.container.image} · ${group.container.state}`}
+            surfaces={shown(group.surfaces ?? [])}
+            empty={
+              group.busy
+                ? '正在连接并读取窗口…'
+                : group.container.state !== 'running'
+                  ? '容器已停止；启动后会自动读取窗口。'
+                  : '这个环境里暂时没有窗口。'
+            }
+            error={group.error}
+            action={
+              group.container.state !== 'running' ? (
+                <button
+                  className="ghost"
+                  onClick={() => void connectGroup(group, true)}
+                  disabled={group.busy}
+                >
+                  {group.busy ? '启动中…' : '启动并查看'}
+                </button>
+              ) : group.surfaces === null ? (
+                <button className="ghost" onClick={() => void connectGroup(group, false)}>
+                  重试连接
+                </button>
+              ) : (
+                <button
+                  className="ghost"
+                  onClick={() => onOpenEnvironments?.()}
+                >
+                  终端 / 管理
+                </button>
+              )
+            }
+            onOpen={(surface) => void open(group, surface)}
+          />
+        ))}
+
+      {totalWindows === 0 && !manual && groups.length > 0 && (
+        <p className="muted">当前没有可显示的窗口；停止的环境可以先启动。</p>
+      )}
+    </section>
+  )
+}
+
+type WindowsProps = {
+  title: string
+  subtitle: string
+  surfaces: SurfaceInfo[]
+  empty: string
+  error?: string | null
+  action?: React.ReactNode
+  onOpen: (surface: SurfaceInfo) => void
+}
+
+function EnvironmentWindows({
+  title,
+  subtitle,
+  surfaces,
+  empty,
+  error,
+  action,
+  onOpen,
+}: WindowsProps) {
+  return (
+    <article className="card" style={{ marginTop: 14 }}>
+      <div className="card-head">
+        <div>
+          <h3>{title}</h3>
+          <p className="card-note mono">{subtitle}</p>
         </div>
+        {action}
+      </div>
+      {error && <div className="error">{error}</div>}
+      {surfaces.length === 0 ? (
+        <p className="muted">{empty}</p>
       ) : (
         <div className="table-scroll"><table className="table">
           <thead>
@@ -231,7 +356,7 @@ export function Surfaces() {
             </tr>
           </thead>
           <tbody>
-            {shown.map((surface) => (
+            {surfaces.map((surface) => (
               <tr key={surface.id}>
                 <td>
                   <span className={isEnhanced(surface) ? 'tag tag-a' : 'tag'}>
@@ -244,7 +369,7 @@ export function Surfaces() {
                   {surface.width}×{surface.height}
                 </td>
                 <td className="row-actions">
-                  <button className="ghost" onClick={() => void open(surface)}>
+                  <button className="ghost" onClick={() => onOpen(surface)}>
                     打开窗口
                   </button>
                 </td>
@@ -253,6 +378,6 @@ export function Surfaces() {
           </tbody>
         </table></div>
       )}
-    </section>
+    </article>
   )
 }
