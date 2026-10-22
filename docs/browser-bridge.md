@@ -47,6 +47,8 @@ For managed Chrome, generate the force-install policy fragment:
 
 ```bash
 mixum browser policy --out chrome-policy.json
+# macOS MDM can consume a plist instead:
+mixum browser policy --format plist --out chrome-policy.plist
 ```
 
 It contains `ExtensionSettings` for extension

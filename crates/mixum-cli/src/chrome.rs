@@ -325,20 +325,42 @@ pub fn package(out: Option<&str>, json: bool) -> Result<()> {
     Ok(())
 }
 
-
 /// Enterprise policy fragment. Consumer installs still require the Web Store
 /// listing; this is the no-manual path for managed Chrome.
-pub fn policy(out: Option<&str>, json: bool) -> Result<()> {
-    let body = serde_json::json!({
-        "ExtensionSettings": {
-            EXTENSION_ID: {
-                "installation_mode": "force_installed",
-                "update_url": "https://clients2.google.com/service/update2/crx"
-            }
+pub fn policy(out: Option<&str>, format: crate::cli::PolicyFormat, json: bool) -> Result<()> {
+    let text = match format {
+        crate::cli::PolicyFormat::Json => {
+            let body = serde_json::json!({
+                "ExtensionSettings": {
+                    EXTENSION_ID: {
+                        "installation_mode": "force_installed",
+                        "update_url": "https://clients2.google.com/service/update2/crx"
+                    }
+                }
+            });
+            serde_json::to_string_pretty(&body)
+                .map_err(|error| CliError::io(format!("serialize policy: {error}")))?
         }
-    });
-    let text = serde_json::to_string_pretty(&body)
-        .map_err(|error| CliError::io(format!("serialize policy: {error}")))?;
+        crate::cli::PolicyFormat::Plist => format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>ExtensionSettings</key>
+  <dict>
+    <key>{EXTENSION_ID}</key>
+    <dict>
+      <key>installation_mode</key>
+      <string>force_installed</string>
+      <key>update_url</key>
+      <string>https://clients2.google.com/service/update2/crx</string>
+    </dict>
+  </dict>
+</dict>
+</plist>
+"#
+        ),
+    };
     match out {
         Some(path) => {
             std::fs::write(path, &text)

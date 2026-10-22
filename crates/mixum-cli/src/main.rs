@@ -211,7 +211,9 @@ async fn run(cli: Cli) -> Result<(), output::CliError> {
                 domains,
                 urls,
                 reason,
-            } => approval::browser_request(&data_dir, &selector, &domains, &urls, &reason, cli.json),
+            } => {
+                approval::browser_request(&data_dir, &selector, &domains, &urls, &reason, cli.json)
+            }
             BrowserCommand::Approve { id } => {
                 let request = approval::browser_mark_approved(&data_dir, &id)?;
                 let result = chrome::share(
@@ -228,7 +230,9 @@ async fn run(cli: Cli) -> Result<(), output::CliError> {
                 result
             }
             BrowserCommand::Package { out } => chrome::package(out.as_deref(), cli.json),
-            BrowserCommand::Policy { out } => chrome::policy(out.as_deref(), cli.json),
+            BrowserCommand::Policy { out, format } => {
+                chrome::policy(out.as_deref(), format, cli.json)
+            }
         },
         Command::Base { command } => match command {
             BaseCommand::Create {

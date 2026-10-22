@@ -292,6 +292,8 @@ pub enum BrowserCommand {
     Policy {
         #[arg(long)]
         out: Option<String>,
+        #[arg(long, value_enum, default_value = "json")]
+        format: PolicyFormat,
     },
 }
 
@@ -456,4 +458,10 @@ pub enum PortCommand {
     Check { port: u16 },
     /// List host ports currently claimed by runtime containers.
     List,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum PolicyFormat {
+    Json,
+    Plist,
 }
