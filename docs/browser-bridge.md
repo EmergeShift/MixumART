@@ -41,6 +41,11 @@ added before a public store release.
 ## Use
 
 ```bash
+# agent asks; prints a request id and the exact human command
+mixum browser request "my env" --domain example.com --reason "read current tab"
+# human approves with host password; share runs on success
+mixum browser approve browser-01...
+# direct human path
 mixum browser export --domain example.com --json
 mixum browser share "my env" --domain example.com
 ```
