@@ -559,6 +559,11 @@ pub async fn create(data_dir: &Path, args: CreateArgs, json: bool) -> Result<()>
     let mut env = BTreeMap::new();
     env.insert("MIXUM_METHOD".to_string(), args.method.as_str().to_string());
     env.insert("MIXUM_TITLE".to_string(), title.to_string());
+    if let Some(base) = args.base.as_deref() {
+        let version = crate::base::resolve_version(data_dir, base)?;
+        env.insert("MIXUM_BASE".to_string(), base.to_owned());
+        env.insert("MIXUM_BASE_DIGEST".to_string(), version.digest);
+    }
     if root {
         env.insert("MIXUM_TASK_USER".to_string(), "root".to_string());
     }
@@ -738,6 +743,10 @@ pub async fn rebase(data_dir: &Path, selector: &str, base: &str, json: bool) -> 
     let new_name = format!("{}-rb-{suffix:04x}", old_record.name);
     let mut env = inspected.spec.env.clone();
     env.insert("MIXUM_BASE".into(), base.to_owned());
+    env.insert(
+        "MIXUM_BASE_DIGEST".into(),
+        crate::base::resolve_version(data_dir, base)?.digest,
+    );
     let spec = CreateSpec {
         name: new_name.clone(),
         image: image.clone(),
