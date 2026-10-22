@@ -368,3 +368,25 @@ export const surfacePutFile = (surface: number, name: string, data: number[]) =>
   isDemo()
     ? Promise.resolve(`/demo/transfers/${name}`)
     : invoke<string>('surface_put_file', { surface, name, data })
+
+export type ApprovalView = {
+  kind: 'root' | 'browser'
+  id: string
+  title: string
+  selector?: string | null
+  domains: string[]
+  agentStance?: string | null
+  agentReason?: string | null
+  createdAtMs: number
+  approved: boolean
+  action: string
+}
+
+export const listApprovals = () =>
+  isDemo() ? demoDelay<ApprovalView[]>([]) : invoke<ApprovalView[]>('list_approvals')
+
+export const approveRootApproval = (id: string) =>
+  isDemo() ? demoDelay(undefined) : invoke<void>('approve_root_approval', { id })
+
+export const denyApproval = (id: string) =>
+  isDemo() ? demoDelay(undefined) : invoke<void>('deny_approval', { id })

@@ -1399,3 +1399,7 @@ input:focus {
 .risk{display:inline-block;font-size:11px;text-transform:uppercase;letter-spacing:.04em;padding:2px 7px;border-radius:999px;background:#eef2f7;color:#333}
 .risk-package{background:#e8f2ff;color:#044a9e}.risk-destructive{background:#ffe9e9;color:#a30000}.risk-system{background:#fff3db;color:#8a4b00}.risk-network{background:#e9f8ee;color:#086b2d}.risk-shell{background:#f3e8ff;color:#5a1a9e}
 .form-error{color:#b00020;font-size:12px}
+.approval-card{border:1px solid var(--border,#ddd);border-radius:10px;padding:12px;margin-top:12px}
+.approval-card-head{display:flex;align-items:center;gap:8px}
+.approval-card-head strong{font-size:13px}
+.approval-center{max-height:80vh;overflow:auto}
