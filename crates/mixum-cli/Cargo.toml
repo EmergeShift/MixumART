@@ -9,6 +9,10 @@ license.workspace = true
 name = "mixum"
 path = "src/main.rs"
 
+[[bin]]
+name = "mixum-artd"
+path = "src/bin/mixum-artd.rs"
+
 [dependencies]
 clap = { workspace = true }
 dirs = { workspace = true }
