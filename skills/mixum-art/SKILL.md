@@ -30,7 +30,11 @@ mixum env show "fix login"
 mixum env start "fix login"
 mixum env stop "fix login"
 mixum env logs "fix login" --tail 100
+mixum env open "fix login" --window 1 --no-open
 ```
+
+`mixum env open` starts a read-only local browser monitor and prints a URL;
+it does not grant input or terminal access.
 
 When a profile has multiple local images, pass `--image` explicitly. If more
 than one runtime is ready, pass `--runtime docker|apple|wsl2`.

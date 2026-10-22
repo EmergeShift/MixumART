@@ -548,6 +548,20 @@ fn load_known(path: &Path) -> Result<HashMap<String, String>, MapError> {
     serde_json::from_str(&text).map_err(MapError::from)
 }
 
+/// Forget a TOFU entry. Used when a new environment reuses a host port and
+/// therefore presents a new server certificate.
+pub fn forget_known_host(addr: &str) -> Result<(), MapError> {
+    let path = known_hosts_path();
+    let mut known = load_known(&path)?;
+    if known.remove(addr).is_some() {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&path, serde_json::to_vec_pretty(&known)?)?;
+    }
+    Ok(())
+}
+
 fn save_known(path: &Path, addr: &str, fingerprint: &str) -> Result<(), MapError> {
     let mut known = load_known(path)?;
     known.insert(addr.to_owned(), fingerprint.to_owned());

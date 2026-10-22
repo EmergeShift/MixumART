@@ -1,4 +1,6 @@
+mod browser;
 mod cli;
+mod config;
 mod env;
 mod map_ops;
 mod mcp;
@@ -9,7 +11,7 @@ mod terminal;
 
 use clap::Parser;
 
-use cli::{Cli, Command, EnvCommand, PortCommand, RuntimeCommand, SnapshotCommand};
+use cli::{Cli, Command, ConfigCommand, EnvCommand, PortCommand, RuntimeCommand, SnapshotCommand};
 
 #[tokio::main]
 async fn main() {
@@ -77,6 +79,12 @@ async fn run(cli: Cli) -> Result<(), output::CliError> {
             EnvCommand::Windows { selector, timeout } => {
                 map_ops::windows(&data_dir, &selector, timeout, cli.json).await
             }
+            EnvCommand::Open {
+                selector,
+                window,
+                no_open,
+                port,
+            } => browser::open(&data_dir, &selector, window, port, no_open, cli.json).await,
             EnvCommand::Logs { selector, tail } => {
                 env::logs(&data_dir, &selector, tail, cli.json).await
             }
@@ -103,6 +111,11 @@ async fn run(cli: Cli) -> Result<(), output::CliError> {
         },
         Command::Mcp => mcp::serve(),
         Command::Desktop => launch_desktop(cli.json),
+        Command::Config { command } => match command {
+            ConfigCommand::Show => config::show(&data_dir, cli.json),
+            ConfigCommand::Set { key, value } => config::set(&data_dir, &key, &value, cli.json),
+            ConfigCommand::Unset { key } => config::unset(&data_dir, &key, cli.json),
+        },
         Command::Version => {
             if cli.json {
                 output::print_json(&serde_json::json!({
