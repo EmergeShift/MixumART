@@ -380,3 +380,57 @@ pub fn policy(out: Option<&str>, format: crate::cli::PolicyFormat, json: bool) -
     }
     Ok(())
 }
+
+pub fn status(json: bool) -> Result<()> {
+    let manifest = native_manifest_dir()
+        .ok()
+        .map(|dir| dir.join("dev.mixum.browser.json"));
+    let host = browser_host_path().unwrap_or_else(|_| PathBuf::from("mixum-browser-host"));
+    let socket = socket_path();
+    let manifest_ok = manifest.as_ref().is_some_and(|path| path.is_file());
+    let host_ok = host.is_file();
+    let socket_ok = socket.exists();
+    let value = serde_json::json!({
+        "extensionId": EXTENSION_ID,
+        "nativeHostManifest": manifest,
+        "nativeHostManifestPresent": manifest_ok,
+        "nativeHostBinary": host,
+        "nativeHostBinaryPresent": host_ok,
+        "socket": socket,
+        "socketPresent": socket_ok,
+        "nextStep": if !manifest_ok {
+            "run `mixum browser install`"
+        } else if !host_ok {
+            "install mixum-browser-host next to mixum or set MIXUM_BROWSER_HOST"
+        } else if !socket_ok {
+            "open Chrome and the Mixum Browser Bridge extension"
+        } else {
+            "ready"
+        },
+    });
+    if json {
+        output::print_json(&value);
+    } else {
+        println!("extension id: {EXTENSION_ID}");
+        println!(
+            "native host manifest: {} ({})",
+            manifest
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "unresolved".into()),
+            if manifest_ok { "present" } else { "missing" }
+        );
+        println!(
+            "native host binary: {} ({})",
+            host.display(),
+            if host_ok { "present" } else { "missing" }
+        );
+        println!(
+            "socket: {} ({})",
+            socket.display(),
+            if socket_ok { "present" } else { "missing" }
+        );
+        println!("next: {}", value["nextStep"].as_str().unwrap_or(""));
+    }
+    Ok(())
+}

@@ -283,6 +283,8 @@ pub enum BrowserCommand {
     },
     /// Human-side: approve a request and perform the share.
     Approve { id: String },
+    /// Show native-host/socket status and the exact next step.
+    Status,
     /// Package the unpacked extension as a Chrome Web Store upload zip.
     Package {
         #[arg(long)]
