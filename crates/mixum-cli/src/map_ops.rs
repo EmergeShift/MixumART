@@ -164,11 +164,17 @@ pub async fn snapshot_create(
     data_dir: &Path,
     selector: &str,
     label: Option<&str>,
+    kind: &str,
     json: bool,
 ) -> Result<()> {
+    if !matches!(kind, "disk" | "memory" | "hybrid") {
+        return Err(CliError::usage(
+            "snapshot kind must be disk, memory or hybrid",
+        ));
+    }
     let (_resolved, client) = env_client(data_dir, selector).await?;
     let result = client
-        .snapshot_create(label)
+        .snapshot_create_kind(kind, label)
         .await
         .map_err(|error| CliError::map(format!("snap.create failed: {error}")))?;
     if json {
@@ -203,6 +209,111 @@ pub async fn snapshot_restore(
         output::print_json(&result);
     } else {
         println!("restored snapshot {node}");
+    }
+    Ok(())
+}
+
+pub async fn snapshot_fork(
+    data_dir: &Path,
+    selector: &str,
+    node: &str,
+    branch: &str,
+    json: bool,
+) -> Result<()> {
+    if branch.trim().is_empty() {
+        return Err(CliError::usage("--branch cannot be empty"));
+    }
+    let (_resolved, client) = env_client(data_dir, selector).await?;
+    let result = client
+        .snapshot_fork(node, branch)
+        .await
+        .map_err(|error| CliError::map(format!("snap.fork failed: {error}")))?;
+    if json {
+        output::print_json(&result);
+    } else {
+        println!("forked {node} into branch {branch}");
+    }
+    Ok(())
+}
+
+pub async fn snapshot_export(
+    data_dir: &Path,
+    selector: &str,
+    node: &str,
+    out: &Path,
+    json: bool,
+) -> Result<()> {
+    let (_resolved, client) = env_client(data_dir, selector).await?;
+    let result = client
+        .snapshot_export(node)
+        .await
+        .map_err(|error| CliError::map(format!("snap.export failed: {error}")))?;
+    let file = result
+        .get("file")
+        .and_then(Value::as_str)
+        .ok_or_else(|| CliError::map("snap.export did not return a file"))?;
+    let remote_path = if file.starts_with("transfers/") {
+        file.to_owned()
+    } else {
+        format!("transfers/{file}")
+    };
+    let data = client
+        .get_file(&remote_path)
+        .await
+        .map_err(|error| CliError::map(format!("file.get failed: {error}")))?;
+    std::fs::write(out, &data)
+        .map_err(|error| CliError::io(format!("write {}: {error}", out.display())))?;
+    let value = serde_json::json!({
+        "node": node,
+        "path": out,
+        "bytes": data.len(),
+        "remote": result,
+    });
+    if json {
+        output::print_json(&value);
+    } else {
+        println!(
+            "exported {node} to {} ({} bytes)",
+            out.display(),
+            data.len()
+        );
+    }
+    Ok(())
+}
+
+pub async fn snapshot_import(
+    data_dir: &Path,
+    selector: &str,
+    file: &Path,
+    origin: &str,
+    json: bool,
+) -> Result<()> {
+    let data = std::fs::read(file)
+        .map_err(|error| CliError::io(format!("read {}: {error}", file.display())))?;
+    if data.is_empty() {
+        return Err(CliError::usage("snapshot bundle is empty"));
+    }
+    let name = file
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("snapshot.mart");
+    let (_resolved, client) = env_client(data_dir, selector).await?;
+    let remote = client
+        .put_file(name, &data)
+        .await
+        .map_err(|error| CliError::map(format!("file.put failed: {error}")))?;
+    let result = client
+        .snapshot_import(&remote, origin)
+        .await
+        .map_err(|error| CliError::map(format!("snap.import failed: {error}")))?;
+    if json {
+        output::print_json(&serde_json::json!({
+            "path": file,
+            "bytes": data.len(),
+            "result": result,
+        }));
+    } else {
+        println!("imported {} into {selector}", file.display());
     }
     Ok(())
 }

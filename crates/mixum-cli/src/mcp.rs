@@ -136,7 +136,7 @@ fn tools() -> Vec<Value> {
         tool(
             "mixum_snapshot_create",
             "Create a disk snapshot for an environment.",
-            json!({"selector":{"type":"string"},"label":{"type":"string"}}),
+            json!({"selector":{"type":"string"},"label":{"type":"string"},"kind":{"type":"string","enum":["disk","memory","hybrid"],"default":"disk"}}),
             vec!["selector"],
         ),
         tool(
@@ -180,6 +180,30 @@ fn tools() -> Vec<Value> {
             "Focus a container window before typing or key input.",
             json!({"selector":{"type":"string"},"window":{"type":"integer"}}),
             vec!["selector","window"],
+        ),
+        tool(
+            "mixum_snapshot_restore",
+            "Restore a snapshot in place. Destructive: confirm must be exactly RESTORE.",
+            json!({"selector":{"type":"string"},"node":{"type":"string"},"confirm":{"type":"string"}}),
+            vec!["selector","node","confirm"],
+        ),
+        tool(
+            "mixum_snapshot_fork",
+            "Fork a snapshot into a new branch.",
+            json!({"selector":{"type":"string"},"node":{"type":"string"},"branch":{"type":"string"}}),
+            vec!["selector","node","branch"],
+        ),
+        tool(
+            "mixum_snapshot_export",
+            "Export a snapshot as a .mart bundle to a host path.",
+            json!({"selector":{"type":"string"},"node":{"type":"string"},"out":{"type":"string"}}),
+            vec!["selector","node","out"],
+        ),
+        tool(
+            "mixum_snapshot_import",
+            "Import a .mart bundle from a host path into an environment.",
+            json!({"selector":{"type":"string"},"file":{"type":"string"},"origin":{"type":"string"}}),
+            vec!["selector","file"],
         ),
         tool(
             "mixum_port_check",
@@ -338,6 +362,64 @@ fn call_tool(name: &str, arguments: &Value) -> std::result::Result<Value, String
             ]);
             if let Some(label) = arguments.get("label").and_then(Value::as_str) {
                 args.extend(["--label".into(), label.into()]);
+            }
+            if let Some(kind) = arguments.get("kind").and_then(Value::as_str) {
+                args.extend(["--kind".into(), kind.into()]);
+            }
+        }
+        "mixum_snapshot_restore"
+        | "mixum_snapshot_fork"
+        | "mixum_snapshot_export"
+        | "mixum_snapshot_import" => {
+            let selector = arguments
+                .get("selector")
+                .and_then(Value::as_str)
+                .ok_or("selector is required")?;
+            let sub = match name {
+                "mixum_snapshot_restore" => "restore",
+                "mixum_snapshot_fork" => "fork",
+                "mixum_snapshot_export" => "export",
+                _ => "import",
+            };
+            args.extend(["env".into(), "snapshot".into(), sub.into(), selector.into()]);
+            if name == "mixum_snapshot_import" {
+                let file = arguments
+                    .get("file")
+                    .and_then(Value::as_str)
+                    .ok_or("file is required")?;
+                args.extend(["--file".into(), file.into()]);
+                if let Some(origin) = arguments.get("origin").and_then(Value::as_str) {
+                    args.extend(["--origin".into(), origin.into()]);
+                }
+            } else {
+                let node = arguments
+                    .get("node")
+                    .and_then(Value::as_str)
+                    .ok_or("node is required")?;
+                args.push(node.into());
+                match name {
+                    "mixum_snapshot_restore" => {
+                        if arguments.get("confirm").and_then(Value::as_str) != Some("RESTORE") {
+                            return Err("confirm must be exactly RESTORE".into());
+                        }
+                        args.push("--yes".into());
+                    }
+                    "mixum_snapshot_fork" => {
+                        let branch = arguments
+                            .get("branch")
+                            .and_then(Value::as_str)
+                            .ok_or("branch is required")?;
+                        args.extend(["--branch".into(), branch.into()]);
+                    }
+                    "mixum_snapshot_export" => {
+                        let out = arguments
+                            .get("out")
+                            .and_then(Value::as_str)
+                            .ok_or("out is required")?;
+                        args.extend(["--out".into(), out.into()]);
+                    }
+                    _ => {}
+                }
             }
         }
         "mixum_window_screenshot" => {

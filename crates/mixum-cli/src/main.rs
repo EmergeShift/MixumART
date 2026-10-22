@@ -1,3 +1,4 @@
+mod base;
 mod browser;
 mod cli;
 mod config;
@@ -12,8 +13,8 @@ mod terminal;
 use clap::Parser;
 
 use cli::{
-    Cli, Command, ConfigCommand, EnvCommand, PortCommand, PrivilegeCommand, RuntimeCommand,
-    SnapshotCommand,
+    BaseCommand, Cli, Command, ConfigCommand, EnvCommand, PortCommand, PrivilegeCommand,
+    RuntimeCommand, SnapshotCommand,
 };
 
 #[tokio::main]
@@ -98,9 +99,35 @@ async fn run(cli: Cli) -> Result<(), output::CliError> {
                 SnapshotCommand::List { selector } => {
                     map_ops::snapshot_list(&data_dir, &selector, cli.json).await
                 }
-                SnapshotCommand::Create { selector, label } => {
-                    map_ops::snapshot_create(&data_dir, &selector, label.as_deref(), cli.json).await
+                SnapshotCommand::Create {
+                    selector,
+                    label,
+                    kind,
+                } => {
+                    map_ops::snapshot_create(
+                        &data_dir,
+                        &selector,
+                        label.as_deref(),
+                        &kind,
+                        cli.json,
+                    )
+                    .await
                 }
+                SnapshotCommand::Fork {
+                    selector,
+                    node,
+                    branch,
+                } => map_ops::snapshot_fork(&data_dir, &selector, &node, &branch, cli.json).await,
+                SnapshotCommand::Export {
+                    selector,
+                    node,
+                    out,
+                } => map_ops::snapshot_export(&data_dir, &selector, &node, &out, cli.json).await,
+                SnapshotCommand::Import {
+                    selector,
+                    file,
+                    origin,
+                } => map_ops::snapshot_import(&data_dir, &selector, &file, &origin, cli.json).await,
                 SnapshotCommand::Restore {
                     selector,
                     node,
@@ -146,6 +173,27 @@ async fn run(cli: Cli) -> Result<(), output::CliError> {
             EnvCommand::Focus { selector, window } => {
                 map_ops::focus(&data_dir, &selector, window, cli.json).await
             }
+        },
+        Command::Base { command } => match command {
+            BaseCommand::Create {
+                name,
+                image,
+                runtime,
+            } => {
+                base::create(
+                    &data_dir,
+                    &name,
+                    image.as_deref(),
+                    runtime.map(|runtime| runtime.kind()),
+                    cli.json,
+                )
+                .await
+            }
+            BaseCommand::Shell { name } => base::shell(&data_dir, &name).await,
+            BaseCommand::Commit { name, tag } => {
+                base::commit(&data_dir, &name, tag.as_deref(), cli.json).await
+            }
+            BaseCommand::List => base::list(&data_dir, cli.json).await,
         },
         Command::Port { command } => match command {
             PortCommand::Check { port } => ports::check_command(port, cli.json).await,

@@ -19,6 +19,12 @@ pub struct EnvRecord {
     pub method: String,
     pub runtime: String,
     pub image: String,
+    /// 提交母体环境使用的 base spec（`name:tag`）；普通环境为空。
+    #[serde(default)]
+    pub base: Option<String>,
+    /// Explicitly approved root container.
+    #[serde(default)]
+    pub root: bool,
     pub port: u16,
     pub created_at_ms: u128,
     #[serde(default)]
