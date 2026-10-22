@@ -51,6 +51,12 @@ export type EnvironmentConnection = {
   fingerprint?: string | null
 }
 
+/** 前端可见的连接信息；token 留在 Rust/钥匙串，不下发 WebView。 */
+export type ConnectionInfo = {
+  addr: string
+  fingerprint?: string | null
+}
+
 export type CreateSpec = {
   name: string
   image: string
