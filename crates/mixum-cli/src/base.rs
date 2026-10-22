@@ -170,11 +170,7 @@ pub async fn shell(data_dir: &Path, name: &str) -> Result<()> {
                 "/bin/bash".into(),
             ],
         ),
-        RuntimeKind::Wsl2 => {
-            return Err(CliError::usage(
-                "base builder terminal is not implemented for WSL2 yet",
-            ))
-        }
+        RuntimeKind::Wsl2 => ("wsl.exe", vec!["-d".to_string(), container.id.clone()]),
     };
     let status = Command::new(program)
         .args(args)
@@ -463,7 +459,8 @@ fn image_config(kind: RuntimeKind, image: &str) -> Result<ImageConfig> {
     let (program, args) = match kind {
         RuntimeKind::AppleContainer => ("container", vec!["image", "inspect", image]),
         RuntimeKind::Docker => ("docker", vec!["image", "inspect", image]),
-        RuntimeKind::Wsl2 => return Err(CliError::usage("WSL2 has no image config")),
+        // A WSL rootfs tar has no OCI config; use the minimal default.
+        RuntimeKind::Wsl2 => return Ok(ImageConfig::default()),
     };
     let output = Command::new(program)
         .args(args)
@@ -539,6 +536,7 @@ fn string_array(value: Option<&Value>) -> Vec<String> {
         .unwrap_or_default()
 }
 
+#[derive(Default)]
 struct ImageConfig {
     env: Vec<String>,
     entrypoint: Vec<String>,
