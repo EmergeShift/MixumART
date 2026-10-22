@@ -344,6 +344,8 @@ struct DockerPortBinding {
 struct DockerMount {
     #[serde(default, rename = "Type")]
     mount_type: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
     source: String,
     destination: String,
     #[serde(rename = "RW")]
@@ -383,11 +385,22 @@ fn parse_inspect(raw: &str) -> Result<InspectedContainer, EnvError> {
         mounts: entry
             .mounts
             .iter()
-            .map(|mount| Mount {
-                kind: mount.mount_type.clone().unwrap_or_else(|| "bind".into()),
-                source: mount.source.clone(),
-                target: mount.destination.clone(),
-                read_only: !mount.rw,
+            .map(|mount| {
+                let kind = mount.mount_type.clone().unwrap_or_else(|| "bind".into());
+                // Docker inspect reports a volume's host path in Source; the
+                // volume name is Name. Passing the path to --mount type=volume
+                // fails with invalid characters during rebase/clone.
+                let source = if kind == "volume" {
+                    mount.name.clone().unwrap_or_else(|| mount.source.clone())
+                } else {
+                    mount.source.clone()
+                };
+                Mount {
+                    kind,
+                    source,
+                    target: mount.destination.clone(),
+                    read_only: !mount.rw,
+                }
             })
             .collect(),
         env: entry
@@ -449,7 +462,7 @@ mod tests {
         let raw = r#"[{"Name":"/demo","Image":"sha256:abc",
             "Config":{"Image":"alpine:3.20","Env":["A=1"],"Cmd":["sleep","1"]},
             "HostConfig":{"PortBindings":{"7601/tcp":[{"HostPort":"17601"}]}},
-            "Mounts":[{"Source":"/tmp","Destination":"/mnt","RW":false}]}]"#;
+            "Mounts":[{"Type":"volume","Name":"demo-work","Source":"/var/lib/docker/volumes/demo-work/_data","Destination":"/work","RW":true},{"Source":"/tmp","Destination":"/mnt","RW":false}]}]"#;
         let inspected = parse_inspect(raw).unwrap();
         let spec = inspected.spec;
         assert_eq!(spec.name, "demo");
@@ -458,7 +471,10 @@ mod tests {
         assert_eq!(spec.ports[0].host, 17601);
         assert_eq!(spec.env.get("A").map(String::as_str), Some("1"));
         assert_eq!(spec.command, vec!["sleep", "1"]);
-        assert!(spec.mounts[0].read_only);
+        assert_eq!(spec.mounts[0].source, "demo-work");
+        assert_eq!(spec.mounts[0].target, "/work");
+        assert!(!spec.mounts[0].read_only);
+        assert!(spec.mounts[1].read_only);
         assert_eq!(inspected.image_digest.as_deref(), Some("sha256:abc"));
     }
 
