@@ -374,7 +374,16 @@ impl MapClient {
     /// Create a disk snapshot. `label` is optional; `auto=false` because this
     /// is an explicit user action.
     pub async fn snapshot_create(&self, label: Option<&str>) -> Result<Value, MapError> {
-        let mut payload = json!({ "kind": "disk", "auto": false });
+        self.snapshot_create_kind("disk", label).await
+    }
+
+    /// 创建指定类型的快照（disk / memory / hybrid）。
+    pub async fn snapshot_create_kind(
+        &self,
+        kind: &str,
+        label: Option<&str>,
+    ) -> Result<Value, MapError> {
+        let mut payload = json!({ "kind": kind, "auto": false });
         if let Some(label) = label.filter(|label| !label.trim().is_empty()) {
             payload["label"] = json!(label);
         }

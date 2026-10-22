@@ -509,6 +509,20 @@ pub async fn environment_snapshot_create(
 }
 
 #[tauri::command]
+pub async fn environment_snapshot_create_kind(
+    app: AppHandle,
+    container_id: String,
+    kind: String,
+    label: Option<String>,
+) -> Result<Value, String> {
+    let client = snapshot_client(&app, &container_id).await?;
+    client
+        .snapshot_create_kind(&kind, label.as_deref())
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 pub async fn environment_snapshot_restore(
     app: AppHandle,
     container_id: String,
