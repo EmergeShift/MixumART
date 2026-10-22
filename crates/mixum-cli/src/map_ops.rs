@@ -368,47 +368,17 @@ pub async fn privilege_watch(data_dir: &Path, selector: &str, json: bool) -> Res
     if !json {
         println!("watching privilege requests for {selector}; Ctrl-C to stop");
     }
+    for request in client
+        .privilege_list()
+        .await
+        .map_err(|error| CliError::map(format!("privilege.list failed: {error}")))?
+    {
+        print_privilege_request(&request, selector, json);
+    }
     loop {
         match events.recv().await {
             Ok(event) if event.op == "privilege.request" => {
-                if json {
-                    output::print_json(&event.payload);
-                } else {
-                    let id = event
-                        .payload
-                        .get("id")
-                        .and_then(Value::as_str)
-                        .unwrap_or("?");
-                    let risk = event
-                        .payload
-                        .get("risk")
-                        .and_then(Value::as_str)
-                        .unwrap_or("unknown");
-                    let program = event
-                        .payload
-                        .get("program")
-                        .and_then(Value::as_str)
-                        .unwrap_or("?");
-                    let args = event
-                        .payload
-                        .get("args")
-                        .and_then(Value::as_array)
-                        .map(|values| {
-                            values
-                                .iter()
-                                .filter_map(Value::as_str)
-                                .collect::<Vec<_>>()
-                                .join(" ")
-                        })
-                        .unwrap_or_default();
-                    println!("{id}  [{risk}]  {program} {args}");
-                    if let Some(reason) = event.payload.get("reason").and_then(Value::as_str) {
-                        if !reason.is_empty() {
-                            println!("  reason: {reason}");
-                        }
-                    }
-                    println!("  approve: mixum privilege approve {selector} {id}");
-                }
+                print_privilege_request(&event.payload, selector, json);
             }
             Ok(_) => {}
             Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
@@ -420,6 +390,40 @@ pub async fn privilege_watch(data_dir: &Path, selector: &str, json: bool) -> Res
         }
     }
     Ok(())
+}
+
+fn print_privilege_request(request: &Value, selector: &str, json: bool) {
+    if json {
+        output::print_json(request);
+        return;
+    }
+    let id = request.get("id").and_then(Value::as_str).unwrap_or("?");
+    let risk = request
+        .get("risk")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let program = request
+        .get("program")
+        .and_then(Value::as_str)
+        .unwrap_or("?");
+    let args = request
+        .get("args")
+        .and_then(Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .unwrap_or_default();
+    println!("{id}  [{risk}]  {program} {args}");
+    if let Some(reason) = request.get("reason").and_then(Value::as_str) {
+        if !reason.is_empty() {
+            println!("  reason: {reason}");
+        }
+    }
+    println!("  approve: mixum privilege approve {selector} {id}");
 }
 
 pub async fn privilege_decide(
@@ -457,6 +461,9 @@ pub async fn privilege_decide(
 /// `sudo -v` validates the current OS user without running a privileged command;
 /// the agent cannot invoke this because it runs inside the container.
 fn authenticate_host() -> Result<()> {
+    if std::env::var("MIXUM_HOST_AUTHENTICATED").ok().as_deref() == Some("1") {
+        return Ok(());
+    }
     let status = std::process::Command::new("sudo")
         .arg("-v")
         .status()

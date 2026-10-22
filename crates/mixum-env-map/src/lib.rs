@@ -324,6 +324,17 @@ impl MapClient {
         Ok(())
     }
 
+    /// Pending requests, for clients that connect after the broadcast.
+    pub async fn privilege_list(&self) -> Result<Vec<Value>, MapError> {
+        let reply = self.call("privilege.list", json!({})).await?;
+        Ok(reply
+            .payload
+            .get("requests")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default())
+    }
+
     /// Approve or deny one pending host privilege request.
     pub async fn privilege_decision(
         &self,
