@@ -35,6 +35,11 @@ pub enum Command {
         #[command(subcommand)]
         command: EnvCommand,
     },
+    /// Chrome cookie/tab bridge.
+    Browser {
+        #[command(subcommand)]
+        command: BrowserCommand,
+    },
     /// Manage shared base environments (母体环境).
     Base {
         #[command(subcommand)]
@@ -239,6 +244,23 @@ pub enum SnapshotCommand {
         /// Confirm the destructive restore.
         #[arg(long)]
         yes: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum BrowserCommand {
+    /// Install the Chrome native messaging host.
+    Install,
+    /// Export an approved cookie/tab lease (JSON).
+    Export {
+        #[arg(long = "domain", required = true)]
+        domains: Vec<String>,
+    },
+    /// Send an approved lease to a container browser.
+    Share {
+        selector: String,
+        #[arg(long = "domain", required = true)]
+        domains: Vec<String>,
     },
 }
 

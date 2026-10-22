@@ -1,5 +1,6 @@
 mod base;
 mod browser;
+mod chrome;
 mod cli;
 mod config;
 mod env;
@@ -13,8 +14,8 @@ mod terminal;
 use clap::Parser;
 
 use cli::{
-    BaseCommand, Cli, Command, ConfigCommand, EnvCommand, PortCommand, PrivilegeCommand,
-    RuntimeCommand, SnapshotCommand,
+    BaseCommand, BrowserCommand, Cli, Command, ConfigCommand, EnvCommand, PortCommand,
+    PrivilegeCommand, RuntimeCommand, SnapshotCommand,
 };
 
 #[tokio::main]
@@ -175,6 +176,13 @@ async fn run(cli: Cli) -> Result<(), output::CliError> {
             } => map_ops::scroll(&data_dir, &selector, window, x, y, &direction, cli.json).await,
             EnvCommand::Focus { selector, window } => {
                 map_ops::focus(&data_dir, &selector, window, cli.json).await
+            }
+        },
+        Command::Browser { command } => match command {
+            BrowserCommand::Install => chrome::install(cli.json),
+            BrowserCommand::Export { domains } => chrome::export(&domains, cli.json),
+            BrowserCommand::Share { selector, domains } => {
+                chrome::share(&data_dir, &selector, &domains, cli.json).await
             }
         },
         Command::Base { command } => match command {
