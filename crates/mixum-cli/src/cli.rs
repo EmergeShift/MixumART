@@ -267,6 +267,16 @@ pub enum BrowserCommand {
         #[arg(long = "domain", required = true)]
         domains: Vec<String>,
     },
+    /// Agent-side: ask a human to approve domains for one container.
+    Request {
+        selector: String,
+        #[arg(long = "domain", required = true)]
+        domains: Vec<String>,
+        #[arg(long, default_value = "")]
+        reason: String,
+    },
+    /// Human-side: approve a request and perform the share.
+    Approve { id: String },
 }
 
 #[derive(Debug, Subcommand)]

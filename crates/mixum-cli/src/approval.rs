@@ -172,3 +172,97 @@ fn now_ms() -> u128 {
         .map(|duration| duration.as_millis())
         .unwrap_or_default()
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserRequest {
+    pub id: String,
+    pub selector: String,
+    pub domains: Vec<String>,
+    pub reason: String,
+    pub created_at_ms: u128,
+    #[serde(default)]
+    pub approved: bool,
+    #[serde(default)]
+    pub consumed: bool,
+}
+
+pub fn browser_request(
+    data_dir: &Path,
+    selector: &str,
+    domains: &[String],
+    reason: &str,
+    json: bool,
+) -> Result<()> {
+    if domains.is_empty() {
+        return Err(CliError::usage("at least one domain is required"));
+    }
+    let id = format!("browser-{}", ulid::Ulid::new());
+    let request = BrowserRequest {
+        id: id.clone(),
+        selector: selector.to_owned(),
+        domains: domains.to_vec(),
+        reason: reason.trim().to_owned(),
+        created_at_ms: now_ms(),
+        approved: false,
+        consumed: false,
+    };
+    save_browser(data_dir, &request)?;
+    if json {
+        output::print_json(&json!({
+            "id": id,
+            "approveCommand": format!("mixum browser approve {id}"),
+            "request": request,
+        }));
+    } else {
+        println!("browser request {id}");
+        println!("domains: {}", domains.join(", "));
+        println!("approve as human: mixum browser approve {id}");
+    }
+    Ok(())
+}
+
+pub fn browser_mark_approved(data_dir: &Path, id: &str) -> Result<BrowserRequest> {
+    let mut request = load_browser(data_dir, id)?;
+    host_authenticate()?;
+    request.approved = true;
+    save_browser(data_dir, &request)?;
+    Ok(request)
+}
+
+pub fn browser_consume(data_dir: &Path, id: &str) -> Result<()> {
+    let mut request = load_browser(data_dir, id)?;
+    request.consumed = true;
+    save_browser(data_dir, &request)
+}
+
+fn browser_path(data_dir: &Path, id: &str) -> Result<PathBuf> {
+    if id.is_empty()
+        || !id
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+    {
+        return Err(CliError::usage("invalid browser request id"));
+    }
+    Ok(data_dir.join("approvals").join(format!("{id}.json")))
+}
+
+fn load_browser(data_dir: &Path, id: &str) -> Result<BrowserRequest> {
+    let path = browser_path(data_dir, id)?;
+    let data = std::fs::read(&path)
+        .map_err(|error| CliError::io(format!("read browser request: {error}")))?;
+    serde_json::from_slice(&data)
+        .map_err(|error| CliError::io(format!("parse browser request: {error}")))
+}
+
+fn save_browser(data_dir: &Path, request: &BrowserRequest) -> Result<()> {
+    let path = browser_path(data_dir, &request.id)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| CliError::io(format!("create approvals: {error}")))?;
+    }
+    let data = serde_json::to_vec_pretty(request)
+        .map_err(|error| CliError::io(format!("serialize browser request: {error}")))?;
+    std::fs::write(path, data)
+        .map_err(|error| CliError::io(format!("write browser request: {error}")))
+}
