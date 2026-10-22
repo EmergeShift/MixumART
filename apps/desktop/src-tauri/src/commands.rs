@@ -128,6 +128,25 @@ pub async fn runtime_prune(
 }
 
 #[tauri::command]
+fn redact_log_secrets(line: String) -> String {
+    let mut output = String::with_capacity(line.len());
+    let mut rest = line.as_str();
+    while let Some(index) = rest.find("map1.") {
+        output.push_str(&rest[..index]);
+        output.push_str("map1.<redacted>");
+        let token = &rest[index..];
+        let end = token
+            .find(|character: char| {
+                character.is_whitespace() || character == '"' || character == '\''
+            })
+            .unwrap_or(token.len());
+        rest = &token[end..];
+    }
+    output.push_str(rest);
+    output
+}
+
+#[tauri::command]
 pub async fn runtime_logs(
     kind: RuntimeKind,
     id: String,
@@ -141,6 +160,7 @@ pub async fn runtime_logs(
     backend
         .logs(&id, tail)
         .await
+        .map(|lines| lines.into_iter().map(redact_log_secrets).collect())
         .map_err(|error| error.to_string())
 }
 

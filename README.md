@@ -93,3 +93,16 @@ docs/                         # 架构、模块归属、契约、界面、协作
 ## 许可证
 
 [Apache-2.0](LICENSE)
+
+## CLI
+
+`mixum` 是控制面 CLI（不依赖 Tauri 窗口）：
+
+```bash
+cargo build -p mixum-cli --release
+./target/release/mixum doctor
+./target/release/mixum env create --profile mixumos --title "fix login" --runtime apple
+./target/release/mixum env windows "fix login"
+```
+
+命令契约、端口策略、JSON 和退出码见 [docs/cli.md](docs/cli.md)。

@@ -10,6 +10,7 @@ members = [
   "crates/mixum-env-display",
   "crates/mixum-env-map",
   "apps/desktop/src-tauri",
+  "crates/mixum-cli",
 ]
 
 [workspace.package]
@@ -31,6 +32,9 @@ sha2 = "0.10"
 url = "2"
 ulid = "1"
 dirs = "6"
+clap = { version = "4", features = ["derive"] }
+fs2 = "0.4"
+portable-pty = "0.9"
 
 mixum-env-core = { path = "crates/mixum-env-core" }
 mixum-env-runtime-apple = { path = "crates/mixum-env-runtime-apple" }
