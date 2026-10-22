@@ -46,10 +46,20 @@ async fn apply(path: PathBuf) -> Result<(), String> {
         .ok()
         .and_then(|value| value.parse::<u16>().ok())
         .unwrap_or(9222);
-    let chromium = std::env::var("MIXUM_CHROMIUM").unwrap_or_else(|_| "/usr/bin/chromium".into());
+    let chromium = std::env::var("MIXUM_CHROMIUM").unwrap_or_else(|_| {
+        [
+            "/usr/bin/chromium",
+            "/usr/sbin/chromium",
+            "/usr/bin/chromium-browser",
+        ]
+        .iter()
+        .find(|path| std::path::Path::new(path).exists())
+        .map(|path| (*path).to_owned())
+        .unwrap_or_else(|| "chromium".into())
+    });
     let profile = std::env::var("MIXUM_BROWSER_PROFILE")
         .unwrap_or_else(|_| "/var/lib/mixum/browser/profile".into());
-    if !std::path::Path::new(&chromium).exists() {
+    if chromium.contains('/') && !std::path::Path::new(&chromium).exists() {
         return Err(format!(
             "Chromium not found at {chromium}; install it in the base with `mixum base shell`"
         ));
@@ -177,8 +187,20 @@ async fn cdp_call(
 }
 
 fn launch(chromium: &str, profile: &str, port: u16) -> Result<(), String> {
+    let _ = std::fs::create_dir_all("/tmp");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions("/tmp", std::fs::Permissions::from_mode(0o1777));
+    }
     std::fs::create_dir_all(profile).map_err(|error| format!("create profile: {error}"))?;
-    let display = std::env::var("WAYLAND_DISPLAY").unwrap_or_default();
+    let display = std::env::var("WAYLAND_DISPLAY").unwrap_or_else(|_| {
+        if std::path::Path::new("/run/mixum/wayland-0").exists() {
+            "wayland-0".into()
+        } else {
+            String::new()
+        }
+    });
     let mut command = Command::new(chromium);
     command
         .arg(format!("--remote-debugging-port={port}"))
@@ -186,6 +208,9 @@ fn launch(chromium: &str, profile: &str, port: u16) -> Result<(), String> {
         .arg("--no-first-run")
         .arg("--no-default-browser-check")
         .arg("--disable-dev-shm-usage")
+        // Chromium refuses to start as uid 0 without this. The controller runs
+        // inside the container; a non-root sidecar can drop this flag later.
+        .arg("--no-sandbox")
         .arg(format!("--user-data-dir={profile}"))
         .arg("about:blank")
         .stdin(Stdio::null())
@@ -194,6 +219,7 @@ fn launch(chromium: &str, profile: &str, port: u16) -> Result<(), String> {
     if !display.is_empty() {
         command
             .env("WAYLAND_DISPLAY", &display)
+            .env("XDG_RUNTIME_DIR", "/run/mixum")
             .arg("--ozone-platform=wayland");
     } else {
         command.arg("--headless=new");

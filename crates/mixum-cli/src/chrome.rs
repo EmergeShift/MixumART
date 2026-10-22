@@ -144,7 +144,11 @@ pub async fn share(data_dir: &Path, selector: &str, domains: &[String], json: bo
         .put_file("browser-lease.json", &body)
         .await
         .map_err(|error| CliError::map(format!("file.put browser lease: {error}")))?;
-    let container_path = format!("/var/lib/mixum/work/{remote}");
+    let container_path = if remote.starts_with('/') {
+        remote.clone()
+    } else {
+        format!("/var/lib/mixum/work/{remote}")
+    };
     let registry = crate::env::registry();
     let resolved = crate::env::find_with(&registry, data_dir, selector).await?;
     let backend = registry
