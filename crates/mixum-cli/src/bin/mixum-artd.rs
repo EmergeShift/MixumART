@@ -220,6 +220,16 @@ fn call(method: &str, params: &Value, data_dir: &Path) -> Result<Value, (i32, St
             args.extend(["port".into(), "check".into(), port.to_string()]);
         }
         "port.list" => args.extend(["port", "list"].map(String::from)),
+        "config.show" => args.extend(["config", "show"].map(String::from)),
+        "config.set" => {
+            args.extend(["config", "set"].map(String::from));
+            args.push(string_param(params, "key")?);
+            args.push(string_param(params, "value")?);
+        }
+        "config.unset" => {
+            args.extend(["config", "unset"].map(String::from));
+            args.push(string_param(params, "key")?);
+        }
         _ => return Err((2, format!("unknown method {method}"))),
     }
     run_cli(&args)

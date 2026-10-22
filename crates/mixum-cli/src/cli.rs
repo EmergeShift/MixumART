@@ -40,6 +40,11 @@ pub enum Command {
         #[command(subcommand)]
         command: PortCommand,
     },
+    /// Read or update CLI defaults.
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommand,
+    },
     /// Run the stdio MCP server for agents.
     Mcp,
     /// Open the installed MixumART desktop app.
@@ -80,6 +85,19 @@ pub enum EnvCommand {
         selector: String,
         #[arg(long, default_value_t = 30)]
         timeout: u64,
+    },
+    /// Open a read-only MAP window in the local browser.
+    Open {
+        selector: String,
+        /// Window id; omitted when the environment has exactly one window.
+        #[arg(long)]
+        window: Option<u32>,
+        /// Print the URL but do not launch a browser.
+        #[arg(long)]
+        no_open: bool,
+        /// Bind port; 0 picks an ephemeral port.
+        #[arg(long, default_value_t = 0)]
+        port: u16,
     },
     /// Read recent container logs.
     Logs {
@@ -189,6 +207,16 @@ impl RuntimeArg {
             Self::Apple => RuntimeKind::AppleContainer,
         }
     }
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ConfigCommand {
+    /// Print current defaults.
+    Show,
+    /// Set a default (default-runtime, default-image).
+    Set { key: String, value: String },
+    /// Remove a default.
+    Unset { key: String },
 }
 
 #[derive(Debug, Subcommand)]

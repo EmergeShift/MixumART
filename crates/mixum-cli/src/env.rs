@@ -426,10 +426,15 @@ pub async fn create(data_dir: &Path, args: CreateArgs, json: bool) -> Result<()>
     let state_lock = StateLock::acquire(data_dir)?;
     let store = StateStore::new(data_dir);
     let state = store.load()?;
+    let config = crate::config::load(data_dir)?;
     let registry = registry();
-    let (kind, backend) =
-        select_backend(&registry, args.runtime.map(|runtime| runtime.kind())).await?;
-    let image = choose_image(&backend, args.profile, args.image.as_deref()).await?;
+    let requested_runtime = args
+        .runtime
+        .map(|runtime| runtime.kind())
+        .or(config.default_runtime);
+    let (kind, backend) = select_backend(&registry, requested_runtime).await?;
+    let requested_image = args.image.as_deref().or(config.default_image.as_deref());
+    let image = choose_image(&backend, args.profile, requested_image).await?;
     let containers = backend.list_containers().await.map_err(|error| {
         CliError::runtime(format!("cannot list {} containers: {error}", kind.id()))
     })?;
