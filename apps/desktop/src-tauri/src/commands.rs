@@ -1739,7 +1739,9 @@ pub fn approve_root_approval(app: AppHandle, id: String) -> Result<(), String> {
     let mut value: Value = serde_json::from_slice(&data).map_err(|error| error.to_string())?;
     value["approved"] = Value::Bool(true);
     std::fs::write(path, serde_json::to_vec_pretty(&value).map_err(|error| error.to_string())?)
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    append_approval_audit(&app, "root_approved", &id, serde_json::json!({}));
+    Ok(())
 }
 
 #[tauri::command]
@@ -1748,7 +1750,9 @@ pub fn deny_approval(app: AppHandle, id: String) -> Result<(), String> {
         return Err("invalid approval id".into());
     }
     let path = approvals_dir(&app)?.join(format!("{id}.json"));
-    std::fs::remove_file(path).map_err(|error| error.to_string())
+    std::fs::remove_file(path).map_err(|error| error.to_string())?;
+    append_approval_audit(&app, "approval_denied", &id, serde_json::json!({}));
+    Ok(())
 }
 
 #[tauri::command]
@@ -1803,4 +1807,37 @@ pub async fn list_pending_privileges(app: AppHandle) -> Result<Vec<Value>, Strin
         }
     }
     Ok(out)
+}
+
+fn append_approval_audit(app: &AppHandle, action: &str, id: &str, detail: Value) {
+    let Ok(base) = app.path().app_data_dir() else {
+        return;
+    };
+    let dir = base.join("mixum-cli").join("audit");
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let line = serde_json::json!({
+        "action": action,
+        "id": id,
+        "detail": detail,
+        "ts": std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or_default(),
+    });
+    let path = dir.join("approvals.log");
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        use std::io::Write;
+        let _ = writeln!(file, "{line}");
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
 }
