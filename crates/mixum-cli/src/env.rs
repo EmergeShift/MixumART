@@ -415,6 +415,33 @@ async fn choose_image(
     }
 }
 
+/// Root containers are explicit human decisions. The agent-facing MCP tool does
+/// not expose `--root`; this prompt cannot be answered by the agent's task shell.
+fn confirm_root_container(title: &str) -> Result<()> {
+    use std::io::{IsTerminal, Write};
+    if !std::io::stdin().is_terminal() {
+        return Err(CliError::usage(
+            "root container requires an interactive human terminal",
+        ));
+    }
+    eprintln!("WARNING: create a ROOT container for {title:?}");
+    eprintln!("- root is inside the container, not the host; it can still modify its system,");
+    eprintln!(
+        "  read mounted secrets, disable audit/agentd, and expand the blast radius of a bug."
+    );
+    eprintln!("- root containers are not the default; prefer mixum + sudo approval.");
+    eprint!("Type ROOT to continue: ");
+    std::io::stderr().flush().ok();
+    let mut answer = String::new();
+    std::io::stdin()
+        .read_line(&mut answer)
+        .map_err(|error| CliError::io(format!("read confirmation: {error}")))?;
+    if answer.trim() != "ROOT" {
+        return Err(CliError::usage("root container creation cancelled"));
+    }
+    Ok(())
+}
+
 pub async fn create(data_dir: &Path, args: CreateArgs, json: bool) -> Result<()> {
     let title = args.title.trim();
     if title.is_empty() {
@@ -422,6 +449,9 @@ pub async fn create(data_dir: &Path, args: CreateArgs, json: bool) -> Result<()>
     }
     if title.chars().count() > 120 {
         return Err(CliError::usage("--title is limited to 120 characters"));
+    }
+    if args.root {
+        confirm_root_container(title)?;
     }
     let state_lock = StateLock::acquire(data_dir)?;
     let store = StateStore::new(data_dir);
@@ -433,8 +463,18 @@ pub async fn create(data_dir: &Path, args: CreateArgs, json: bool) -> Result<()>
         .map(|runtime| runtime.kind())
         .or(config.default_runtime);
     let (kind, backend) = select_backend(&registry, requested_runtime).await?;
-    let requested_image = args.image.as_deref().or(config.default_image.as_deref());
-    let image = choose_image(&backend, args.profile, requested_image).await?;
+    if args.base.is_some() && (args.image.is_some() || config.default_image.is_some()) {
+        return Err(CliError::usage(
+            "--base cannot be combined with --image or a configured default image",
+        ));
+    }
+    let image = match args.base.as_deref() {
+        Some(base) => crate::base::resolve_image(data_dir, base)?,
+        None => {
+            let requested_image = args.image.as_deref().or(config.default_image.as_deref());
+            choose_image(&backend, args.profile, requested_image).await?
+        }
+    };
     let containers = backend.list_containers().await.map_err(|error| {
         CliError::runtime(format!("cannot list {} containers: {error}", kind.id()))
     })?;
@@ -471,6 +511,9 @@ pub async fn create(data_dir: &Path, args: CreateArgs, json: bool) -> Result<()>
     let mut env = BTreeMap::new();
     env.insert("MIXUM_METHOD".to_string(), args.method.as_str().to_string());
     env.insert("MIXUM_TITLE".to_string(), title.to_string());
+    if args.root {
+        env.insert("MIXUM_TASK_USER".to_string(), "root".to_string());
+    }
     let spec = CreateSpec {
         name: name.clone(),
         image: image.clone(),
@@ -491,6 +534,8 @@ pub async fn create(data_dir: &Path, args: CreateArgs, json: bool) -> Result<()>
         method: args.method.as_str().to_string(),
         runtime: kind.id().to_string(),
         image: image.clone(),
+        base: args.base.clone(),
+        root: args.root,
         port,
         created_at_ms: crate::state::now_ms(),
         fingerprint: None,

@@ -35,6 +35,11 @@ pub enum Command {
         #[command(subcommand)]
         command: EnvCommand,
     },
+    /// Manage shared base environments (母体环境).
+    Base {
+        #[command(subcommand)]
+        command: BaseCommand,
+    },
     /// Check and inspect host ports.
     Port {
         #[command(subcommand)]
@@ -191,11 +196,35 @@ pub enum EnvCommand {
 pub enum SnapshotCommand {
     /// List snapshots.
     List { selector: String },
-    /// Create a disk snapshot.
+    /// Create a snapshot (disk / memory / hybrid).
     Create {
         selector: String,
         #[arg(long)]
         label: Option<String>,
+        #[arg(long, default_value = "disk")]
+        kind: String,
+    },
+    /// Fork a snapshot into a new branch.
+    Fork {
+        selector: String,
+        node: String,
+        #[arg(long)]
+        branch: String,
+    },
+    /// Export a snapshot as a `.mart` bundle to the host.
+    Export {
+        selector: String,
+        node: String,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Import a `.mart` bundle into an environment.
+    Import {
+        selector: String,
+        #[arg(long)]
+        file: PathBuf,
+        #[arg(long, default_value = "cli")]
+        origin: String,
     },
     /// Restore a snapshot in place.
     Restore {
@@ -205,6 +234,28 @@ pub enum SnapshotCommand {
         #[arg(long)]
         yes: bool,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum BaseCommand {
+    /// Create a root builder container for a base environment.
+    Create {
+        name: String,
+        #[arg(long)]
+        image: Option<String>,
+        #[arg(long, value_enum)]
+        runtime: Option<RuntimeArg>,
+    },
+    /// Open a root shell in the base builder (human only).
+    Shell { name: String },
+    /// Commit the builder rootfs into an immutable image version.
+    Commit {
+        name: String,
+        #[arg(long)]
+        tag: Option<String>,
+    },
+    /// List base environments.
+    List,
 }
 
 #[derive(Debug, Subcommand)]
@@ -241,6 +292,9 @@ pub struct CreateArgs {
     /// Image reference. Omit for mixumos to use the only local mixumos image.
     #[arg(long)]
     pub image: Option<String>,
+    /// Base environment spec (`name` or `name:tag`).
+    #[arg(long)]
+    pub base: Option<String>,
     /// Container name. Generated when omitted.
     #[arg(long)]
     pub name: Option<String>,
@@ -256,6 +310,9 @@ pub struct CreateArgs {
     /// Create but do not start the container.
     #[arg(long)]
     pub no_start: bool,
+    /// Create a root container. Human-only: requires typing ROOT after the risk notice.
+    #[arg(long)]
+    pub root: bool,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
