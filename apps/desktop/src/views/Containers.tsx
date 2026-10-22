@@ -142,17 +142,6 @@ export function Containers({ backends }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [kind])
 
-  const openEditor = (container: Container) => {
-    const existing = connections[container.id]
-    setEditor(container)
-    setBrowser(null)
-    setDraft({
-      addr: existing?.addr ?? defaultAddress(container),
-      token: '',
-      fingerprint: existing?.fingerprint ?? '',
-    })
-  }
-
   const loadSnapshots = async (container: Container) => {
     setSnapshotLoading(true)
     setSnapshotError(null)
@@ -289,6 +278,37 @@ export function Containers({ backends }: Props) {
       await load()
     } catch (err) {
       setError(errorText(err))
+    } finally {
+      setActionId(null)
+    }
+  }
+
+  const openEnvironment = async (container: Container) => {
+    if (!kind) return
+    setActionId(container.id)
+    setSurfaceError(null)
+    try {
+      if (container.state !== 'running') {
+        await startEnvironment(kind, container.id)
+        await new Promise((resolve) => setTimeout(resolve, 700))
+        await load()
+      }
+      let profile = connections[container.id]
+      try {
+        profile = await connectEnvironment(
+          kind,
+          container.id,
+          defaultAddress(container),
+        )
+        setConnections((previous) => ({ ...previous, [container.id]: profile! }))
+      } catch (autoError) {
+        if (!profile) throw autoError
+      }
+      await browse(container)
+    } catch (err) {
+      setSurfaceError(errorText(err))
+      setEditor(container)
+      setDraft({ addr: defaultAddress(container), token: '', fingerprint: '' })
     } finally {
       setActionId(null)
     }
@@ -601,9 +621,14 @@ export function Containers({ backends }: Props) {
                   <h3>{browser.name} 的窗口</h3>
                   <p className="mono muted">{connections[browser.id]?.addr}</p>
                 </div>
-                <button className="ghost" onClick={() => setBrowser(null)}>
-                  关闭
-                </button>
+                <div className="row-actions">
+                  <button className="ghost" onClick={() => void openTerminal(browser)}>
+                    终端
+                  </button>
+                  <button className="ghost" onClick={() => setBrowser(null)}>
+                    关闭
+                  </button>
+                </div>
               </div>
               {surfaceError && <div className="error">{surfaceError}</div>}
               {surfaceLoading || surfaces === null ? (
@@ -772,11 +797,14 @@ export function Containers({ backends }: Props) {
                       <td className="row-actions">
                         <button
                           className="ghost"
-                          onClick={() =>
-                            connection ? void browse(container) : openEditor(container)
-                          }
+                          onClick={() => void openEnvironment(container)}
+                          disabled={actionId === container.id}
                         >
-                          {connection ? '监看' : '连接'}
+                          {actionId === container.id
+                            ? '连接中…'
+                            : connection
+                              ? '查看窗口'
+                              : '打开'}
                         </button>
                         {canManage && container.state !== 'running' && container.state !== 'paused' && (
                           <button
@@ -806,7 +834,7 @@ export function Containers({ backends }: Props) {
                         <button
                           className="ghost"
                           onClick={() => void openTerminal(container)}
-                          title="运行一条命令（独立进程）"
+                          title="进入容器持久终端（本地 exec）"
                         >
                           终端
                         </button>
