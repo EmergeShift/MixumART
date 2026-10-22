@@ -20,6 +20,7 @@ fs2 = { workspace = true }
 portable-pty = { workspace = true }
 axum = { version = "0.8", features = ["ws"] }
 rand = "0.9"
+base64 = "0.22"
 crossterm = "0.28"
 terminal_size = "0.4"
 serde = { workspace = true }

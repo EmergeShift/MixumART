@@ -45,6 +45,11 @@ pub enum Command {
         #[command(subcommand)]
         command: ConfigCommand,
     },
+    /// Review host privilege requests from agents.
+    Privilege {
+        #[command(subcommand)]
+        command: PrivilegeCommand,
+    },
     /// Run the stdio MCP server for agents.
     Mcp,
     /// Open the installed MixumART desktop app.
@@ -116,6 +121,70 @@ pub enum EnvCommand {
         #[command(subcommand)]
         command: SnapshotCommand,
     },
+    /// One-shot window screenshot (PNG).
+    Screenshot {
+        selector: String,
+        #[arg(long)]
+        window: u32,
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// Inject a pointer click into a window.
+    Click {
+        selector: String,
+        #[arg(long)]
+        window: u32,
+        #[arg(long)]
+        x: f64,
+        #[arg(long)]
+        y: f64,
+        #[arg(long, default_value = "left")]
+        button: String,
+    },
+    /// Move the pointer inside a window.
+    Move {
+        selector: String,
+        #[arg(long)]
+        window: u32,
+        #[arg(long)]
+        x: f64,
+        #[arg(long)]
+        y: f64,
+    },
+    /// Commit composed text into a window (IME-safe).
+    Type {
+        selector: String,
+        #[arg(long)]
+        window: u32,
+        text: String,
+    },
+    /// Send one keysym (e.g. Return, ctrl+a) to a window.
+    Key {
+        selector: String,
+        #[arg(long)]
+        window: u32,
+        keysym: String,
+        #[arg(long, value_delimiter = ',')]
+        mods: Vec<String>,
+    },
+    /// Scroll a window at a point.
+    Scroll {
+        selector: String,
+        #[arg(long)]
+        window: u32,
+        #[arg(long)]
+        x: f64,
+        #[arg(long)]
+        y: f64,
+        #[arg(long, default_value = "down")]
+        direction: String,
+    },
+    /// Claim a window for agent/user focus.
+    Focus {
+        selector: String,
+        #[arg(long)]
+        window: u32,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -135,6 +204,26 @@ pub enum SnapshotCommand {
         /// Confirm the destructive restore.
         #[arg(long)]
         yes: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum PrivilegeCommand {
+    /// Watch pending sudo requests for one environment.
+    Watch { selector: String },
+    /// Approve one request after host-password authentication.
+    Approve {
+        selector: String,
+        id: String,
+        #[arg(long, default_value = "")]
+        reason: String,
+    },
+    /// Deny one request.
+    Deny {
+        selector: String,
+        id: String,
+        #[arg(long, default_value = "")]
+        reason: String,
     },
 }
 
