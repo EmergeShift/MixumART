@@ -18,7 +18,10 @@ when the client supports MCP; otherwise use the CLI and `--json`.
 - Do not run `docker run` / `container run` directly when MixumART integration
   is required; use `mixum` so ports, naming and MAP registration stay consistent.
 - Do not expose the terminal through MCP; terminal is a privileged local path.
-- Snapshot restore is destructive and requires `--yes` on the CLI.
+- Snapshot restore is destructive and requires `--yes` on the CLI. Use
+`mixum_window_*` for computer use, and `mixum base`/`mixum browser` for shared
+base environments and approved browser leases. Never run `mixum privilege
+approve` on behalf of the agent: it is a human consent command.
 
 ## CLI
 
@@ -47,7 +50,14 @@ executable.
 
 ## MCP
 
-Run `mixum mcp` as a stdio MCP server. Available tools:
+Run `mixum mcp` as a stdio MCP server. Computer-use tools operate directly on
+container windows; never drive the host GUI:
+`mixum_window_screenshot`, `mixum_window_click`, `mixum_window_move`,
+`mixum_window_type`, `mixum_window_key`, `mixum_window_scroll`,
+`mixum_window_focus`. Screenshot returns image content; coordinates are
+window-local.
+
+Available tools:
 
 - `mixum_env_list`
 - `mixum_env_create`
@@ -56,7 +66,18 @@ Run `mixum mcp` as a stdio MCP server. Available tools:
 - `mixum_env_start`
 - `mixum_env_stop`
 - `mixum_snapshot_list`
-- `mixum_snapshot_create`
+- `mixum_snapshot_create` (`kind` disk/memory/hybrid)
+- `mixum_snapshot_restore` (requires `confirm: "RESTORE"`)
+- `mixum_snapshot_fork`
+- `mixum_snapshot_export`
+- `mixum_snapshot_import`
+- `mixum_window_screenshot`
+- `mixum_window_click`
+- `mixum_window_move`
+- `mixum_window_type`
+- `mixum_window_key`
+- `mixum_window_scroll`
+- `mixum_window_focus`
 - `mixum_port_check`
 
 Example `mixum_env_create` arguments:
