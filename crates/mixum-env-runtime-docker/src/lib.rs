@@ -72,7 +72,15 @@ impl RuntimeBackend for DockerBackend {
         }
         for mount in &spec.mounts {
             args.push("--mount".into());
-            let mut value = format!("type=bind,source={},target={}", mount.source, mount.target);
+            let mount_type = if mount.kind == "volume" {
+                "volume"
+            } else {
+                "bind"
+            };
+            let mut value = format!(
+                "type={mount_type},source={},target={}",
+                mount.source, mount.target
+            );
             if mount.read_only {
                 value.push_str(",readonly");
             }
@@ -334,6 +342,8 @@ struct DockerPortBinding {
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "PascalCase")]
 struct DockerMount {
+    #[serde(default, rename = "Type")]
+    mount_type: Option<String>,
     source: String,
     destination: String,
     #[serde(rename = "RW")]
@@ -374,6 +384,7 @@ fn parse_inspect(raw: &str) -> Result<InspectedContainer, EnvError> {
             .mounts
             .iter()
             .map(|mount| Mount {
+                kind: mount.mount_type.clone().unwrap_or_else(|| "bind".into()),
                 source: mount.source.clone(),
                 target: mount.destination.clone(),
                 read_only: !mount.rw,

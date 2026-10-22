@@ -415,6 +415,34 @@ async fn choose_image(
     }
 }
 
+fn ensure_volume(kind: mixum_env_core::RuntimeKind, name: &str) -> Result<()> {
+    let (program, args) = match kind {
+        mixum_env_core::RuntimeKind::AppleContainer => {
+            ("container", vec!["volume", "create", name])
+        }
+        mixum_env_core::RuntimeKind::Docker => ("docker", vec!["volume", "create", name]),
+        mixum_env_core::RuntimeKind::Wsl2 => {
+            return Err(CliError::usage(
+                "base volumes are not implemented for WSL2 yet",
+            ))
+        }
+    };
+    let output = std::process::Command::new(program)
+        .args(args)
+        .output()
+        .map_err(|error| CliError::runtime(format!("create volume: {error}")))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if !stderr.contains("already exists") {
+            return Err(CliError::runtime(format!(
+                "create volume failed: {}",
+                stderr.trim()
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Root containers are explicit human decisions. The agent-facing MCP tool does
 /// not expose `--root`; this prompt cannot be answered by the agent's task shell.
 fn confirm_root_container(title: &str) -> Result<()> {
@@ -514,11 +542,26 @@ pub async fn create(data_dir: &Path, args: CreateArgs, json: bool) -> Result<()>
     if args.root {
         env.insert("MIXUM_TASK_USER".to_string(), "root".to_string());
     }
+    let mut mounts = Vec::new();
+    if args.base.is_some() {
+        let work_volume = format!("{name}-work");
+        let home_volume = format!("{name}-home");
+        ensure_volume(kind, &work_volume)?;
+        ensure_volume(kind, &home_volume)?;
+        mounts.push(crate::state::mount_volume(
+            &work_volume,
+            "/var/lib/mixum/work",
+        ));
+        mounts.push(crate::state::mount_volume(
+            &home_volume,
+            "/var/lib/mixum/home",
+        ));
+    }
     let spec = CreateSpec {
         name: name.clone(),
         image: image.clone(),
         ports: vec![PortMapping::tcp(port, ports::MAP_PORT)],
-        mounts: Vec::new(),
+        mounts,
         env,
         command: Vec::new(),
     };
@@ -566,6 +609,21 @@ pub async fn create(data_dir: &Path, args: CreateArgs, json: bool) -> Result<()>
                 container.id
             ))
         })?;
+    // Volumes start root-owned; the task user must own its work/home.
+    if args.base.is_some() {
+        let _ = backend
+            .exec_capture(
+                &container.id,
+                &[
+                    "chown",
+                    "-R",
+                    "mixum:mixum",
+                    "/var/lib/mixum/work",
+                    "/var/lib/mixum/home",
+                ],
+            )
+            .await;
+    }
     if let Ok(current) = backend.list_containers().await {
         if let Some(current) = current.into_iter().find(|item| item.id == container.id) {
             container = current;
@@ -614,6 +672,131 @@ pub async fn create(data_dir: &Path, args: CreateArgs, json: bool) -> Result<()>
     } else {
         println!("created {} ({}) port={port}", name, container.id);
         println!("MAP wait disabled; run `mixum env windows {name}` once agentd is ready");
+    }
+    Ok(())
+}
+
+pub async fn rebase(data_dir: &Path, selector: &str, base: &str, json: bool) -> Result<()> {
+    let registry = registry();
+    let resolved = find_with(&registry, data_dir, selector).await?;
+    let old_record = resolved
+        .record
+        .clone()
+        .ok_or_else(|| CliError::usage("rebase requires a managed environment"))?;
+    if old_record.base.is_none() {
+        return Err(CliError::usage(
+            "rebase is only supported for environments created from --base",
+        ));
+    }
+    let backend = registry
+        .get(resolved.kind)
+        .ok_or_else(|| CliError::runtime("runtime disappeared"))?;
+    let inspected = backend
+        .inspect_container(&resolved.container.id)
+        .await
+        .map_err(|error| CliError::runtime(format!("inspect environment: {error}")))?;
+    if inspected.spec.mounts.is_empty() {
+        return Err(CliError::usage(
+            "environment has no persistent work volume; refusing a lossy rebase",
+        ));
+    }
+    let image = crate::base::resolve_image(data_dir, base)?;
+    let state_lock = StateLock::acquire(data_dir)?;
+    let store = StateStore::new(data_dir);
+    let all_used = ports::used_host_ports(
+        &all_containers(&registry)
+            .await?
+            .iter()
+            .map(|(_, container)| container.ports.clone())
+            .collect::<Vec<_>>(),
+    );
+    let port = ports::allocate(0, &all_used)?;
+    let suffix: u16 = rand::random();
+    let new_name = format!("{}-rb-{suffix:04x}", old_record.name);
+    let mut env = inspected.spec.env.clone();
+    env.insert("MIXUM_BASE".into(), base.to_owned());
+    let spec = CreateSpec {
+        name: new_name.clone(),
+        image: image.clone(),
+        ports: vec![PortMapping::tcp(port, ports::MAP_PORT)],
+        mounts: inspected.spec.mounts.clone(),
+        env,
+        command: inspected.spec.command.clone(),
+    };
+    // A volume can only be attached to one running Apple Container VM. Stop the
+    // old container first; it remains the rollback target if anything fails.
+    backend
+        .stop_container(&resolved.container.id)
+        .await
+        .map_err(|error| CliError::runtime(format!("stop old environment: {error}")))?;
+    let container = match backend.create_container(spec).await {
+        Ok(container) => container,
+        Err(error) => {
+            let _ = backend.start_container(&resolved.container.id).await;
+            return Err(CliError::runtime(format!(
+                "create rebased environment: {error}"
+            )));
+        }
+    };
+    if let Err(error) = backend.start_container(&container.id).await {
+        let _ = backend.remove_container(&container.id).await;
+        let _ = backend.start_container(&resolved.container.id).await;
+        return Err(CliError::runtime(format!(
+            "start rebased environment: {error}"
+        )));
+    }
+    let container = backend
+        .list_containers()
+        .await
+        .ok()
+        .and_then(|containers| containers.into_iter().find(|item| item.id == container.id))
+        .unwrap_or(container);
+    let _ = backend
+        .exec_capture(
+            &container.id,
+            &[
+                "chown",
+                "-R",
+                "mixum:mixum",
+                "/var/lib/mixum/work",
+                "/var/lib/mixum/home",
+            ],
+        )
+        .await;
+    let map =
+        map_ops::wait_ready(&registry, resolved.kind, &container.id, &new_name, port, 30).await?;
+    let mut new_record = old_record.clone();
+    new_record.id = container.id.clone();
+    new_record.name = new_name.clone();
+    new_record.image = image.clone();
+    new_record.base = Some(base.to_owned());
+    new_record.port = port;
+    new_record.fingerprint = Some(map.fingerprint.clone());
+    new_record.created_at_ms = crate::state::now_ms();
+    let mut state = store.load()?;
+    state.upsert(new_record.clone());
+    // Keep the old record/container as a stopped rollback target.
+    if let Some(existing) = state
+        .envs
+        .iter_mut()
+        .find(|record| record.id == old_record.id)
+    {
+        existing.title = format!("{} (old)", old_record.title);
+    }
+    store.save(&state)?;
+    drop(state_lock);
+    if json {
+        output::print_json(&serde_json::json!({
+            "environment": view(resolved.kind, &container, Some(&new_record)),
+            "old": old_record.id,
+            "mapReady": true,
+            "fingerprint": map.fingerprint,
+            "windows": map.windows,
+        }));
+    } else {
+        println!("rebased {} -> {} on {base}", old_record.name, new_name);
+        println!("old container kept stopped: {}", old_record.id);
+        println!("map: 127.0.0.1:{port}");
     }
     Ok(())
 }

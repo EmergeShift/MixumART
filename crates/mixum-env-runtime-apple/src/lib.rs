@@ -92,7 +92,15 @@ impl RuntimeBackend for AppleContainerBackend {
         }
         for mount in &spec.mounts {
             args.push("--mount".into());
-            let mut value = format!("type=bind,source={},target={}", mount.source, mount.target);
+            let mount_type = if mount.kind == "volume" {
+                "volume"
+            } else {
+                "bind"
+            };
+            let mut value = format!(
+                "type={mount_type},source={},target={}",
+                mount.source, mount.target
+            );
             if mount.read_only {
                 value.push_str(",readonly");
             }
@@ -349,10 +357,26 @@ fn parse_inspect(raw: &str) -> Result<InspectedContainer, EnvError> {
         mounts: config
             .mounts
             .iter()
-            .map(|mount| mixum_env_core::container::Mount {
-                source: mount.source.clone(),
-                target: mount.destination.clone(),
-                read_only: mount.read_only,
+            .map(|mount| {
+                let (kind, source) = match mount.mount_type.as_ref() {
+                    Some(serde_json::Value::String(value)) => (value.clone(), mount.source.clone()),
+                    Some(serde_json::Value::Object(map)) if map.contains_key("volume") => {
+                        let name = map
+                            .get("volume")
+                            .and_then(|volume| volume.get("name"))
+                            .and_then(serde_json::Value::as_str)
+                            .map(ToOwned::to_owned)
+                            .unwrap_or_else(|| mount.source.clone());
+                        ("volume".into(), name)
+                    }
+                    _ => ("bind".into(), mount.source.clone()),
+                };
+                mixum_env_core::container::Mount {
+                    kind,
+                    source,
+                    target: mount.destination.clone(),
+                    read_only: mount.read_only,
+                }
             })
             .collect(),
         env: config
@@ -396,6 +420,8 @@ struct InspectConfiguration {
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct InspectMount {
+    #[serde(default, rename = "type")]
+    mount_type: Option<serde_json::Value>,
     source: String,
     destination: String,
     #[serde(default)]
@@ -532,7 +558,8 @@ mod tests {
         assert_eq!(spec.spec.name, "map-node");
         assert!(!spec.spec.image.is_empty());
         assert!(
-            spec.spec.ports
+            spec.spec
+                .ports
                 .iter()
                 .any(|port| port.container == 7601 && port.host == 17601),
             "应包含 17601->7601"

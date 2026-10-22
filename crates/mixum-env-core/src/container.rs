@@ -59,10 +59,17 @@ impl PortMapping {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Mount {
+    /// `bind` (default) or `volume`.
+    #[serde(default = "default_mount_kind")]
+    pub kind: String,
     pub source: String,
     pub target: String,
     #[serde(default)]
     pub read_only: bool,
+}
+
+fn default_mount_kind() -> String {
+    "bind".into()
 }
 
 /// 列表用的容器摘要。刻意不含 runtime 私有字段。
