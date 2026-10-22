@@ -393,15 +393,22 @@ export function Containers({ backends }: Props) {
     setSnapshotError(null)
     setMigrationNotice('')
     try {
-      let spec = null
+      let inspected = null
       if (kind) {
         try {
-          spec = await containerSpec(kind, browser.id)
+          inspected = await containerSpec(kind, browser.id)
         } catch {
-          spec = null
+          inspected = null
         }
       }
-      const file = await snapshotExport(browser.id, node, spec, kind ?? undefined, snapshots?.branch ?? undefined)
+      const file = await snapshotExport(
+        browser.id,
+        node,
+        inspected?.spec ?? null,
+        inspected?.imageDigest ?? null,
+        kind ?? undefined,
+        snapshots?.branch ?? undefined,
+      )
       setMigrationNotice(`已导出 ${file.path}（${file.size} 字节）`)
       setMigrations(await listMigrations())
     } catch (err) {

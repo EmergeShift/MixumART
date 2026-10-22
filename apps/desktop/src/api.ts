@@ -116,15 +116,21 @@ export type ContainerSpec = {
   command: string[]
 }
 
+export type InspectedContainer = {
+  spec: ContainerSpec
+  imageDigest?: string | null
+}
+
 export const containerSpec = (kind: string, containerId: string) =>
   isDemo()
-    ? demoDelay<ContainerSpec | null>(null)
-    : invoke<ContainerSpec>('environment_container_spec', { kind, containerId })
+    ? demoDelay<InspectedContainer | null>(null)
+    : invoke<InspectedContainer>('environment_container_spec', { kind, containerId })
 
 export const snapshotExport = (
   containerId: string,
   node: string,
   spec?: ContainerSpec | null,
+  imageDigest?: string | null,
   runtime?: string,
   branch?: string,
 ) =>
@@ -134,6 +140,7 @@ export const snapshotExport = (
         containerId,
         node,
         spec: spec ?? null,
+        imageDigest: imageDigest ?? null,
         runtime: runtime ?? null,
         branch: branch ?? null,
       })
