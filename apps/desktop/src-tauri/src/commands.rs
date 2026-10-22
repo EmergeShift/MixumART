@@ -342,6 +342,15 @@ pub struct EnvironmentConnection {
     pub fingerprint: Option<String>,
 }
 
+/// 前端可见的连接信息；token 永远不返回 WebView。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectionInfo {
+    pub addr: String,
+    #[serde(default)]
+    pub fingerprint: Option<String>,
+}
+
 const CONNECTION_KEYRING_SERVICE: &str = "mixum-art-env";
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -643,8 +652,92 @@ pub async fn environment_run_command(
 #[tauri::command]
 pub fn load_environment_connections(
     app: AppHandle,
-) -> Result<HashMap<String, EnvironmentConnection>, String> {
-    load_connection_map(&app)
+) -> Result<HashMap<String, ConnectionInfo>, String> {
+    Ok(load_connection_map(&app)?
+        .into_iter()
+        .map(|(id, connection)| {
+            (
+                id,
+                ConnectionInfo {
+                    addr: connection.addr,
+                    fingerprint: connection.fingerprint,
+                },
+            )
+        })
+        .collect())
+}
+
+#[tauri::command]
+pub async fn connect_environment(
+    app: AppHandle,
+    kind: RuntimeKind,
+    container_id: String,
+    addr: String,
+    state: State<'_, AppState>,
+) -> Result<ConnectionInfo, String> {
+    let backend = state
+        .registry
+        .get(kind)
+        .ok_or_else(|| format!("没有注册 {kind} 后端"))?;
+    let token = backend
+        .admin_token(&container_id)
+        .await
+        .map_err(|error| format!("读取容器令牌失败：{error}"))?;
+    let client = MapClient::connect(&addr, &token, None)
+        .await
+        .map_err(|error| format!("连接环境失败：{error}"))?;
+    let connection = EnvironmentConnection {
+        addr: addr.clone(),
+        token,
+        fingerprint: Some(client.fingerprint.clone()),
+    };
+    let mut connections = load_connection_map(&app)?;
+    connections.insert(container_id, connection);
+    save_connection_map(&app, &connections)?;
+    Ok(ConnectionInfo {
+        addr,
+        fingerprint: Some(client.fingerprint),
+    })
+}
+
+#[tauri::command]
+pub async fn list_environment_surfaces(
+    app: AppHandle,
+    container_id: String,
+) -> Result<Vec<SurfaceInfo>, String> {
+    let connection = connection_for(&app, &container_id)?;
+    let client = MapClient::connect(
+        &connection.addr,
+        &connection.token,
+        connection.fingerprint.as_deref(),
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    client.list().await.map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn open_environment_surface(
+    app: AppHandle,
+    container_id: String,
+    surface: u32,
+    title: String,
+    width: u32,
+    height: u32,
+) -> Result<(), String> {
+    let connection = connection_for(&app, &container_id)?;
+    open_surface_window(
+        app,
+        OpenSurfaceRequest {
+            addr: connection.addr,
+            token: connection.token,
+            fingerprint: connection.fingerprint,
+            surface,
+            title,
+            width,
+            height,
+        },
+    )
 }
 
 #[tauri::command]

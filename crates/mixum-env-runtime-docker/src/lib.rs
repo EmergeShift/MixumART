@@ -133,6 +133,20 @@ impl RuntimeBackend for DockerBackend {
         out.into_stdout("docker pull").map(|_| ())
     }
 
+    async fn admin_token(&self, id: &str) -> Result<String, EnvError> {
+        let out = process::run(
+            "docker",
+            &["exec", id, "cat", "/var/lib/mixum/admin-token"],
+            LIST_TIMEOUT,
+        )
+        .await?;
+        let token = out.into_stdout("docker exec admin-token")?;
+        if token.is_empty() {
+            return Err(EnvError::Parse("admin-token 为空".into()));
+        }
+        Ok(token)
+    }
+
     async fn load_image(&self, path: &str) -> Result<(), EnvError> {
         let out = process::run("docker", &["load", "-i", path], CREATE_TIMEOUT).await?;
         out.into_stdout("docker load").map(|_| ())
