@@ -64,7 +64,7 @@ impl RuntimeBackend for DockerBackend {
         for port in &spec.ports {
             args.push("-p".into());
             args.push(format!(
-                "{}:{}/{}",
+                "127.0.0.1:{}:{}/{}",
                 port.host, port.container, port.protocol
             ));
         }
