@@ -5,6 +5,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { demoBackends, demoContainers, demoHost, demoSurfaces, isDemo } from './demo'
 import type {
   BackendStatus,
+  ConnectionInfo,
   Container,
   CreateSpec,
   EnvironmentConnection,
@@ -163,10 +164,38 @@ export const createEnvironment = (kind: RuntimeKind, spec: CreateSpec) =>
     ? demoDelay(demoContainers[0])
     : invoke<Container>('create_environment', { kind, spec })
 
+export const connectEnvironment = (
+  kind: RuntimeKind,
+  containerId: string,
+  addr: string,
+) =>
+  isDemo()
+    ? demoDelay<ConnectionInfo>({ addr, fingerprint: null })
+    : invoke<ConnectionInfo>('connect_environment', { kind, containerId, addr })
+
+export const listEnvironmentSurfaces = (containerId: string) =>
+  isDemo()
+    ? demoDelay(demoSurfaces)
+    : invoke<SurfaceInfo[]>('list_environment_surfaces', { containerId })
+
+export const openEnvironmentSurface = (
+  containerId: string,
+  surface: SurfaceInfo,
+) =>
+  isDemo()
+    ? demoDelay(undefined)
+    : invoke<void>('open_environment_surface', {
+        containerId,
+        surface: surface.id,
+        title: surface.title,
+        width: surface.width,
+        height: surface.height,
+      })
+
 export const loadEnvironmentConnections = () =>
   isDemo()
-    ? demoDelay<Record<string, EnvironmentConnection>>({})
-    : invoke<Record<string, EnvironmentConnection>>('load_environment_connections')
+    ? demoDelay<Record<string, ConnectionInfo>>({})
+    : invoke<Record<string, ConnectionInfo>>('load_environment_connections')
 
 export const saveEnvironmentConnection = (
   containerId: string,

@@ -171,6 +171,21 @@ impl RuntimeBackend for Wsl2Backend {
         }
     }
 
+    async fn admin_token(&self, id: &str) -> Result<String, EnvError> {
+        ensure_windows()?;
+        check_managed("admin_token", id)?;
+        let args = ["-d", id, "-e", "cat", "/var/lib/mixum/admin-token"];
+        let (success, stdout, stderr) = run_wsl(&args, LIST_TIMEOUT).await?;
+        if !success {
+            return Err(failed(&args, &stdout, &stderr));
+        }
+        let token = stdout.trim().to_owned();
+        if token.is_empty() {
+            return Err(invalid("admin_token", "admin-token 为空"));
+        }
+        Ok(token)
+    }
+
     async fn logs(&self, id: &str, tail: usize) -> Result<Vec<String>, EnvError> {
         ensure_windows()?;
         check_managed("logs", id)?;

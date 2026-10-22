@@ -12,7 +12,7 @@ import {
   setAgentCredential,
   type AgentProfile,
 } from '../api'
-import type { EnvironmentConnection } from '../types'
+import type { ConnectionInfo } from '../types'
 
 const MODES = [
   {
@@ -63,7 +63,7 @@ export function Agents() {
   const [secret, setSecret] = useState('')
   const [credentialSaved, setCredentialSaved] = useState<boolean | null>(null)
   const [credentialBusy, setCredentialBusy] = useState(false)
-  const [connections, setConnections] = useState<Record<string, EnvironmentConnection>>({})
+  const [connections, setConnections] = useState<Record<string, ConnectionInfo>>({})
   const [launching, setLaunching] = useState<string | null>(null)
   const [launchLines, setLaunchLines] = useState<string[] | null>(null)
   const [launchName, setLaunchName] = useState('')
