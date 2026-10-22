@@ -375,6 +375,7 @@ export type ApprovalView = {
   title: string
   selector?: string | null
   domains: string[]
+  urls: string[]
   agentStance?: string | null
   agentReason?: string | null
   createdAtMs: number

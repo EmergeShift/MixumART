@@ -260,18 +260,24 @@ pub enum BrowserCommand {
     Export {
         #[arg(long = "domain", required = true)]
         domains: Vec<String>,
+        #[arg(long = "url")]
+        urls: Vec<String>,
     },
     /// Send an approved lease to a container browser.
     Share {
         selector: String,
         #[arg(long = "domain", required = true)]
         domains: Vec<String>,
+        #[arg(long = "url")]
+        urls: Vec<String>,
     },
     /// Agent-side: ask a human to approve domains for one container.
     Request {
         selector: String,
         #[arg(long = "domain", required = true)]
         domains: Vec<String>,
+        #[arg(long = "url")]
+        urls: Vec<String>,
         #[arg(long, default_value = "")]
         reason: String,
     },

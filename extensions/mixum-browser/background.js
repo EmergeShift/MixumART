@@ -39,6 +39,9 @@ async function exportLease(request) {
   const domains = Array.isArray(request.domains)
     ? request.domains.map((d) => String(d).toLowerCase().replace(/^\./, "")).filter(Boolean)
     : [];
+  const urls = Array.isArray(request.urls)
+    ? request.urls.map((u) => String(u)).filter(Boolean)
+    : [];
   if (domains.length === 0) throw new Error("no approved domains");
   const cookies = [];
   for (const domain of domains) {
@@ -65,6 +68,7 @@ async function exportLease(request) {
   for (const tab of tabs) {
     const host = hostOf(tab.url || "");
     if (!host || !domains.some((domain) => domainMatches(host, domain))) continue;
+    if (urls.length > 0 && !urls.some((url) => tab.url === url || tab.url.startsWith(url))) continue;
     selectedTabs.push({
       url: tab.url,
       title: tab.title || "",
@@ -75,7 +79,7 @@ async function exportLease(request) {
     });
   }
   selectedTabs.sort((a, b) => (a.windowId - b.windowId) || (a.index - b.index));
-  return { cookies, tabs: selectedTabs, exportedAt: Date.now() };
+  return { cookies, tabs: selectedTabs, urls, exportedAt: Date.now() };
 }
 
 async function onNativeMessage(message) {

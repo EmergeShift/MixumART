@@ -229,6 +229,8 @@ pub struct BrowserRequest {
     pub id: String,
     pub selector: String,
     pub domains: Vec<String>,
+    #[serde(default)]
+    pub urls: Vec<String>,
     pub reason: String,
     pub created_at_ms: u128,
     #[serde(default)]
@@ -241,6 +243,7 @@ pub fn browser_request(
     data_dir: &Path,
     selector: &str,
     domains: &[String],
+    urls: &[String],
     reason: &str,
     json: bool,
 ) -> Result<()> {
@@ -252,6 +255,7 @@ pub fn browser_request(
         id: id.clone(),
         selector: selector.to_owned(),
         domains: domains.to_vec(),
+        urls: urls.to_vec(),
         reason: reason.trim().to_owned(),
         created_at_ms: now_ms(),
         approved: false,
@@ -262,7 +266,7 @@ pub fn browser_request(
         data_dir,
         "browser_request",
         &request.id,
-        json!({"domains": request.domains, "selector": request.selector}),
+        json!({"domains": request.domains, "urls": request.urls, "selector": request.selector}),
     );
     if json {
         output::print_json(&json!({
@@ -273,6 +277,9 @@ pub fn browser_request(
     } else {
         println!("browser request {id}");
         println!("domains: {}", domains.join(", "));
+        if !urls.is_empty() {
+            println!("urls: {}", urls.join(", "));
+        }
         println!("approve as human: mixum browser approve {id}");
     }
     Ok(())
@@ -287,7 +294,7 @@ pub fn browser_mark_approved(data_dir: &Path, id: &str) -> Result<BrowserRequest
         data_dir,
         "browser_approved",
         &request.id,
-        json!({"domains": request.domains, "selector": request.selector}),
+        json!({"domains": request.domains, "urls": request.urls, "selector": request.selector}),
     );
     Ok(request)
 }

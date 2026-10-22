@@ -101,6 +101,9 @@ export function ApprovalCenter({
             {item.domains.length > 0 && (
               <p className="privilege-note">域名：{item.domains.join(', ')}</p>
             )}
+            {item.urls.length > 0 && (
+              <p className="privilege-note">URL：{item.urls.join(', ')}</p>
+            )}
             {item.agentStance && (
               <p className="privilege-note">
                 Agent 态度：{item.agentStance}
