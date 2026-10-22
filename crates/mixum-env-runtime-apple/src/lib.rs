@@ -72,7 +72,7 @@ impl RuntimeBackend for AppleContainerBackend {
         for port in &spec.ports {
             args.push("--publish".into());
             args.push(format!(
-                "{}:{}/{}",
+                "127.0.0.1:{}:{}/{}",
                 port.host, port.container, port.protocol
             ));
         }
