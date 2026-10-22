@@ -4,6 +4,7 @@ import {
   connectEnvironment,
   errorText,
   gatewayDevices,
+  gatewayIsGateway,
   gatewayNodes,
   getAgentCredential,
   gatewayPairClaim,
@@ -54,6 +55,7 @@ export function Surfaces({ backends, onOpenEnvironments }: Props) {
     () => localStorage.getItem('mixum.map.addr') ?? DEFAULT_ADDR,
   )
   const [token, setToken] = useState('')
+  const [deviceToken, setDeviceToken] = useState('')
   const [fingerprint, setFingerprint] = useState(
     () => localStorage.getItem('mixum.map.fp') ?? '',
   )
@@ -129,9 +131,9 @@ export function Surfaces({ backends, onOpenEnvironments }: Props) {
 
   useEffect(() => {
     let cancelled = false
-    void getAgentCredential(`gateway:${addr}`)
+    void getAgentCredential(`gateway-device:${addr}`)
       .then((saved) => {
-        if (!cancelled && saved && !token) setToken(saved)
+        if (!cancelled && saved && !deviceToken) setDeviceToken(saved)
       })
       .catch(() => {})
     return () => {
@@ -160,18 +162,23 @@ export function Surfaces({ backends, onOpenEnvironments }: Props) {
       // 先取节点列表,再按选中的节点列窗口;否则多节点 gateway 在 node 为空时
       // 会先失败,下拉框永远没有机会出现。
       let list: string[] = []
-      try {
+      // 直连 agentd 没有 gateway.node.list:先探测,避免把“不是 gateway”误报成错误。
+      const isGateway = await gatewayIsGateway(addr, token, fingerprint || undefined)
+      if (isGateway) {
         list = await gatewayNodes(addr, token, fingerprint || undefined)
         setNodes(list)
-      } catch (err) {
-        // 直连 agentd 不是 gateway:没有节点可选。
+      } else {
         setNodes([])
-        setError(`节点列表获取失败: ${errorText(err)}`)
       }
       const effective = node && list.includes(node) ? node : (list[0] ?? '')
       if (effective !== node) setNode(effective)
       setManualSurfaces(
-        await listSurfaces(addr, token, fingerprint || undefined, effective || undefined),
+        await listSurfaces(
+          addr,
+          deviceToken || token,
+          fingerprint || undefined,
+          effective || undefined,
+        ),
       )
     } catch (err) {
       setError(errorText(err))
@@ -199,7 +206,13 @@ export function Surfaces({ backends, onOpenEnvironments }: Props) {
   const openManual = async (surface: SurfaceInfo) => {
     setError(null)
     try {
-      await openSurfaceWindow(addr, token, fingerprint || undefined, surface, node || undefined)
+      await openSurfaceWindow(
+        addr,
+        deviceToken || token,
+        fingerprint || undefined,
+        surface,
+        node || undefined,
+      )
     } catch (err) {
       setError(errorText(err))
     }
@@ -226,9 +239,9 @@ export function Surfaces({ backends, onOpenEnvironments }: Props) {
       )
       setClaimResult(claim)
       setClaimCode('')
-      setToken(claim.token)
+      setDeviceToken(claim.token)
       try {
-        await setAgentCredential(`gateway:${addr}`, claim.token)
+        await setAgentCredential(`gateway-device:${addr}`, claim.token)
       } catch (err) {
         setError(`设备已配对，但写入系统钥匙串失败：${errorText(err)}`)
       }
@@ -253,6 +266,25 @@ export function Surfaces({ backends, onOpenEnvironments }: Props) {
       await loadDevices()
     } catch (err) {
       setError(errorText(err))
+    }
+  }
+
+  const connectWithDevice = async () => {
+    if (!deviceToken.trim()) {
+      setError('没有设备令牌:请先用配对码接入设备。')
+      return
+    }
+    setLoading(true)
+    setError(null)
+    try {
+      setManualSurfaces(
+        await listSurfaces(addr, deviceToken, fingerprint || undefined, node || undefined),
+      )
+    } catch (err) {
+      setError(errorText(err))
+      setManualSurfaces([])
+    } finally {
+      setLoading(false)
     }
   }
 
@@ -329,7 +361,12 @@ export function Surfaces({ backends, onOpenEnvironments }: Props) {
                   if (!token.trim()) return
                   setLoading(true)
                   setError(null)
-                  void listSurfaces(addr, token, fingerprint || undefined, next || undefined)
+                  void listSurfaces(
+                  addr,
+                  deviceToken || token,
+                  fingerprint || undefined,
+                  next || undefined,
+                )
                     .then(setManualSurfaces)
                     .catch((err) => setError(errorText(err)))
                     .finally(() => setLoading(false))
@@ -391,7 +428,7 @@ export function Surfaces({ backends, onOpenEnvironments }: Props) {
               已配对设备 <span className="mono">{claimResult.deviceId}</span>
               （令牌已写入系统钥匙串并填入访问令牌）。
             </p>
-            <button className="ghost" onClick={() => void scanManual()} disabled={loading}>
+            <button className="ghost" onClick={() => void connectWithDevice()} disabled={loading}>
               用设备令牌连接
             </button>
           </>
