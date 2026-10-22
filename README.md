@@ -106,3 +106,4 @@ cargo build -p mixum-cli --release
 ```
 
 命令契约、端口策略、JSON 和退出码见 [docs/cli.md](docs/cli.md)。
+宿主侧 Unix socket API 见 [docs/daemon.md](docs/daemon.md)。

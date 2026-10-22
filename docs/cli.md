@@ -199,6 +199,18 @@ mixum_port_check
 终端、任意 shell 和 snapshot restore 不通过 MCP 暴露，避免把本地特权路径
 误当成只读监看能力。配套 skill 在 `skills/mixum-art/SKILL.md`。
 
+## Daemon
+
+宿主侧 Unix socket API 是 `mixum-artd`，与 CLI 同 crate：
+
+```bash
+cargo build -p mixum-cli --release
+./target/release/mixum-artd
+```
+
+它用 sibling `mixum --json` 执行同一套规则，socket 权限 0600；协议见
+[docs/daemon.md](daemon.md)。
+
 ## 构建
 
 ```bash
