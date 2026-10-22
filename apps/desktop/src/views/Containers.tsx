@@ -3,6 +3,7 @@ import { listen } from '@tauri-apps/api/event'
 
 import {
   closeContainerTerminal,
+  containerSpec,
   containerTerminalInput,
   createEnvironment,
   errorText,
@@ -392,7 +393,15 @@ export function Containers({ backends }: Props) {
     setSnapshotError(null)
     setMigrationNotice('')
     try {
-      const file = await snapshotExport(browser.id, node)
+      let spec = null
+      if (kind) {
+        try {
+          spec = await containerSpec(kind, browser.id)
+        } catch {
+          spec = null
+        }
+      }
+      const file = await snapshotExport(browser.id, node, spec, kind ?? undefined, snapshots?.branch ?? undefined)
       setMigrationNotice(`已导出 ${file.path}（${file.size} 字节）`)
       setMigrations(await listMigrations())
     } catch (err) {
