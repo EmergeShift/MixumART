@@ -150,6 +150,33 @@ export const snapshotImport = (containerId: string, path: string, origin?: strin
     ? demoDelay('demo-node')
     : invoke<string>('environment_snapshot_import', { containerId, path, origin })
 
+export type MigrateNewResult = {
+  targetContainerId: string
+  targetNode: string
+  agentdAddr: string
+}
+
+export const migrateSnapshotNew = (
+  sourceContainerId: string,
+  sourceKind: string,
+  targetKind: string,
+  node: string,
+  name?: string,
+) =>
+  isDemo()
+    ? demoDelay<MigrateNewResult>({
+        targetContainerId: 'demo-target',
+        targetNode: 'demo-node',
+        agentdAddr: '127.0.0.1:17601',
+      })
+    : invoke<MigrateNewResult>('environment_migrate_new', {
+        sourceContainerId,
+        sourceKind,
+        targetKind,
+        node,
+        name: name ?? null,
+      })
+
 export const migrateSnapshot = (
   sourceContainerId: string,
   targetContainerId: string,

@@ -10,6 +10,7 @@ import {
   listContainers,
   listMigrations,
   migrateSnapshot,
+  migrateSnapshotNew,
   type MigrationFile,
   listSurfaces,
   loadEnvironmentConnections,
@@ -459,6 +460,25 @@ export function Containers({ backends }: Props) {
     }
   }
 
+  const migrateToNew = async (node: string) => {
+    if (!browser || !kind) return
+    if (!window.confirm(`在本机按当前规格新建环境，并把快照 ${node} 迁移过去？`)) return
+    setSnapshotAction(`new:${node}`)
+    setSnapshotError(null)
+    setMigrationNotice('')
+    try {
+      const result = await migrateSnapshotNew(browser.id, kind, kind, node)
+      setMigrationNotice(
+        `已新建 ${result.targetContainerId}，节点 ${result.targetNode}（${result.agentdAddr}）`,
+      )
+      await load()
+    } catch (err) {
+      setSnapshotError(errorText(err))
+    } finally {
+      setSnapshotAction(null)
+    }
+  }
+
   return (
     <section>
       <div className="section-head">
@@ -837,6 +857,13 @@ export function Containers({ backends }: Props) {
                               disabled={!migrationTarget || snapshotAction === `migrate:${node.id}`}
                             >
                               迁移
+                            </button>
+                            <button
+                              className="ghost"
+                              onClick={() => void migrateToNew(node.id)}
+                              disabled={snapshotAction === `new:${node.id}`}
+                            >
+                              新环境迁移
                             </button>
                           </td>
                         </tr>
