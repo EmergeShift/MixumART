@@ -282,12 +282,15 @@ pub async fn runtime_list(json: bool) -> Result<()> {
     Ok(())
 }
 
-pub async fn list(data_dir: &Path, json: bool) -> Result<()> {
+pub async fn list(data_dir: &Path, all: bool, json: bool) -> Result<()> {
     let registry = registry();
     let entries = all_containers(&registry).await?;
     let state = StateStore::new(data_dir).load()?;
     let mut views = entries
         .iter()
+        .filter(|(_, container)| {
+            all || state.find(&container.id).is_some() || is_mixum_image(&container.image)
+        })
         .map(|(kind, container)| view(*kind, container, state.find(&container.id)))
         .collect::<Vec<_>>();
     for record in &state.envs {
@@ -353,6 +356,10 @@ fn valid_name(name: &str) -> bool {
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'-')
 }
 
+fn is_mixum_image(image: &str) -> bool {
+    image.to_ascii_lowercase().contains("mixumos")
+}
+
 fn image_candidates(images: &[String]) -> Vec<String> {
     let mut candidates = images
         .iter()
@@ -416,7 +423,7 @@ pub async fn create(data_dir: &Path, args: CreateArgs, json: bool) -> Result<()>
     if title.chars().count() > 120 {
         return Err(CliError::usage("--title is limited to 120 characters"));
     }
-    let _lock = StateLock::acquire(data_dir)?;
+    let state_lock = StateLock::acquire(data_dir)?;
     let store = StateStore::new(data_dir);
     let state = store.load()?;
     let registry = registry();
@@ -486,6 +493,7 @@ pub async fn create(data_dir: &Path, args: CreateArgs, json: bool) -> Result<()>
     let mut state = store.load()?;
     state.upsert(record.clone());
     store.save(&state)?;
+    drop(state_lock);
     if !started {
         let view = view(kind, &container, Some(&record));
         if json {
@@ -519,19 +527,10 @@ pub async fn create(data_dir: &Path, args: CreateArgs, json: bool) -> Result<()>
         args.wait_map
     };
     if wait_map > 0 {
-        match map_ops::wait_ready(
-            &registry,
-            data_dir,
-            kind,
-            &container.id,
-            &name,
-            port,
-            wait_map,
-        )
-        .await
-        {
+        match map_ops::wait_ready(&registry, kind, &container.id, &name, port, wait_map).await {
             Ok(map) => {
                 record.fingerprint = Some(map.fingerprint.clone());
+                let _lock = StateLock::acquire(data_dir)?;
                 let mut state = store.load()?;
                 state.upsert(record.clone());
                 store.save(&state)?;
@@ -714,7 +713,7 @@ pub async fn remove(data_dir: &Path, selector: &str, force: bool, json: bool) ->
         .remove_container(&resolved.container.id)
         .await
         .map_err(|error| CliError::runtime(format!("remove failed: {error}")))?;
-    let _lock = StateLock::acquire(data_dir)?;
+    let _state_lock = StateLock::acquire(data_dir)?;
     let store = StateStore::new(data_dir);
     let mut state = store.load()?;
     state.remove(&resolved.container.id);

@@ -39,7 +39,6 @@ pub async fn connect(
 
 pub async fn wait_ready(
     registry: &BackendRegistry,
-    _data_dir: &Path,
     kind: RuntimeKind,
     container_id: &str,
     name: &str,

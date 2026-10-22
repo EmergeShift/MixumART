@@ -62,7 +62,7 @@ async fn run(cli: Cli) -> Result<(), output::CliError> {
             RuntimeCommand::List => env::runtime_list(cli.json).await,
         },
         Command::Env { command } => match command {
-            EnvCommand::List => env::list(&data_dir, cli.json).await,
+            EnvCommand::List { all } => env::list(&data_dir, all, cli.json).await,
             EnvCommand::Create(args) => env::create(&data_dir, args, cli.json).await,
             EnvCommand::Show { selector } => env::show(&data_dir, &selector, cli.json).await,
             EnvCommand::Start { selector } => {
