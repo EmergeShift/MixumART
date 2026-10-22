@@ -208,11 +208,63 @@ mixum_env_start
 mixum_env_stop
 mixum_snapshot_list
 mixum_snapshot_create
+mixum_snapshot_restore
+mixum_snapshot_fork
+mixum_snapshot_export
+mixum_snapshot_import
+mixum_window_screenshot
+mixum_window_click
+mixum_window_move
+mixum_window_type
+mixum_window_key
+mixum_window_scroll
+mixum_window_focus
 mixum_port_check
 ```
 
-终端、任意 shell 和 snapshot restore 不通过 MCP 暴露，避免把本地特权路径
-误当成只读监看能力。配套 skill 在 `skills/mixum-art/SKILL.md`。
+Screenshot returns MCP image content. Restore requires `confirm: "RESTORE"`.
+Terminal and arbitrary shell remain CLI-only; human approval commands
+(`mixum privilege approve/deny`) are intentionally not exposed to the agent.
+配套 skill 在 `skills/mixum-art/SKILL.md`。
+
+## Base environments
+
+```bash
+mixum base create NAME --image IMAGE
+mixum base shell NAME
+mixum base commit NAME --tag v1
+mixum base list
+mixum env create --title TITLE --base NAME:v1
+mixum env rebase SELECTOR --base NAME:v2
+```
+
+Apple Container builds from the builder rootfs tar with `FROM scratch`/`ADD`
+(native, no Docker). Docker uses the same rootfs tar. WSL2 exports a rootfs tar
+and uses it as the image.
+
+## Chrome bridge
+
+```bash
+mixum browser install
+mixum browser export --domain example.com --json
+mixum browser share SELECTOR --domain example.com
+```
+
+Production extension distribution is Chrome Web Store or enterprise policy;
+`install` writes the native host manifest, not a silent unpacked extension.
+See [browser-bridge.md](browser-bridge.md).
+
+## Privilege approval
+
+```bash
+mixum privilege watch SELECTOR
+mixum privilege approve SELECTOR REQUEST_ID
+mixum privilege deny SELECTOR REQUEST_ID
+```
+
+`approve` asks for the host computer password via `sudo -v`; the agent's sudo
+wrapper only submits one argv and never gets a root shell. See
+[privilege.md](privilege.md).
 
 ## Daemon
 
