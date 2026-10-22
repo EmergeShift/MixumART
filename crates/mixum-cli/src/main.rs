@@ -218,6 +218,7 @@ async fn run(cli: Cli) -> Result<(), output::CliError> {
                 }
                 result
             }
+            BrowserCommand::Package { out } => chrome::package(out.as_deref(), cli.json),
         },
         Command::Base { command } => match command {
             BaseCommand::Create {
