@@ -21,8 +21,8 @@
 | 容器日志 / 持久终端 | ✅ | ✅ | 🟡 | ✅ | 🟡 | 🧪 |
 | 镜像导入 / 拉取 | ✅ | ✅ | ✅ | ✅ | ✅ | 🧪 |
 | 磁盘快照（建/树/回退/fork） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 内存快照（CRIU dump） | 🧪 | ❌ | 🧪 | 🧪 | ❌ | 🧪 |
-| 同机内存回退（CRIU restore） | 🧪 | ❌ | 🧪 | 🧪 | ❌ | 🧪 |
+| 内存快照（CRIU dump） | ✅ | ❌ | 🧪 | 🧪 | ❌ | 🧪 |
+| 同机内存回退（CRIU restore） | ✅ | ❌ | 🧪 | 🧪 | ❌ | 🧪 |
 | 跨设备 `.mart` 迁移（文件层） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 跨设备迁移（进程内存） | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | GUI 流（mixcomp A） | ✅ | ✅ | ✅ | 🟡 | 🟡 | ✅ |
@@ -45,6 +45,9 @@
 - **运行时**：`container` CLI 1.5+，每个容器一个轻量 Linux VM。
 - **内核**：默认 kata；可用 `container system kernel set --binary` 换成 `linux-mixum-micro`。
 - **CRIU**：默认内核没有 `CHECKPOINT_RESTORE`，必须换自定义内核；CRIU 还需要容器内特权
+  （2026-10-22 已在 Apple Container + `linux-mixum-micro` 上验证：Sway+foot 整个会话树
+  dump → kill → restore，`swaymsg -t get_tree` 仍见 `app_id: foot`；mixcomp 窗口树需要
+  whole-container dump，仍在接线。CRIU 版本用 3.17.1；4.2.1 在本内核 parasite SIGSEGV。）
   （`CAP_SYS_ADMIN`/`SYS_PTRACE`），Apple Container 是否放行待 PoC 验证。
 - **内核是系统级**：换内核影响本机所有 Apple Container 容器，必须提供安装/回滚脚本。
 - **磁盘快照**：可用；恢复后窗口通过 `guiSessions` 重放（Task 5）。
