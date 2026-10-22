@@ -1,3 +1,4 @@
+mod approval;
 mod base;
 mod browser;
 mod chrome;
@@ -15,7 +16,7 @@ use clap::Parser;
 
 use cli::{
     BaseCommand, BrowserCommand, Cli, Command, ConfigCommand, EnvCommand, PortCommand,
-    PrivilegeCommand, RuntimeCommand, SnapshotCommand,
+    PrivilegeCommand, RootCommand, RootStance, RuntimeCommand, SnapshotCommand,
 };
 
 #[tokio::main]
@@ -177,6 +178,25 @@ async fn run(cli: Cli) -> Result<(), output::CliError> {
             EnvCommand::Focus { selector, window } => {
                 map_ops::focus(&data_dir, &selector, window, cli.json).await
             }
+        },
+        Command::Root { command } => match command {
+            RootCommand::Request {
+                title,
+                image,
+                stance,
+                reason,
+            } => approval::request(
+                &data_dir,
+                &title,
+                &image,
+                match stance {
+                    RootStance::Agree => "agree",
+                    RootStance::Disagree => "disagree",
+                },
+                &reason,
+                cli.json,
+            ),
+            RootCommand::Approve { id } => approval::approve(&data_dir, &id, cli.json),
         },
         Command::Browser { command } => match command {
             BrowserCommand::Install => chrome::install(cli.json),

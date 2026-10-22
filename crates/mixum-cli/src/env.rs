@@ -478,9 +478,19 @@ pub async fn create(data_dir: &Path, args: CreateArgs, json: bool) -> Result<()>
     if title.chars().count() > 120 {
         return Err(CliError::usage("--title is limited to 120 characters"));
     }
-    if args.root {
+    if args.root && args.root_request.is_some() {
+        return Err(CliError::usage(
+            "--root and --root-request are mutually exclusive",
+        ));
+    }
+    let root_request = match args.root_request.as_deref() {
+        Some(id) => Some(crate::approval::approved(data_dir, id)?),
+        None => None,
+    };
+    if root_request.is_none() && args.root {
         confirm_root_container(title)?;
     }
+    let root = args.root || root_request.is_some();
     let state_lock = StateLock::acquire(data_dir)?;
     let store = StateStore::new(data_dir);
     let state = store.load()?;
@@ -496,12 +506,15 @@ pub async fn create(data_dir: &Path, args: CreateArgs, json: bool) -> Result<()>
             "--base cannot be combined with --image or a configured default image",
         ));
     }
-    let image = match args.base.as_deref() {
-        Some(base) => crate::base::resolve_image(data_dir, base)?,
-        None => {
-            let requested_image = args.image.as_deref().or(config.default_image.as_deref());
-            choose_image(&backend, args.profile, requested_image).await?
-        }
+    let image = match root_request.as_ref() {
+        Some(request) if args.image.is_none() => request.image.clone(),
+        _ => match args.base.as_deref() {
+            Some(base) => crate::base::resolve_image(data_dir, base)?,
+            None => {
+                let requested_image = args.image.as_deref().or(config.default_image.as_deref());
+                choose_image(&backend, args.profile, requested_image).await?
+            }
+        },
     };
     let containers = backend.list_containers().await.map_err(|error| {
         CliError::runtime(format!("cannot list {} containers: {error}", kind.id()))
@@ -539,7 +552,7 @@ pub async fn create(data_dir: &Path, args: CreateArgs, json: bool) -> Result<()>
     let mut env = BTreeMap::new();
     env.insert("MIXUM_METHOD".to_string(), args.method.as_str().to_string());
     env.insert("MIXUM_TITLE".to_string(), title.to_string());
-    if args.root {
+    if root {
         env.insert("MIXUM_TASK_USER".to_string(), "root".to_string());
     }
     let mut mounts = Vec::new();
@@ -578,11 +591,14 @@ pub async fn create(data_dir: &Path, args: CreateArgs, json: bool) -> Result<()>
         runtime: kind.id().to_string(),
         image: image.clone(),
         base: args.base.clone(),
-        root: args.root,
+        root,
         port,
         created_at_ms: crate::state::now_ms(),
         fingerprint: None,
     };
+    if let Some(id) = args.root_request.as_deref() {
+        crate::approval::consume(data_dir, id)?;
+    }
     let mut state = store.load()?;
     state.upsert(record.clone());
     store.save(&state)?;
