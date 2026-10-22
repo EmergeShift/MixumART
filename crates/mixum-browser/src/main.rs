@@ -96,7 +96,17 @@ async fn apply(path: PathBuf) -> Result<(), String> {
                 "path": path,
                 "secure": cookie.get("secure").and_then(Value::as_bool).unwrap_or(false),
                 "httpOnly": cookie.get("httpOnly").and_then(Value::as_bool).unwrap_or(false),
-                "sameSite": cookie.get("sameSite").and_then(Value::as_str).unwrap_or("Lax"),
+                "sameSite": match cookie
+                    .get("sameSite")
+                    .and_then(Value::as_str)
+                    .unwrap_or("lax")
+                    .to_ascii_lowercase()
+                    .as_str()
+                {
+                    "strict" => "Strict",
+                    "none" | "no_restriction" => "None",
+                    _ => "Lax",
+                },
             });
             if let Some(expires) = cookie.get("expirationDate").and_then(Value::as_f64) {
                 out["expires"] = json!(expires);
