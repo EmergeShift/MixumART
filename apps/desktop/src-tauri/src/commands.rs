@@ -7,12 +7,16 @@
 //! 4. 前端 `src/api.ts` 包一层带类型的 invoke。
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use mixum_env_core::{BackendStatus, Container, CreateSpec, RuntimeKind};
+use mixum_env_core::{
+    BackendStatus, Container, CreateSpec, MartRef, MigrationManifest, MigrationSource,
+    InspectedContainer, PortMapping, RuntimeKind, MIGRATION_VERSION,
+};
 use serde::Serialize;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use tauri::State;
 
 use crate::AppState;
@@ -54,6 +58,22 @@ pub async fn list_containers(
         .list_containers()
         .await
         .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+pub async fn environment_container_spec(
+    kind: RuntimeKind,
+    container_id: String,
+    state: State<'_, AppState>,
+) -> Result<InspectedContainer, String> {
+    let backend = state
+        .registry
+        .get(kind)
+        .ok_or_else(|| format!("没有注册 {kind} 后端"))?;
+    backend
+        .inspect_container(&container_id)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -471,6 +491,91 @@ fn connection_for(app: &AppHandle, container_id: &str) -> Result<EnvironmentConn
         .ok_or_else(|| format!("环境 {container_id} 还没有连接档案"))
 }
 
+fn free_host_port(used: &mut std::collections::HashSet<u16>) -> Result<u16, String> {
+    for _ in 0..32 {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0))
+            .map_err(|error| format!("分配端口: {error}"))?;
+        let port = listener
+            .local_addr()
+            .map_err(|error| format!("读取端口: {error}"))?
+            .port();
+        if used.insert(port) {
+            return Ok(port);
+        }
+    }
+    Err("找不到可用端口".into())
+}
+
+async fn wait_agent_token(
+    backend: &dyn mixum_env_core::RuntimeBackend,
+    id: &str,
+) -> Result<String, String> {
+    for _ in 0..120 {
+        if let Ok(output) = backend
+            .exec_capture(id, &["cat", "/var/lib/mixum/admin-token"])
+            .await
+        {
+            let token = output.trim();
+            if !token.is_empty() {
+                return Ok(token.to_owned());
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+    Err("等待 agentd 令牌超时".into())
+}
+
+async fn transfer_node(
+    source: &MapClient,
+    target: &MapClient,
+    node: &str,
+    origin: &str,
+) -> Result<String, String> {
+    let reply = source
+        .snapshot_export(node)
+        .await
+        .map_err(|error| error.to_string())?;
+    let file = reply
+        .get("file")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "snap.export 未返回 file".to_string())?
+        .to_owned();
+    let expected = reply
+        .get("sha256")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let data = source
+        .get_file(&format!("transfers/{file}"))
+        .await
+        .map_err(|error| error.to_string())?;
+    let actual: String = Sha256::digest(&data)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    if !expected.is_empty() && actual != expected {
+        return Err("迁移文件 sha256 校验失败".into());
+    }
+
+    let name = Path::new(&file)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "迁移文件名无效".to_string())?;
+    target
+        .put_file(name, &data)
+        .await
+        .map_err(|error| error.to_string())?;
+    let reply = target
+        .snapshot_import(name, origin)
+        .await
+        .map_err(|error| error.to_string())?;
+    reply
+        .get("node")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| "snap.import 未返回 node".to_string())
+}
+
 async fn snapshot_client(app: &AppHandle, container_id: &str) -> Result<MapClient, String> {
     let connection = connection_for(app, container_id)?;
     MapClient::connect(
@@ -508,6 +613,20 @@ pub async fn environment_snapshot_create(
 }
 
 #[tauri::command]
+pub async fn environment_snapshot_create_kind(
+    app: AppHandle,
+    container_id: String,
+    kind: String,
+    label: Option<String>,
+) -> Result<Value, String> {
+    let client = snapshot_client(&app, &container_id).await?;
+    client
+        .snapshot_create_kind(&kind, label.as_deref())
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 pub async fn environment_snapshot_restore(
     app: AppHandle,
     container_id: String,
@@ -532,6 +651,308 @@ pub async fn environment_snapshot_fork(
         .snapshot_fork(&node, &branch)
         .await
         .map_err(|error| error.to_string())
+}
+
+async fn node_gui_sessions(client: &MapClient, node: &str) -> Vec<Value> {
+    let Ok(tree) = client.snapshot_tree().await else {
+        return Vec::new();
+    };
+    tree.get("nodes")
+        .and_then(Value::as_array)
+        .and_then(|nodes| {
+            nodes
+                .iter()
+                .find(|entry| entry.get("id").and_then(Value::as_str) == Some(node))
+        })
+        .and_then(|entry| entry.get("guiSessions"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+}
+
+fn migration_dir() -> PathBuf {
+    dirs::cache_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("mixum/migrations")
+}
+
+/// 列出本机缓存里的迁移包（`.mart`）。
+#[tauri::command]
+pub async fn list_migrations() -> Result<Vec<MigrationFile>, String> {
+    let dir = migration_dir();
+    let mut out = Vec::new();
+    let Ok(mut entries) = tokio::fs::read_dir(&dir).await else {
+        return Ok(out);
+    };
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("mart") {
+            continue;
+        }
+        let Ok(metadata) = entry.metadata().await else {
+            continue;
+        };
+        out.push(MigrationFile {
+            path: path.to_string_lossy().into_owned(),
+            size: metadata.len(),
+            sha256: String::new(),
+            manifest_path: None,
+        });
+    }
+    out.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(out)
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MigrationFile {
+    pub path: String,
+    pub size: u64,
+    pub sha256: String,
+    pub manifest_path: Option<String>,
+}
+
+/// 导出快照节点为 `.mart` 并下载到本机缓存。用户不需要手工拖文件。
+#[tauri::command]
+pub async fn environment_snapshot_export(
+    app: AppHandle,
+    container_id: String,
+    node: String,
+    spec: Option<CreateSpec>,
+    image_digest: Option<String>,
+    runtime: Option<String>,
+    branch: Option<String>,
+) -> Result<MigrationFile, String> {
+    let client = snapshot_client(&app, &container_id).await?;
+    let reply = client
+        .snapshot_export(&node)
+        .await
+        .map_err(|error| error.to_string())?;
+    let file = reply
+        .get("file")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "snap.export 未返回 file".to_string())?
+        .to_owned();
+    let expected = reply
+        .get("sha256")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+
+    let data = client
+        .get_file(&format!("transfers/{file}"))
+        .await
+        .map_err(|error| error.to_string())?;
+    let actual: String = Sha256::digest(&data)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    if !expected.is_empty() && actual != expected {
+        return Err("迁移文件 sha256 校验失败".into());
+    }
+
+    let dir = migration_dir();
+    tokio::fs::create_dir_all(&dir)
+        .await
+        .map_err(|error| format!("创建迁移缓存目录: {error}"))?;
+    let name = Path::new(&file)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "迁移文件名无效".to_string())?;
+    let path = dir.join(name);
+    tokio::fs::write(&path, &data)
+        .await
+        .map_err(|error| format!("写入迁移文件: {error}"))?;
+
+    let gui_sessions = if spec.is_some() {
+        node_gui_sessions(&client, &node).await
+    } else {
+        Vec::new()
+    };
+    let manifest_path = if let Some(spec) = spec {
+        let manifest = MigrationManifest {
+            version: MIGRATION_VERSION,
+            source: MigrationSource {
+                container_id,
+                runtime: runtime.unwrap_or_default(),
+                node,
+                branch: branch.unwrap_or_default(),
+                exported_at: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|duration| duration.as_secs())
+                    .unwrap_or(0),
+            },
+            container: spec,
+            image_digest,
+            mart: MartRef {
+                file: name.to_owned(),
+                sha256: actual.clone(),
+                size: data.len() as u64,
+            },
+            gui_sessions,
+        };
+        let stem = name.trim_end_matches(".mart");
+        let manifest_path = dir.join(format!("{stem}.migration.json"));
+        tokio::fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&manifest)
+                .map_err(|error| format!("序列化迁移元数据: {error}"))?,
+        )
+        .await
+        .map_err(|error| format!("写入迁移元数据: {error}"))?;
+        Some(manifest_path.to_string_lossy().into_owned())
+    } else {
+        None
+    };
+
+    Ok(MigrationFile {
+        path: path.to_string_lossy().into_owned(),
+        size: data.len() as u64,
+        sha256: actual,
+        manifest_path,
+    })
+}
+
+/// 直接从源环境导出 `.mart` 并迁移到目标环境（不需要落盘/手工拖文件）。
+#[tauri::command]
+pub async fn environment_migrate(
+    app: AppHandle,
+    source_container_id: String,
+    target_container_id: String,
+    node: String,
+    origin: Option<String>,
+) -> Result<String, String> {
+    let source = snapshot_client(&app, &source_container_id).await?;
+    let target = snapshot_client(&app, &target_container_id).await?;
+    transfer_node(&source, &target, &node, origin.as_deref().unwrap_or("mixumart")).await
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MigrateNewResult {
+    pub target_container_id: String,
+    pub target_node: String,
+    pub agentd_addr: String,
+}
+
+/// 在本机按源容器规格新建一个环境，然后把 `.mart` 迁移过去。
+/// 端口会重新分配，避免和源容器冲突；agentd 令牌从容器内读取并写入连接档案。
+#[tauri::command]
+pub async fn environment_migrate_new(
+    app: AppHandle,
+    source_container_id: String,
+    source_kind: RuntimeKind,
+    target_kind: RuntimeKind,
+    node: String,
+    name: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<MigrateNewResult, String> {
+    let source_backend = state
+        .registry
+        .get(source_kind)
+        .ok_or_else(|| format!("没有注册 {source_kind} 后端"))?;
+    let inspected = source_backend
+        .inspect_container(&source_container_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let spec = inspected.spec;
+    if !spec.ports.iter().any(|port| port.container == 7601) {
+        return Err("源容器没有映射 agentd 7601，无法自动迁移".into());
+    }
+
+    let mut used = std::collections::HashSet::new();
+    let mut agentd_host = None;
+    let mut ports = Vec::new();
+    for port in &spec.ports {
+        let host = free_host_port(&mut used)?;
+        if port.container == 7601 {
+            agentd_host = Some(host);
+        }
+        ports.push(PortMapping {
+            host,
+            container: port.container,
+            protocol: port.protocol.clone(),
+        });
+    }
+    let agentd_host = agentd_host.ok_or_else(|| "没有 agentd 端口映射".to_string())?;
+
+    let name = name
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| format!("mixum-{}", node.chars().take(8).collect::<String>()));
+    let target_backend = state
+        .registry
+        .get(target_kind)
+        .ok_or_else(|| format!("没有注册 {target_kind} 后端"))?;
+    let container = target_backend
+        .create_container(CreateSpec {
+            name,
+            image: spec.image,
+            ports,
+            mounts: spec.mounts,
+            env: spec.env,
+            command: Vec::new(),
+        })
+        .await
+        .map_err(|error| error.to_string())?;
+    target_backend
+        .start_container(&container.id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let token = wait_agent_token(&*target_backend, &container.id).await?;
+    let addr = format!("127.0.0.1:{agentd_host}");
+    let mut connections = load_connection_map(&app)?;
+    connections.insert(
+        container.id.clone(),
+        EnvironmentConnection {
+            addr: addr.clone(),
+            token: token.clone(),
+            fingerprint: None,
+        },
+    );
+    save_connection_map(&app, &connections)?;
+
+    let source = snapshot_client(&app, &source_container_id).await?;
+    let target = MapClient::connect(&addr, &token, None)
+        .await
+        .map_err(|error| error.to_string())?;
+    let target_node = transfer_node(&source, &target, &node, "mixumart").await?;
+    Ok(MigrateNewResult {
+        target_container_id: container.id,
+        target_node,
+        agentd_addr: addr,
+    })
+}
+
+/// 把本机 `.mart` 上传到目标环境并导入为快照节点。
+#[tauri::command]
+pub async fn environment_snapshot_import(
+    app: AppHandle,
+    container_id: String,
+    path: String,
+    origin: Option<String>,
+) -> Result<String, String> {
+    let data = tokio::fs::read(&path)
+        .await
+        .map_err(|error| format!("读取迁移文件: {error}"))?;
+    let name = Path::new(&path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "迁移文件名无效".to_string())?
+        .to_owned();
+    let client = snapshot_client(&app, &container_id).await?;
+    client
+        .put_file(&name, &data)
+        .await
+        .map_err(|error| error.to_string())?;
+    let reply = client
+        .snapshot_import(&name, origin.as_deref().unwrap_or("mixumart"))
+        .await
+        .map_err(|error| error.to_string())?;
+    reply
+        .get("node")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| "snap.import 未返回 node".to_string())
 }
 
 #[derive(Debug, serde::Serialize)]

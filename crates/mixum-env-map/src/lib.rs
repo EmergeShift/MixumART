@@ -23,7 +23,7 @@ use rustls::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc, oneshot, Notify};
 use tokio_tungstenite::{
     connect_async_tls_with_config,
     tungstenite::{client::IntoClientRequest, http::HeaderValue, Message},
@@ -120,7 +120,16 @@ pub struct MapClient {
     pending: Arc<Mutex<HashMap<String, oneshot::Sender<Envelope>>>>,
     frames: broadcast::Sender<Frame>,
     events: broadcast::Sender<PushEvent>,
+    /// 进行中的 file.get：transfer id → 累积缓冲。
+    files: Arc<Mutex<HashMap<u32, FileTransfer>>>,
     pub fingerprint: String,
+}
+
+struct FileTransfer {
+    data: Vec<u8>,
+    expected: u64,
+    done: bool,
+    notify: Arc<Notify>,
 }
 
 impl fmt::Debug for MapClient {
@@ -191,6 +200,9 @@ impl MapClient {
         let reader_pending = Arc::clone(&pending);
         let reader_frames = frame_tx.clone();
         let reader_events = event_tx.clone();
+        let reader_files: Arc<Mutex<HashMap<u32, FileTransfer>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let files_for_reader = Arc::clone(&reader_files);
         tokio::spawn(async move {
             while let Some(message) = read.next().await {
                 match message {
@@ -198,6 +210,25 @@ impl MapClient {
                         let Ok(envelope) = serde_json::from_str::<Envelope>(&text) else {
                             continue;
                         };
+                        if envelope.op == "file.get.done" {
+                            if let Some(transfer) =
+                                envelope.payload.get("transfer").and_then(Value::as_u64)
+                            {
+                                let mut files = files_for_reader.lock().expect("file lock");
+                                let entry =
+                                    files
+                                        .entry(transfer as u32)
+                                        .or_insert_with(|| FileTransfer {
+                                            data: Vec::new(),
+                                            expected: 0,
+                                            done: false,
+                                            notify: Arc::new(Notify::new()),
+                                        });
+                                entry.done = true;
+                                entry.notify.notify_waiters();
+                            }
+                            continue;
+                        }
                         if let Some(reply_to) = envelope.reply_to.clone() {
                             if let Some(sender) = reader_pending
                                 .lock()
@@ -214,7 +245,19 @@ impl MapClient {
                         });
                     }
                     Ok(Message::Binary(data)) => {
-                        if let Some(frame) = parse_video(&data) {
+                        if let Some((transfer, offset, chunk)) = parse_file_chunk(&data) {
+                            let mut files = files_for_reader.lock().expect("file lock");
+                            let entry = files.entry(transfer).or_insert_with(|| FileTransfer {
+                                data: Vec::new(),
+                                expected: 0,
+                                done: false,
+                                notify: Arc::new(Notify::new()),
+                            });
+                            if offset as usize == entry.data.len() {
+                                entry.data.extend_from_slice(chunk);
+                                entry.notify.notify_one();
+                            }
+                        } else if let Some(frame) = parse_video(&data) {
                             let _ = reader_frames.send(frame);
                         }
                     }
@@ -237,6 +280,7 @@ impl MapClient {
             pending,
             frames: frame_tx,
             events: event_tx,
+            files: reader_files,
             fingerprint,
         };
         let hello = client
@@ -330,7 +374,16 @@ impl MapClient {
     /// Create a disk snapshot. `label` is optional; `auto=false` because this
     /// is an explicit user action.
     pub async fn snapshot_create(&self, label: Option<&str>) -> Result<Value, MapError> {
-        let mut payload = json!({ "kind": "disk", "auto": false });
+        self.snapshot_create_kind("disk", label).await
+    }
+
+    /// 创建指定类型的快照（disk / memory / hybrid）。
+    pub async fn snapshot_create_kind(
+        &self,
+        kind: &str,
+        label: Option<&str>,
+    ) -> Result<Value, MapError> {
+        let mut payload = json!({ "kind": kind, "auto": false });
         if let Some(label) = label.filter(|label| !label.trim().is_empty()) {
             payload["label"] = json!(label);
         }
@@ -353,6 +406,69 @@ impl MapClient {
         self.call("snap.fork", json!({ "node": node, "branch": branch }))
             .await
             .map(|reply| reply.payload)
+    }
+
+    /// 导出节点为 `.mart`（mixumOS 扩展 op）。返回 `{file,size,sha256}`。
+    pub async fn snapshot_export(&self, node: &str) -> Result<Value, MapError> {
+        self.call("snap.export", json!({ "node": node, "format": "mart" }))
+            .await
+            .map(|reply| reply.payload)
+    }
+
+    /// 从 transfers 里的 `.mart` 导入节点。返回 `{node}`。
+    pub async fn snapshot_import(&self, file: &str, origin: &str) -> Result<Value, MapError> {
+        self.call("snap.import", json!({ "file": file, "origin": origin }))
+            .await
+            .map(|reply| reply.payload)
+    }
+
+    /// 下载 work_root 下的文件（file.get 流）。用于迁移包。
+    pub async fn get_file(&self, path: &str) -> Result<Vec<u8>, MapError> {
+        let reply = self.call("file.get", json!({ "path": path })).await?;
+        let transfer = reply
+            .payload
+            .get("transfer")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| MapError::Protocol("file.get 未返回 transfer".into()))?
+            as u32;
+        let size = reply
+            .payload
+            .get("size")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let notify = {
+            let mut files = self.files.lock().expect("file lock");
+            let entry = files.entry(transfer).or_insert_with(|| FileTransfer {
+                data: Vec::new(),
+                expected: 0,
+                done: false,
+                notify: Arc::new(Notify::new()),
+            });
+            entry.expected = size;
+            entry.notify.clone()
+        };
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(300);
+        loop {
+            {
+                let mut files = self.files.lock().expect("file lock");
+                if let Some(entry) = files.get(&transfer) {
+                    if entry.done {
+                        let entry = files.remove(&transfer).expect("entry checked");
+                        if entry.data.len() as u64 != entry.expected {
+                            return Err(MapError::Protocol("file.get 大小不符".into()));
+                        }
+                        return Ok(entry.data);
+                    }
+                }
+            }
+            if tokio::time::timeout_at(deadline, notify.notified())
+                .await
+                .is_err()
+            {
+                self.files.lock().expect("file lock").remove(&transfer);
+                return Err(MapError::Timeout("file.get".into()));
+            }
+        }
     }
 
     /// Claim/release a surface for the user. `force` is needed when an agent
@@ -469,6 +585,16 @@ impl MapClient {
         }
         Ok(reply)
     }
+}
+
+/// file 通道：`0x05 + transfer(u32 LE) + offset(u64 LE) + data`。
+fn parse_file_chunk(data: &[u8]) -> Option<(u32, u64, &[u8])> {
+    if data.len() < 13 || data[0] != 0x05 {
+        return None;
+    }
+    let transfer = u32::from_le_bytes(data[1..5].try_into().ok()?);
+    let offset = u64::from_le_bytes(data[5..13].try_into().ok()?);
+    Some((transfer, offset, &data[13..]))
 }
 
 fn parse_video(data: &[u8]) -> Option<Frame> {
@@ -772,5 +898,23 @@ mod tests {
             normalize_fingerprint("AA:bb:01"),
             normalize_fingerprint("aa:BB:01")
         );
+    }
+}
+
+#[cfg(test)]
+mod file_chunk_tests {
+    use super::*;
+
+    #[test]
+    fn parses_file_chunk_header() {
+        let mut data = vec![0x05];
+        data.extend_from_slice(&7u32.to_le_bytes());
+        data.extend_from_slice(&1024u64.to_le_bytes());
+        data.extend_from_slice(b"payload");
+        let (transfer, offset, chunk) = parse_file_chunk(&data).unwrap();
+        assert_eq!(transfer, 7);
+        assert_eq!(offset, 1024);
+        assert_eq!(chunk, b"payload");
+        assert!(parse_file_chunk(b"short").is_none());
     }
 }
