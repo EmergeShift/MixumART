@@ -315,3 +315,37 @@ pub fn package(out: Option<&str>, json: bool) -> Result<()> {
     }
     Ok(())
 }
+
+
+/// Enterprise policy fragment. Consumer installs still require the Web Store
+/// listing; this is the no-manual path for managed Chrome.
+pub fn policy(out: Option<&str>, json: bool) -> Result<()> {
+    let body = serde_json::json!({
+        "ExtensionSettings": {
+            EXTENSION_ID: {
+                "installation_mode": "force_installed",
+                "update_url": "https://clients2.google.com/service/update2/crx"
+            }
+        }
+    });
+    let text = serde_json::to_string_pretty(&body)
+        .map_err(|error| CliError::io(format!("serialize policy: {error}")))?;
+    match out {
+        Some(path) => {
+            std::fs::write(path, &text)
+                .map_err(|error| CliError::io(format!("write policy: {error}")))?;
+            if json {
+                output::print_json(&serde_json::json!({
+                    "path": path,
+                    "extensionId": EXTENSION_ID,
+                    "format": "chrome-policy-json",
+                }));
+            } else {
+                println!("wrote {path}");
+                println!("extension id: {EXTENSION_ID}");
+            }
+        }
+        None => println!("{text}"),
+    }
+    Ok(())
+}
