@@ -1861,3 +1861,17 @@ fn append_approval_audit(app: &AppHandle, action: &str, id: &str, detail: Value)
         let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
     }
 }
+
+#[cfg(test)]
+mod approval_id_tests {
+    use super::valid_approval_id;
+
+    #[test]
+    fn rejects_path_traversal_and_bad_prefix() {
+        assert!(valid_approval_id("root-01JABC", "root-"));
+        assert!(valid_approval_id("browser-01JABC", "browser-"));
+        assert!(!valid_approval_id("root-../escape", "root-"));
+        assert!(!valid_approval_id("browser-/tmp/x", "browser-"));
+        assert!(!valid_approval_id("other-01JABC", "root-"));
+    }
+}
