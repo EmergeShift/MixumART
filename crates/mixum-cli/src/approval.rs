@@ -3,10 +3,12 @@
 //! The agent can create a request (with its stance and reason); only a human at
 //! an interactive terminal can approve it after host-password authentication.
 
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 
 use crate::output::{self, CliError, Result};
 
@@ -57,6 +59,12 @@ pub fn request(
         consumed: false,
     };
     save(data_dir, &request)?;
+    audit(
+        data_dir,
+        "root_request",
+        &request.id,
+        json!({"title": request.title, "stance": request.agent_stance}),
+    );
     if json {
         output::print_json(&json!({
             "id": id,
@@ -91,6 +99,12 @@ pub fn approve(data_dir: &Path, id: &str, json: bool) -> Result<()> {
     host_authenticate()?;
     request.approved = true;
     save(data_dir, &request)?;
+    audit(
+        data_dir,
+        "root_approved",
+        &request.id,
+        json!({"title": request.title}),
+    );
     if json {
         output::print_json(&json!({"id": request.id, "approved": true}));
     } else {
@@ -147,6 +161,37 @@ fn save(data_dir: &Path, request: &RootRequest) -> Result<()> {
     let data = serde_json::to_vec_pretty(request)
         .map_err(|error| CliError::io(format!("serialize root request: {error}")))?;
     std::fs::write(path, data).map_err(|error| CliError::io(format!("write root request: {error}")))
+}
+
+fn audit(data_dir: &Path, action: &str, id: &str, detail: Value) {
+    #[cfg(not(unix))]
+    {
+        let _ = (data_dir, action, id, detail);
+        return;
+    }
+    #[cfg(unix)]
+    {
+        let dir = data_dir.join("audit");
+        if std::fs::create_dir_all(&dir).is_err() {
+            return;
+        }
+        let path = dir.join("approvals.log");
+        let line = serde_json::json!({
+            "action": action,
+            "id": id,
+            "detail": detail,
+            "ts": now_ms(),
+        });
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .mode(0o600)
+            .open(path)
+        {
+            use std::io::Write;
+            let _ = writeln!(file, "{line}");
+        }
+    }
 }
 
 fn host_authenticate() -> Result<()> {
@@ -213,6 +258,12 @@ pub fn browser_request(
         consumed: false,
     };
     save_browser(data_dir, &request)?;
+    audit(
+        data_dir,
+        "browser_request",
+        &request.id,
+        json!({"domains": request.domains, "selector": request.selector}),
+    );
     if json {
         output::print_json(&json!({
             "id": id,
@@ -232,6 +283,12 @@ pub fn browser_mark_approved(data_dir: &Path, id: &str) -> Result<BrowserRequest
     host_authenticate()?;
     request.approved = true;
     save_browser(data_dir, &request)?;
+    audit(
+        data_dir,
+        "browser_approved",
+        &request.id,
+        json!({"domains": request.domains, "selector": request.selector}),
+    );
     Ok(request)
 }
 
