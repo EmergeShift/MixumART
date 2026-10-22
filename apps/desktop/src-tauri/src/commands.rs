@@ -888,7 +888,7 @@ pub async fn environment_migrate_new(
             name,
             image: spec.image,
             ports,
-            mounts: Vec::new(),
+            mounts: spec.mounts,
             env: spec.env,
             command: Vec::new(),
         })
