@@ -26,11 +26,11 @@ struct BaseMeta {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct BaseVersion {
-    tag: String,
-    image: String,
-    digest: String,
-    created_at_ms: u128,
+pub(crate) struct BaseVersion {
+    pub(crate) tag: String,
+    pub(crate) image: String,
+    pub(crate) digest: String,
+    pub(crate) created_at_ms: u128,
 }
 
 pub async fn create(
@@ -293,6 +293,10 @@ pub async fn list(data_dir: &Path, json: bool) -> Result<()> {
 }
 
 pub fn resolve_image(data_dir: &Path, spec: &str) -> Result<String> {
+    resolve_version(data_dir, spec).map(|version| version.image)
+}
+
+pub(crate) fn resolve_version(data_dir: &Path, spec: &str) -> Result<BaseVersion> {
     let (name, tag) = match spec.split_once(':') {
         Some((name, tag)) => (name, Some(tag)),
         None => (spec, None),
@@ -309,7 +313,7 @@ pub fn resolve_image(data_dir: &Path, spec: &str) -> Result<String> {
             .last()
             .ok_or_else(|| CliError::usage(format!("base has no committed version: {name}")))?,
     };
-    Ok(version.image.clone())
+    Ok(version.clone())
 }
 
 async fn choose_runtime(
