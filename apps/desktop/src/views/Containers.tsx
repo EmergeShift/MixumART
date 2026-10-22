@@ -18,7 +18,7 @@ import {
   removeEnvironment,
   removeEnvironmentConnection,
   saveEnvironmentConnection,
-  snapshotCreate,
+  snapshotCreateKind,
   snapshotExport,
   snapshotImport,
   snapshotRestore,
@@ -93,6 +93,7 @@ export function Containers({ backends }: Props) {
   const [snapshotError, setSnapshotError] = useState<string | null>(null)
   const [snapshotLoading, setSnapshotLoading] = useState(false)
   const [snapshotLabel, setSnapshotLabel] = useState('')
+  const [snapshotKind, setSnapshotKind] = useState('disk')
   const [snapshotAction, setSnapshotAction] = useState<string | null>(null)
   const [migrations, setMigrations] = useState<MigrationFile[]>([])
   const [migrationPath, setMigrationPath] = useState('')
@@ -360,7 +361,7 @@ export function Containers({ backends }: Props) {
     setSnapshotAction('create')
     setSnapshotError(null)
     try {
-      await snapshotCreate(browser.id, snapshotLabel)
+      await snapshotCreateKind(browser.id, snapshotKind, snapshotLabel)
       setSnapshotLabel('')
       await loadSnapshots(browser)
     } catch (err) {
@@ -711,6 +712,15 @@ export function Containers({ backends }: Props) {
                   </button>
                 </div>
                 <div className="snapshot-create">
+                  <select
+                    value={snapshotKind}
+                    onChange={(event) => setSnapshotKind(event.target.value)}
+                    title="memory/hybrid 需要运行中的任务 + CRIU"
+                  >
+                    <option value="disk">磁盘</option>
+                    <option value="memory">内存</option>
+                    <option value="hybrid">混合</option>
+                  </select>
                   <input
                     value={snapshotLabel}
                     onChange={(event) => setSnapshotLabel(event.target.value)}

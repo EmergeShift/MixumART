@@ -81,6 +81,15 @@ export const snapshotCreate = (containerId: string, label: string) =>
     ? demoDelay({ id: 'demo', label })
     : invoke<unknown>('environment_snapshot_create', { containerId, label: label || null })
 
+export const snapshotCreateKind = (containerId: string, kind: string, label: string) =>
+  isDemo()
+    ? demoDelay({ id: 'demo', kind, label })
+    : invoke<unknown>('environment_snapshot_create_kind', {
+        containerId,
+        kind,
+        label: label || null,
+      })
+
 export const snapshotRestore = (containerId: string, node: string) =>
   isDemo()
     ? demoDelay({ restoredTo: node })
