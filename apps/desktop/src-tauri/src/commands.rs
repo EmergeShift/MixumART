@@ -568,6 +568,23 @@ pub async fn environment_snapshot_fork(
         .map_err(|error| error.to_string())
 }
 
+async fn node_gui_sessions(client: &MapClient, node: &str) -> Vec<Value> {
+    let Ok(tree) = client.snapshot_tree().await else {
+        return Vec::new();
+    };
+    tree.get("nodes")
+        .and_then(Value::as_array)
+        .and_then(|nodes| {
+            nodes
+                .iter()
+                .find(|entry| entry.get("id").and_then(Value::as_str) == Some(node))
+        })
+        .and_then(|entry| entry.get("guiSessions"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+}
+
 fn migration_dir() -> PathBuf {
     dirs::cache_dir()
         .unwrap_or_else(std::env::temp_dir)
@@ -661,6 +678,11 @@ pub async fn environment_snapshot_export(
         .await
         .map_err(|error| format!("写入迁移文件: {error}"))?;
 
+    let gui_sessions = if spec.is_some() {
+        node_gui_sessions(&client, &node).await
+    } else {
+        Vec::new()
+    };
     let manifest_path = if let Some(spec) = spec {
         let manifest = MigrationManifest {
             version: MIGRATION_VERSION,
@@ -680,7 +702,7 @@ pub async fn environment_snapshot_export(
                 sha256: actual.clone(),
                 size: data.len() as u64,
             },
-            gui_sessions: Vec::new(),
+            gui_sessions,
         };
         let stem = name.trim_end_matches(".mart");
         let manifest_path = dir.join(format!("{stem}.migration.json"));
