@@ -1772,3 +1772,35 @@ pub fn approve_browser_approval(app: AppHandle, id: String) -> Result<(), String
     let _ = app; // AppHandle kept for future audit wiring.
     Ok(())
 }
+
+/// Pending sudo requests across environments with a saved MAP connection.
+/// Approval stays in `environment_privilege_decide` (OS authentication again).
+#[tauri::command]
+pub async fn list_pending_privileges(app: AppHandle) -> Result<Vec<Value>, String> {
+    let map = load_connection_map(&app)?;
+    let mut out = Vec::new();
+    for (container_id, connection) in map {
+        let client = match MapClient::connect(
+            &connection.addr,
+            &connection.token,
+            connection.fingerprint.as_deref(),
+        )
+        .await
+        {
+            Ok(client) => client,
+            Err(_) => continue,
+        };
+        let Ok(Ok(requests)) =
+            tokio::time::timeout(Duration::from_secs(2), client.privilege_list()).await
+        else {
+            continue;
+        };
+        for mut request in requests {
+            if let Some(object) = request.as_object_mut() {
+                object.insert("containerId".into(), Value::String(container_id.clone()));
+            }
+            out.push(request);
+        }
+    }
+    Ok(out)
+}

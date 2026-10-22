@@ -3,22 +3,39 @@ import { useState } from 'react'
 import {
   approveBrowserApproval,
   approveRootApproval,
+  decidePrivilege,
   denyApproval,
   errorText,
+  type PendingPrivilege,
   type ApprovalView,
 } from '../api'
 
 export function ApprovalCenter({
   approvals,
+  sudoRequests,
   onClose,
   onChanged,
 }: {
   approvals: ApprovalView[]
+  sudoRequests: PendingPrivilege[]
   onClose: () => void
   onChanged: () => void
 }) {
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+
+  async function decideSudo(request: PendingPrivilege, approve: boolean) {
+    setBusy(request.id)
+    setError(null)
+    try {
+      await decidePrivilege(request.containerId, request.id, approve, '')
+      onChanged()
+    } catch (err) {
+      setError(errorText(err))
+    } finally {
+      setBusy(null)
+    }
+  }
 
   async function act(id: string, approve: boolean) {
     setBusy(id)
@@ -51,7 +68,27 @@ export function ApprovalCenter({
           </div>
           <button type="button" className="icon-btn" onClick={onClose} aria-label="关闭">×</button>
         </div>
-        {approvals.length === 0 && <p className="privilege-note">没有待处理请求。</p>}
+        {approvals.length === 0 && sudoRequests.length === 0 && (
+          <p className="privilege-note">没有待处理请求。</p>
+        )}
+        {sudoRequests.map((item) => (
+          <div className="approval-card" key={`sudo-${item.containerId}-${item.id}`}>
+            <div className="approval-card-head">
+              <span className="risk risk-system">SUDO</span>
+              <strong>{item.program} {(item.args ?? []).join(' ')}</strong>
+            </div>
+            <p className="privilege-note">环境：{item.containerId} · 任务：{item.taskId || '-'}</p>
+            <p className="privilege-note">理由：{item.reason || '-'} · 风险：{item.risk || 'unknown'}</p>
+            <div className="privilege-actions">
+              <button type="button" className="btn ghost" disabled={busy === item.id} onClick={() => void decideSudo(item, false)}>
+                拒绝
+              </button>
+              <button type="button" className="btn primary" disabled={busy === item.id} onClick={() => void decideSudo(item, true)}>
+                {busy === item.id ? '认证中…' : '批准一次'}
+              </button>
+            </div>
+          </div>
+        ))}
         {approvals.map((item) => (
           <div className="approval-card" key={item.id}>
             <div className="approval-card-head">
