@@ -4,11 +4,14 @@
 //! 本 crate 只负责把 CLI 的输出翻译成 core 类型；镜像导入、内核设置等
 //! 在后续里程碑补，不在这里预埋。
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use mixum_env_core::container::{Container, ContainerState, CreateSpec, PortMapping};
+use mixum_env_core::container::{
+    Container, ContainerState, CreateSpec, InspectedContainer, PortMapping,
+};
 use mixum_env_core::error::EnvError;
 use mixum_env_core::process;
 use mixum_env_core::runtime::{RuntimeBackend, RuntimeKind, RuntimeStatus};
@@ -67,6 +70,17 @@ impl RuntimeBackend for AppleContainerBackend {
         parse_list(&stdout)
     }
 
+    async fn inspect_container(&self, id: &str) -> Result<InspectedContainer, EnvError> {
+        let out = process::run("container", &["inspect", id], LIST_TIMEOUT).await?;
+        if !out.success {
+            return Err(EnvError::CommandFailed {
+                command: format!("container inspect {id}"),
+                stderr: out.stderr,
+            });
+        }
+        parse_inspect(&out.stdout)
+    }
+
     async fn create_container(&self, spec: CreateSpec) -> Result<Container, EnvError> {
         let mut args: Vec<String> = vec!["create".into(), "--name".into(), spec.name.clone()];
         for port in &spec.ports {
@@ -103,6 +117,13 @@ impl RuntimeBackend for AppleContainerBackend {
     async fn start_container(&self, id: &str) -> Result<(), EnvError> {
         let out = process::run("container", &["start", id], WRITE_TIMEOUT).await?;
         out.into_stdout("container start").map(|_| ())
+    }
+
+    async fn exec_capture(&self, id: &str, command: &[&str]) -> Result<String, EnvError> {
+        let mut args: Vec<&str> = vec!["exec", id];
+        args.extend_from_slice(command);
+        let out = process::run("container", &args, WRITE_TIMEOUT).await?;
+        out.into_stdout("container exec")
     }
 
     async fn stop_container(&self, id: &str) -> Result<(), EnvError> {
@@ -300,6 +321,119 @@ impl AppleEntry {
     }
 }
 
+fn parse_inspect(raw: &str) -> Result<InspectedContainer, EnvError> {
+    let entries: Vec<InspectEntry> = serde_json::from_str(raw)?;
+    let entry = entries
+        .into_iter()
+        .next()
+        .ok_or_else(|| EnvError::Parse("container inspect 返回空数组".into()))?;
+    let config = entry.configuration;
+    let image_digest = config
+        .image
+        .descriptor
+        .as_ref()
+        .map(|descriptor| descriptor.digest.clone())
+        .filter(|digest| digest.starts_with("sha256:"));
+    let spec = CreateSpec {
+        name: config.id,
+        image: config.image.reference,
+        ports: config
+            .published_ports
+            .iter()
+            .map(|port| PortMapping {
+                host: port.host_port,
+                container: port.container_port,
+                protocol: port.proto.clone(),
+            })
+            .collect(),
+        mounts: config
+            .mounts
+            .iter()
+            .map(|mount| mixum_env_core::container::Mount {
+                source: mount.source.clone(),
+                target: mount.destination.clone(),
+                read_only: mount.read_only,
+            })
+            .collect(),
+        env: config
+            .init_process
+            .environment
+            .iter()
+            .filter_map(|line| {
+                line.split_once('=')
+                    .map(|(key, value)| (key.to_owned(), value.to_owned()))
+            })
+            .collect::<BTreeMap<_, _>>(),
+        command: if config.init_process.arguments.is_empty() {
+            Vec::new()
+        } else {
+            std::iter::once(config.init_process.executable)
+                .chain(config.init_process.arguments)
+                .collect()
+        },
+    };
+    Ok(InspectedContainer { spec, image_digest })
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct InspectEntry {
+    configuration: InspectConfiguration,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct InspectConfiguration {
+    id: String,
+    image: InspectImage,
+    init_process: InspectProcess,
+    #[serde(default)]
+    published_ports: Vec<InspectPort>,
+    #[serde(default)]
+    mounts: Vec<InspectMount>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct InspectMount {
+    source: String,
+    destination: String,
+    #[serde(default)]
+    read_only: bool,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct InspectImage {
+    reference: String,
+    #[serde(default)]
+    descriptor: Option<InspectDescriptor>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct InspectDescriptor {
+    digest: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct InspectProcess {
+    executable: String,
+    #[serde(default)]
+    arguments: Vec<String>,
+    #[serde(default)]
+    environment: Vec<String>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct InspectPort {
+    container_port: u16,
+    host_port: u16,
+    proto: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -367,5 +501,45 @@ mod tests {
         let containers = backend.list_containers().await.unwrap();
         println!("Apple Container 容器数：{}", containers.len());
         assert!(!containers.is_empty(), "本机应有已创建的容器");
+    }
+
+    #[test]
+    fn parses_inspect_spec() {
+        let raw = r#"[{"configuration":{
+            "id":"map-node",
+            "image":{"reference":"127.0.0.1:15000/mixumos:fix1","descriptor":{"digest":"sha256:abc"}},
+            "initProcess":{"executable":"/entrypoint.sh","arguments":["--flag"],"environment":["A=1","B=2"]},
+            "publishedPorts":[{"containerPort":7601,"hostPort":17601,"proto":"tcp"}],
+            "mounts":[{"source":"/tmp","destination":"/mnt"}]
+        }}]"#;
+        let spec = parse_inspect(raw).unwrap();
+        assert_eq!(spec.spec.name, "map-node");
+        assert_eq!(spec.spec.image, "127.0.0.1:15000/mixumos:fix1");
+        assert_eq!(spec.image_digest.as_deref(), Some("sha256:abc"));
+        assert_eq!(spec.spec.ports[0].host, 17601);
+        assert_eq!(spec.spec.ports[0].container, 7601);
+        assert_eq!(spec.spec.env.get("A").map(String::as_str), Some("1"));
+        assert_eq!(spec.spec.command, vec!["/entrypoint.sh", "--flag"]);
+        assert_eq!(spec.spec.mounts[0].source, "/tmp");
+        assert_eq!(spec.spec.mounts[0].target, "/mnt");
+    }
+
+    #[tokio::test]
+    #[ignore = "需要本机 Apple Container 服务与 map-node 容器"]
+    async fn live_inspect_map_node() {
+        let spec = backend().inspect_container("map-node").await.unwrap();
+        println!("{spec:?}");
+        assert_eq!(spec.spec.name, "map-node");
+        assert!(!spec.spec.image.is_empty());
+        assert!(
+            spec.spec.ports
+                .iter()
+                .any(|port| port.container == 7601 && port.host == 17601),
+            "应包含 17601->7601"
+        );
+        assert_eq!(
+            spec.spec.env.get("PATH").map(String::as_str),
+            Some("/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+        );
     }
 }

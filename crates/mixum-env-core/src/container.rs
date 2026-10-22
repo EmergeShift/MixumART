@@ -98,6 +98,16 @@ pub struct CreateSpec {
     pub command: Vec<String>,
 }
 
+/// `inspect` 的完整结果：可重建的 spec + 镜像 digest（不塞进 image 引用，
+/// 避免部分 runtime 不认 `repo:tag@sha256:...` 的拉取格式）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InspectedContainer {
+    pub spec: CreateSpec,
+    #[serde(default)]
+    pub image_digest: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

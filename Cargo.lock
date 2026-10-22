@@ -2754,6 +2754,7 @@ dependencies = [
  "async-trait",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.21",
  "tokio",
 ]
@@ -2762,6 +2763,7 @@ dependencies = [
 name = "mixum-env-desktop"
 version = "0.1.0"
 dependencies = [
+ "dirs 6.0.0",
  "image",
  "keyring",
  "mixum-env-core",
@@ -2779,6 +2781,7 @@ dependencies = [
  "portable-pty",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tauri",
  "tauri-build",
  "tokio",
