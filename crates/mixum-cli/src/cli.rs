@@ -78,6 +78,12 @@ pub enum EnvCommand {
     },
     /// Create a MixumOS environment.
     Create(CreateArgs),
+    /// Recreate an env on a new base while keeping its named work/home volumes.
+    Rebase {
+        selector: String,
+        #[arg(long)]
+        base: String,
+    },
     /// Show one environment.
     Show { selector: String },
     /// Start an environment.

@@ -175,6 +175,15 @@ pub fn resolve_data_dir(explicit: Option<&Path>) -> Result<PathBuf> {
     Ok(base.join("dev.mixum.agentenv").join("mixum-cli"))
 }
 
+pub fn mount_volume(source: &str, target: &str) -> mixum_env_core::Mount {
+    mixum_env_core::Mount {
+        kind: "volume".into(),
+        source: source.into(),
+        target: target.into(),
+        read_only: false,
+    }
+}
+
 pub fn now_ms() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

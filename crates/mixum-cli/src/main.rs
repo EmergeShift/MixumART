@@ -70,6 +70,9 @@ async fn run(cli: Cli) -> Result<(), output::CliError> {
         Command::Env { command } => match command {
             EnvCommand::List { all } => env::list(&data_dir, all, cli.json).await,
             EnvCommand::Create(args) => env::create(&data_dir, args, cli.json).await,
+            EnvCommand::Rebase { selector, base } => {
+                env::rebase(&data_dir, &selector, &base, cli.json).await
+            }
             EnvCommand::Show { selector } => env::show(&data_dir, &selector, cli.json).await,
             EnvCommand::Start { selector } => {
                 env::change_state(&data_dir, &selector, env::StateChange::Start, cli.json).await
