@@ -34,10 +34,7 @@ pub fn install(json: bool) -> Result<()> {
     });
     std::fs::write(&manifest, serde_json::to_vec_pretty(&body).unwrap())
         .map_err(|error| CliError::io(format!("write native host manifest: {error}")))?;
-    let extension_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../extensions/mixum-browser")
-        .canonicalize()
-        .unwrap_or_else(|_| PathBuf::from("extensions/mixum-browser"));
+    let extension_dir = extension_dir()?;
     if json {
         output::print_json(&json!({
             "nativeHost": manifest,
@@ -188,6 +185,33 @@ pub async fn share(data_dir: &Path, selector: &str, domains: &[String], json: bo
     Ok(())
 }
 
+fn extension_dir() -> Result<PathBuf> {
+    let candidates = [
+        std::env::var_os("MIXUM_EXTENSION_DIR").map(PathBuf::from),
+        std::env::current_exe().ok().map(|exe| {
+            exe.parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join("../share/mixum/extensions/mixum-browser")
+        }),
+        std::env::current_exe().ok().map(|exe| {
+            exe.parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join("../Resources/extensions/mixum-browser")
+        }),
+        Some(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../extensions/mixum-browser")),
+    ];
+    for candidate in candidates.into_iter().flatten() {
+        if candidate.join("manifest.json").is_file() {
+            return candidate
+                .canonicalize()
+                .map_err(|error| CliError::io(format!("canonicalize extension: {error}")));
+        }
+    }
+    Err(CliError::usage(
+        "extension sources not found; set MIXUM_EXTENSION_DIR or install them under share/mixum/extensions",
+    ))
+}
+
 fn browser_host_path() -> Result<PathBuf> {
     if let Some(path) = std::env::var_os("MIXUM_BROWSER_HOST") {
         return Ok(PathBuf::from(path));
@@ -238,15 +262,10 @@ fn native_manifest_dir() -> Result<PathBuf> {
     ))
 }
 
-
 /// Build the Web Store upload artifact. Chrome's `--load-extension` path is
 /// dev-only; store review consumes this zip.
 pub fn package(out: Option<&str>, json: bool) -> Result<()> {
-    let extension = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
-        .join("extensions")
-        .join("mixum-browser");
+    let extension = extension_dir()?;
     if !extension.join("manifest.json").is_file() {
         return Err(CliError::usage(format!(
             "extension sources not found at {}",
