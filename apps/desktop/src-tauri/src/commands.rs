@@ -1622,6 +1622,7 @@ pub struct ApprovalView {
     pub title: String,
     pub selector: Option<String>,
     pub domains: Vec<String>,
+    pub urls: Vec<String>,
     pub agent_stance: Option<String>,
     pub agent_reason: Option<String>,
     pub created_at_ms: u128,
@@ -1684,6 +1685,17 @@ pub fn list_approvals(app: AppHandle) -> Result<Vec<ApprovalView>, String> {
                     .filter_map(Value::as_str)
                     .map(ToOwned::to_owned)
                     .collect(),
+                urls: value
+                    .get("urls")
+                    .and_then(Value::as_array)
+                    .map(|values| {
+                        values
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .map(ToOwned::to_owned)
+                            .collect()
+                    })
+                    .unwrap_or_default(),
                 agent_stance: None,
                 agent_reason: value
                     .get("reason")
@@ -1707,6 +1719,7 @@ pub fn list_approvals(app: AppHandle) -> Result<Vec<ApprovalView>, String> {
                     .to_owned(),
                 selector: None,
                 domains: Vec::new(),
+                urls: Vec::new(),
                 agent_stance: value
                     .get("agentStance")
                     .and_then(Value::as_str)

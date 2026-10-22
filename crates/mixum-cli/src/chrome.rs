@@ -52,7 +52,7 @@ pub fn install(json: bool) -> Result<()> {
     Ok(())
 }
 
-pub fn export(domains: &[String], json: bool) -> Result<()> {
+pub fn export(domains: &[String], urls: &[String], json: bool) -> Result<()> {
     if domains.is_empty() {
         return Err(CliError::usage(
             "at least one --domain is required; the user must approve those domains",
@@ -66,7 +66,7 @@ pub fn export(domains: &[String], json: bool) -> Result<()> {
         ))
     })?;
     stream.set_read_timeout(Some(Duration::from_secs(20))).ok();
-    let request = json!({"type":"export","domains":domains});
+    let request = json!({"type":"export","domains":domains,"urls":urls});
     writeln!(stream, "{request}")
         .map_err(|error| CliError::runtime(format!("send bridge request: {error}")))?;
     let mut line = String::new();
@@ -99,11 +99,20 @@ pub fn export(domains: &[String], json: bool) -> Result<()> {
             .map(Vec::len)
             .unwrap_or(0);
         println!("{cookies} cookies, {tabs} tabs for {}", domains.join(", "));
+        if !urls.is_empty() {
+            println!("urls: {}", urls.join(", "));
+        }
     }
     Ok(())
 }
 
-pub async fn share(data_dir: &Path, selector: &str, domains: &[String], json: bool) -> Result<()> {
+pub async fn share(
+    data_dir: &Path,
+    selector: &str,
+    domains: &[String],
+    urls: &[String],
+    json: bool,
+) -> Result<()> {
     if domains.is_empty() {
         return Err(CliError::usage("at least one --domain is required"));
     }
@@ -115,7 +124,7 @@ pub async fn share(data_dir: &Path, selector: &str, domains: &[String], json: bo
         ))
     })?;
     stream.set_read_timeout(Some(Duration::from_secs(20))).ok();
-    let request = json!({"type":"export","domains":domains});
+    let request = json!({"type":"export","domains":domains,"urls":urls});
     writeln!(stream, "{request}")
         .map_err(|error| CliError::runtime(format!("send bridge request: {error}")))?;
     let mut line = String::new();

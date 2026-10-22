@@ -63,12 +63,12 @@ added before a public store release.
 
 ```bash
 # agent asks; prints a request id and the exact human command
-mixum browser request "my env" --domain example.com --reason "read current tab"
+mixum browser request "my env" --domain example.com --url https://example.com/app --reason "read current tab"
 # human approves with host password; share runs on success
 mixum browser approve browser-01...
 # direct human path
-mixum browser export --domain example.com --json
-mixum browser share "my env" --domain example.com
+mixum browser export --domain example.com --url https://example.com/app --json
+mixum browser share "my env" --domain example.com --url https://example.com/app
 ```
 
 `share` uploads a one-shot lease to the container, calls the controller, and
@@ -87,6 +87,9 @@ mixum base commit my-base --tag v1
 
 ## Security
 
+- `--url` is a tab-scope filter (exact or prefix); cookies remain domain-scoped
+  because the cookie API has no path/URL isolation. A URL lease does not make
+  domain cookies safe to show in a snapshot.
 - Cookies are credentials; leases are read-only by default.
 - A lease is scoped to approved domains and deleted after apply.
 - The browser profile is per-container and must not be included in `.mart`/CRIU

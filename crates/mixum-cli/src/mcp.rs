@@ -142,7 +142,7 @@ fn tools() -> Vec<Value> {
         tool(
             "mixum_browser_request",
             "Ask a human to approve Chrome domains for one environment. Approval and the actual share happen only through the human CLI/Mart.",
-            json!({"selector":{"type":"string"},"domains":{"type":"array","items":{"type":"string"}},"reason":{"type":"string"}}),
+            json!({"selector":{"type":"string"},"domains":{"type":"array","items":{"type":"string"}},"urls":{"type":"array","items":{"type":"string"}},"reason":{"type":"string"}}),
             vec!["selector","domains"],
         ),
         tool(
