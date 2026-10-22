@@ -207,6 +207,8 @@ mod tests {
             method: "subagent".into(),
             runtime: "docker".into(),
             image: "mixumos:test".into(),
+            base: None,
+            root: false,
             port: 17601,
             created_at_ms: 1,
             fingerprint: None,
