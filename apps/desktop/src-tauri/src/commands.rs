@@ -1750,3 +1750,25 @@ pub fn deny_approval(app: AppHandle, id: String) -> Result<(), String> {
     let path = approvals_dir(&app)?.join(format!("{id}.json"));
     std::fs::remove_file(path).map_err(|error| error.to_string())
 }
+
+#[tauri::command]
+pub fn approve_browser_approval(app: AppHandle, id: String) -> Result<(), String> {
+    if !id.starts_with("browser-") {
+        return Err("not a browser approval".into());
+    }
+    authenticate_host_privilege()?;
+    let cli = std::env::var("MIXUM_CLI").unwrap_or_else(|_| "mixum".into());
+    let output = std::process::Command::new(&cli)
+        .args(["browser", "approve", &id])
+        .env("MIXUM_HOST_AUTHENTICATED", "1")
+        .output()
+        .map_err(|error| format!("run {cli} browser approve: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "browser approve failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let _ = app; // AppHandle kept for future audit wiring.
+    Ok(())
+}

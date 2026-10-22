@@ -1,6 +1,7 @@
 import { useState } from 'react'
 
 import {
+  approveBrowserApproval,
   approveRootApproval,
   denyApproval,
   errorText,
@@ -24,7 +25,11 @@ export function ApprovalCenter({
     setError(null)
     try {
       if (approve) {
-        await approveRootApproval(id)
+        if (id.startsWith('browser-')) {
+          await approveBrowserApproval(id)
+        } else {
+          await approveRootApproval(id)
+        }
       } else {
         await denyApproval(id)
       }
@@ -66,7 +71,17 @@ export function ApprovalCenter({
               </p>
             )}
             {item.kind === 'browser' ? (
-              <pre className="privilege-command">{item.action}</pre>
+              <>
+                <pre className="privilege-command">{item.action}</pre>
+                <div className="privilege-actions">
+                  <button type="button" className="btn ghost" disabled={busy === item.id} onClick={() => void act(item.id, false)}>
+                    拒绝
+                  </button>
+                  <button type="button" className="btn primary" disabled={busy === item.id} onClick={() => void act(item.id, true)}>
+                    {busy === item.id ? '认证并共享…' : '批准并共享'}
+                  </button>
+                </div>
+              </>
             ) : (
               <div className="privilege-actions">
                 <button type="button" className="btn ghost" disabled={busy === item.id} onClick={() => void act(item.id, false)}>

@@ -150,6 +150,11 @@ fn save(data_dir: &Path, request: &RootRequest) -> Result<()> {
 }
 
 fn host_authenticate() -> Result<()> {
+    // MixumART performs the OS prompt first and sets this marker for the
+    // single child process; do not expose it as a normal user-facing option.
+    if std::env::var("MIXUM_HOST_AUTHENTICATED").ok().as_deref() == Some("1") {
+        return Ok(());
+    }
     use std::io::IsTerminal;
     if !std::io::stdin().is_terminal() {
         return Err(CliError::usage(
