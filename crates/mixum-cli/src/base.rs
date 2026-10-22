@@ -406,18 +406,33 @@ fn export_rootfs(kind: RuntimeKind, container: &Container, dest: &Path) -> Resul
                 container.id.clone(),
                 "sh".into(),
                 "-c".into(),
-                "sync && tar --xattrs --acls --numeric-owner \
-                 --exclude=./proc --exclude=./sys --exclude=./dev --exclude=./run \
-                 --exclude='./tmp/*' --exclude=./var/lib/mixum \
-                 --exclude=./etc/machine-id --exclude='./etc/ssh/ssh_host_*' \
-                 -cf /tmp/rootfs.tar ."
-                    .into(),
+                "sync && if tar --help 2>&1 | grep -q xattrs; then \
+                   tar --xattrs --acls --numeric-owner \
+                     --exclude=./proc --exclude=./sys --exclude=./dev --exclude=./run \
+                     --exclude='./tmp/*' --exclude=./var/lib/mixum \
+                     --exclude=./etc/machine-id --exclude='./etc/ssh/ssh_host_*' \
+                     -cf /tmp/rootfs.tar .; \
+                 else \
+                   tar --numeric-owner \
+                     --exclude=./proc --exclude=./sys --exclude=./dev --exclude=./run \
+                     --exclude='./tmp/*' --exclude=./var/lib/mixum \
+                     --exclude=./etc/machine-id --exclude='./etc/ssh/ssh_host_*' \
+                     -cf /tmp/rootfs.tar .; \
+                 fi"
+                .into(),
             ],
         ),
         RuntimeKind::Wsl2 => {
-            return Err(CliError::usage(
-                "base commit is not implemented for WSL2 yet",
-            ))
+            let status = Command::new("wsl.exe")
+                .args(["--export", &container.id, &dest.display().to_string()])
+                .status()
+                .map_err(|error| CliError::runtime(format!("wsl export: {error}")))?;
+            if !status.success() {
+                return Err(CliError::runtime(format!(
+                    "wsl export exited with {status}"
+                )));
+            }
+            return Ok(());
         }
     };
     run(program, &exec_args, "export rootfs")?;
