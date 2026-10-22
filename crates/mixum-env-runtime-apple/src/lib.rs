@@ -305,9 +305,17 @@ fn parse_inspect(raw: &str) -> Result<CreateSpec, EnvError> {
         .next()
         .ok_or_else(|| EnvError::Parse("container inspect 返回空数组".into()))?;
     let config = entry.configuration;
+    let image = config
+        .image
+        .descriptor
+        .as_ref()
+        .map(|descriptor| descriptor.digest.clone())
+        .filter(|digest| digest.starts_with("sha256:"))
+        .map(|digest| format!("{}@{}", config.image.reference, digest))
+        .unwrap_or(config.image.reference);
     Ok(CreateSpec {
         name: config.id,
-        image: config.image.reference,
+        image,
         ports: config
             .published_ports
             .iter()
@@ -357,6 +365,14 @@ struct InspectConfiguration {
 #[serde(rename_all = "camelCase")]
 struct InspectImage {
     reference: String,
+    #[serde(default)]
+    descriptor: Option<InspectDescriptor>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct InspectDescriptor {
+    digest: String,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -450,13 +466,13 @@ mod tests {
     fn parses_inspect_spec() {
         let raw = r#"[{"configuration":{
             "id":"map-node",
-            "image":{"reference":"127.0.0.1:15000/mixumos:fix1"},
+            "image":{"reference":"127.0.0.1:15000/mixumos:fix1","descriptor":{"digest":"sha256:abc"}},
             "initProcess":{"executable":"/entrypoint.sh","arguments":["--flag"],"environment":["A=1","B=2"]},
             "publishedPorts":[{"containerPort":7601,"hostPort":17601,"proto":"tcp"}]
         }}]"#;
         let spec = parse_inspect(raw).unwrap();
         assert_eq!(spec.name, "map-node");
-        assert_eq!(spec.image, "127.0.0.1:15000/mixumos:fix1");
+        assert_eq!(spec.image, "127.0.0.1:15000/mixumos:fix1@sha256:abc");
         assert_eq!(spec.ports[0].host, 17601);
         assert_eq!(spec.ports[0].container, 7601);
         assert_eq!(spec.env.get("A").map(String::as_str), Some("1"));
