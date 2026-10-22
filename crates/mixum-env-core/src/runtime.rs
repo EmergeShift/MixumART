@@ -154,6 +154,12 @@ pub trait RuntimeBackend: Send + Sync {
     async fn load_image(&self, _path: &str) -> Result<(), EnvError> {
         Err(EnvError::unimplemented("load_image"))
     }
+
+    /// 读取容器里的 agentd admin token，用于 MART 本地自动配对。
+    /// 这是本地 exec 特权；token 不会返回给 WebView/日志。
+    async fn admin_token(&self, _id: &str) -> Result<String, EnvError> {
+        Err(EnvError::unimplemented("admin_token"))
+    }
 }
 
 /// 后端注册表。应用启动时装配一次，之后只读。

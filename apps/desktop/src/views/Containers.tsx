@@ -3,14 +3,15 @@ import { listen } from '@tauri-apps/api/event'
 
 import {
   closeContainerTerminal,
+  connectEnvironment,
   containerTerminalInput,
   createEnvironment,
   errorText,
   listContainers,
-  listSurfaces,
+  listEnvironmentSurfaces,
   loadEnvironmentConnections,
   openContainerTerminal,
-  openSurfaceWindow,
+  openEnvironmentSurface,
   runtimeLogs,
   removeEnvironment,
   removeEnvironmentConnection,
@@ -24,6 +25,7 @@ import {
 import type {
   AgentMode,
   BackendStatus,
+  ConnectionInfo,
   Container,
   EnvironmentConnection,
   RuntimeKind,
@@ -68,7 +70,7 @@ export function Containers({ backends }: Props) {
   )
   const [kind, setKind] = useState<RuntimeKind | null>(null)
   const [containers, setContainers] = useState<Container[] | null>(null)
-  const [connections, setConnections] = useState<Record<string, EnvironmentConnection>>({})
+  const [connections, setConnections] = useState<Record<string, ConnectionInfo>>({})
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [editor, setEditor] = useState<Container | null>(null)
@@ -146,7 +148,7 @@ export function Containers({ backends }: Props) {
     setBrowser(null)
     setDraft({
       addr: existing?.addr ?? defaultAddress(container),
-      token: existing?.token ?? '',
+      token: '',
       fingerprint: existing?.fingerprint ?? '',
     })
   }
@@ -164,12 +166,7 @@ export function Containers({ backends }: Props) {
     }
   }
 
-  const browse = async (container: Container, profile?: EnvironmentConnection) => {
-    const connection = profile ?? connections[container.id]
-    if (!connection) {
-      openEditor(container)
-      return
-    }
+  const browse = async (container: Container) => {
     setEditor(null)
     setTerminal(null)
     setBrowser(container)
@@ -178,18 +175,24 @@ export function Containers({ backends }: Props) {
     setSurfaceLoading(true)
     void loadSnapshots(container)
     try {
-      setSurfaces(
-        await listSurfaces(
-          connection.addr,
-          connection.token,
-          connection.fingerprint ?? undefined,
-        ),
-      )
+      setSurfaces(await listEnvironmentSurfaces(container.id))
     } catch (err) {
       setSurfaceError(errorText(err))
       setSurfaces([])
     } finally {
       setSurfaceLoading(false)
+    }
+  }
+
+  const autoConnect = async () => {
+    if (!editor || !kind) return
+    setSurfaceError(null)
+    try {
+      const info = await connectEnvironment(kind, editor.id, draft.addr.trim() || defaultAddress(editor))
+      setConnections((previous) => ({ ...previous, [editor.id]: info }))
+      await browse(editor)
+    } catch (err) {
+      setSurfaceError(errorText(err))
     }
   }
 
@@ -206,8 +209,11 @@ export function Containers({ backends }: Props) {
     }
     try {
       await saveEnvironmentConnection(editor.id, connection)
-      setConnections((previous) => ({ ...previous, [editor.id]: connection }))
-      await browse(editor, connection)
+      setConnections((previous) => ({
+        ...previous,
+        [editor.id]: { addr: connection.addr, fingerprint: connection.fingerprint },
+      }))
+      await browse(editor)
     } catch (err) {
       setSurfaceError(errorText(err))
     }
@@ -235,12 +241,7 @@ export function Containers({ backends }: Props) {
     if (!connection) return
     setSurfaceError(null)
     try {
-      await openSurfaceWindow(
-        connection.addr,
-        connection.token,
-        connection.fingerprint ?? undefined,
-        surface,
-      )
+      await openEnvironmentSurface(browser.id, surface)
     } catch (err) {
       setSurfaceError(errorText(err))
     }
@@ -295,6 +296,13 @@ export function Containers({ backends }: Props) {
 
   const openTerminal = async (container: Container) => {
     if (!kind) return
+    if (!localStorage.getItem('mixum.terminal.ack')) {
+      const accepted = window.confirm(
+        '终端会以本机用户身份进入容器，拥有该环境的完全控制权；不是 MAP 监看权限。继续？',
+      )
+      if (!accepted) return
+      localStorage.setItem('mixum.terminal.ack', '1')
+    }
     setBrowser(null)
     setEditor(null)
     setTerminal(container)
@@ -529,7 +537,7 @@ export function Containers({ backends }: Props) {
               <div className="section-head">
                 <div>
                   <h3>连接 {editor.name}</h3>
-                  <p>地址/指纹保存在应用数据目录，访问令牌写入系统钥匙串；都不会写进快照。</p>
+                  <p>MART 可从容器内 admin-token 自动配对；令牌写入系统钥匙串，不会显示或写进快照。</p>
                 </div>
                 <button className="ghost" onClick={() => setEditor(null)}>
                   取消
@@ -548,7 +556,7 @@ export function Containers({ backends }: Props) {
                   />
                 </div>
                 <div className="field">
-                  <label htmlFor="container-map-token">访问令牌</label>
+                  <label htmlFor="container-map-token">访问令牌（仅手动连接）</label>
                   <input
                     id="container-map-token"
                     className="mono"
@@ -573,8 +581,11 @@ export function Containers({ backends }: Props) {
               </div>
               {surfaceError && <div className="error">{surfaceError}</div>}
               <div className="connect-actions">
-                <button className="primary" onClick={() => void saveAndBrowse()}>
-                  保存并查看窗口
+                <button className="primary" onClick={() => void autoConnect()}>
+                  自动连接
+                </button>
+                <button className="ghost" onClick={() => void saveAndBrowse()}>
+                  手动保存令牌
                 </button>
                 <button className="ghost" onClick={() => void removeConnection(editor)}>
                   移除连接档案
