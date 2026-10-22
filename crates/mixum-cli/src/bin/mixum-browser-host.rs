@@ -46,11 +46,7 @@ fn main() {
     let read_pending = Arc::clone(&pending);
     std::thread::spawn(move || {
         let mut stdin = io::stdin();
-        loop {
-            let message = match read_native(&mut stdin) {
-                Ok(message) => message,
-                Err(_) => break,
-            };
+        while let Ok(message) = read_native(&mut stdin) {
             let id = message
                 .get("id")
                 .and_then(Value::as_str)
