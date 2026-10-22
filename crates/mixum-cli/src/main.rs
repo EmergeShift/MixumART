@@ -200,6 +200,7 @@ async fn run(cli: Cli) -> Result<(), output::CliError> {
         },
         Command::Browser { command } => match command {
             BrowserCommand::Install => chrome::install(cli.json),
+            BrowserCommand::Status => chrome::status(cli.json),
             BrowserCommand::Export { domains, urls } => chrome::export(&domains, &urls, cli.json),
             BrowserCommand::Share {
                 selector,

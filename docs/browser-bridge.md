@@ -20,6 +20,7 @@ container: mixum-browser apply lease.json
 ## Install
 
 ```bash
+mixum browser status   # manifest / host binary / socket / next step
 mixum browser install
 ```
 
