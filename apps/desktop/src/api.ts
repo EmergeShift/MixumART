@@ -388,5 +388,8 @@ export const listApprovals = () =>
 export const approveRootApproval = (id: string) =>
   isDemo() ? demoDelay(undefined) : invoke<void>('approve_root_approval', { id })
 
+export const approveBrowserApproval = (id: string) =>
+  isDemo() ? demoDelay(undefined) : invoke<void>('approve_browser_approval', { id })
+
 export const denyApproval = (id: string) =>
   isDemo() ? demoDelay(undefined) : invoke<void>('deny_approval', { id })

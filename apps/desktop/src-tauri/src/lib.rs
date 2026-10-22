@@ -151,6 +151,7 @@ pub fn run() {
             commands::environment_privilege_decide,
             commands::list_approvals,
             commands::approve_root_approval,
+            commands::approve_browser_approval,
             commands::deny_approval,
             commands::list_surfaces,
             commands::open_surface_window,
