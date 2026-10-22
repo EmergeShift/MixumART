@@ -120,6 +120,7 @@ pub fn run() {
             commands::set_agent_credential,
             commands::delete_agent_credential,
             commands::has_agent_credential,
+  commands::get_agent_credential,
             commands::load_agent_profiles,
             commands::save_agent_profile,
             commands::remove_agent_profile,
