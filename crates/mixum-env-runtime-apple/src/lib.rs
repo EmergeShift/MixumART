@@ -332,7 +332,15 @@ fn parse_inspect(raw: &str) -> Result<InspectedContainer, EnvError> {
                 protocol: port.proto.clone(),
             })
             .collect(),
-        mounts: Vec::new(),
+        mounts: config
+            .mounts
+            .iter()
+            .map(|mount| mixum_env_core::container::Mount {
+                source: mount.source.clone(),
+                target: mount.destination.clone(),
+                read_only: mount.read_only,
+            })
+            .collect(),
         env: config
             .init_process
             .environment
@@ -367,6 +375,17 @@ struct InspectConfiguration {
     init_process: InspectProcess,
     #[serde(default)]
     published_ports: Vec<InspectPort>,
+    #[serde(default)]
+    mounts: Vec<InspectMount>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct InspectMount {
+    source: String,
+    destination: String,
+    #[serde(default)]
+    read_only: bool,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -476,7 +495,8 @@ mod tests {
             "id":"map-node",
             "image":{"reference":"127.0.0.1:15000/mixumos:fix1","descriptor":{"digest":"sha256:abc"}},
             "initProcess":{"executable":"/entrypoint.sh","arguments":["--flag"],"environment":["A=1","B=2"]},
-            "publishedPorts":[{"containerPort":7601,"hostPort":17601,"proto":"tcp"}]
+            "publishedPorts":[{"containerPort":7601,"hostPort":17601,"proto":"tcp"}],
+            "mounts":[{"source":"/tmp","destination":"/mnt"}]
         }}]"#;
         let spec = parse_inspect(raw).unwrap();
         assert_eq!(spec.spec.name, "map-node");
@@ -486,6 +506,8 @@ mod tests {
         assert_eq!(spec.spec.ports[0].container, 7601);
         assert_eq!(spec.spec.env.get("A").map(String::as_str), Some("1"));
         assert_eq!(spec.spec.command, vec!["/entrypoint.sh", "--flag"]);
+        assert_eq!(spec.spec.mounts[0].source, "/tmp");
+        assert_eq!(spec.spec.mounts[0].target, "/mnt");
     }
 
     #[tokio::test]
