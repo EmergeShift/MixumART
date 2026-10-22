@@ -204,6 +204,20 @@ async fn run(cli: Cli) -> Result<(), output::CliError> {
             BrowserCommand::Share { selector, domains } => {
                 chrome::share(&data_dir, &selector, &domains, cli.json).await
             }
+            BrowserCommand::Request {
+                selector,
+                domains,
+                reason,
+            } => approval::browser_request(&data_dir, &selector, &domains, &reason, cli.json),
+            BrowserCommand::Approve { id } => {
+                let request = approval::browser_mark_approved(&data_dir, &id)?;
+                let result =
+                    chrome::share(&data_dir, &request.selector, &request.domains, cli.json).await;
+                if result.is_ok() {
+                    approval::browser_consume(&data_dir, &id)?;
+                }
+                result
+            }
         },
         Command::Base { command } => match command {
             BaseCommand::Create {

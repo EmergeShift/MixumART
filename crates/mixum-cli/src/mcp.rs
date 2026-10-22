@@ -140,6 +140,12 @@ fn tools() -> Vec<Value> {
             vec!["selector"],
         ),
         tool(
+            "mixum_browser_request",
+            "Ask a human to approve Chrome domains for one environment. Approval and the actual share happen only through the human CLI/Mart.",
+            json!({"selector":{"type":"string"},"domains":{"type":"array","items":{"type":"string"}},"reason":{"type":"string"}}),
+            vec!["selector","domains"],
+        ),
+        tool(
             "mixum_root_request",
             "Ask a human to approve a root container. Returns a request id and exact CLI approval command; approval is never performed by the agent.",
             json!({"title":{"type":"string"},"image":{"type":"string"},"stance":{"type":"string","enum":["agree","disagree"]},"reason":{"type":"string"}}),
@@ -426,6 +432,27 @@ fn call_tool(name: &str, arguments: &Value) -> std::result::Result<Value, String
                     }
                     _ => {}
                 }
+            }
+        }
+        "mixum_browser_request" => {
+            let selector = arguments
+                .get("selector")
+                .and_then(Value::as_str)
+                .ok_or("selector is required")?;
+            let domains = arguments
+                .get("domains")
+                .and_then(Value::as_array)
+                .ok_or("domains is required")?;
+            let reason = arguments
+                .get("reason")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            args.extend(["browser".into(), "request".into(), selector.into()]);
+            for domain in domains.iter().filter_map(Value::as_str) {
+                args.extend(["--domain".into(), domain.into()]);
+            }
+            if !reason.is_empty() {
+                args.extend(["--reason".into(), reason.into()]);
             }
         }
         "mixum_root_request" => {
