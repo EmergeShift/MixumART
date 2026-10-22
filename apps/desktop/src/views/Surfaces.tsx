@@ -163,9 +163,10 @@ export function Surfaces({ backends, onOpenEnvironments }: Props) {
       try {
         list = await gatewayNodes(addr, token, fingerprint || undefined)
         setNodes(list)
-      } catch {
+      } catch (err) {
         // 直连 agentd 不是 gateway:没有节点可选。
         setNodes([])
+        setError(`节点列表获取失败: ${errorText(err)}`)
       }
       const effective = node && list.includes(node) ? node : (list[0] ?? '')
       if (effective !== node) setNode(effective)
