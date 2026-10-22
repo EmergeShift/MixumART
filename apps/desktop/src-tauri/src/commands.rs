@@ -1741,9 +1741,16 @@ pub fn list_approvals(app: AppHandle) -> Result<Vec<ApprovalView>, String> {
     Ok(out)
 }
 
+fn valid_approval_id(id: &str, prefix: &str) -> bool {
+    id.starts_with(prefix)
+        && id
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+}
+
 #[tauri::command]
 pub fn approve_root_approval(app: AppHandle, id: String) -> Result<(), String> {
-    if !id.starts_with("root-") {
+    if !valid_approval_id(&id, "root-") {
         return Err("not a root approval".into());
     }
     authenticate_host_privilege()?;
@@ -1759,7 +1766,7 @@ pub fn approve_root_approval(app: AppHandle, id: String) -> Result<(), String> {
 
 #[tauri::command]
 pub fn deny_approval(app: AppHandle, id: String) -> Result<(), String> {
-    if !id.starts_with("root-") && !id.starts_with("browser-") {
+    if !valid_approval_id(&id, "root-") && !valid_approval_id(&id, "browser-") {
         return Err("invalid approval id".into());
     }
     let path = approvals_dir(&app)?.join(format!("{id}.json"));
@@ -1770,7 +1777,7 @@ pub fn deny_approval(app: AppHandle, id: String) -> Result<(), String> {
 
 #[tauri::command]
 pub fn approve_browser_approval(app: AppHandle, id: String) -> Result<(), String> {
-    if !id.starts_with("browser-") {
+    if !valid_approval_id(&id, "browser-") {
         return Err("not a browser approval".into());
     }
     authenticate_host_privilege()?;
