@@ -154,20 +154,21 @@ pub async fn share(data_dir: &Path, selector: &str, domains: &[String], json: bo
     let backend = registry
         .get(resolved.kind)
         .ok_or_else(|| CliError::runtime("runtime disappeared"))?;
-    let output_text = backend
+    let controller = backend
         .exec_capture(
             &resolved.container.id,
             &["mixum-browser", "apply", &container_path],
         )
-        .await
-        .map_err(|error| {
-            CliError::runtime(format!(
-                "container browser controller failed: {error}; install Chromium and mixum-browser in the base first"
-            ))
-        })?;
+        .await;
+    // Never leave a cookie lease behind, even when the controller fails.
     let _ = backend
         .exec_capture(&resolved.container.id, &["rm", "-f", &container_path])
         .await;
+    let output_text = controller.map_err(|error| {
+        CliError::runtime(format!(
+            "container browser controller failed: {error}; install Chromium and mixum-browser in the base first"
+        ))
+    })?;
     if json {
         output::print_json(&json!({
             "environment": resolved.container.name,
