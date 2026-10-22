@@ -56,8 +56,11 @@ pub enum RuntimeCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum EnvCommand {
-    /// List environments across ready runtimes.
-    List,
+    /// List managed MixumOS environments. Use --all for every runtime container.
+    List {
+        #[arg(long)]
+        all: bool,
+    },
     /// Create a MixumOS environment.
     Create(CreateArgs),
     /// Show one environment.

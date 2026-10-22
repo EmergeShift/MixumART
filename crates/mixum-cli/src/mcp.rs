@@ -84,8 +84,8 @@ fn tools() -> Vec<Value> {
     vec![
         tool(
             "mixum_env_list",
-            "List MixumART environments across ready container runtimes.",
-            json!({}),
+            "List managed MixumOS environments. Set all=true to include every runtime container.",
+            json!({"all":{"type":"boolean","default":false}}),
             vec![],
         ),
         tool(
@@ -177,6 +177,13 @@ fn call_tool(name: &str, arguments: &Value) -> std::result::Result<Value, String
     match name {
         "mixum_env_list" => {
             args.extend(["env", "list"].map(String::from));
+            if arguments
+                .get("all")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                args.push("--all".into());
+            }
         }
         "mixum_env_create" => {
             let title = arguments

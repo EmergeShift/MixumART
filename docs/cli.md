@@ -15,7 +15,7 @@ mixcomp        容器内 compositor，保持原名
 ```text
 mixum doctor
 mixum runtime list
-mixum env list
+mixum env list [--all]
 mixum env create --profile mixumos --title TITLE [--method subagent] [--image IMAGE]
 mixum env show SELECTOR
 mixum env start SELECTOR
@@ -54,6 +54,11 @@ state.lock      create 的互斥锁
 ```
 
 `state.json` 损坏时 CLI 直接报错，不会静默重建；这是为了避免丢掉环境归属信息。
+
+## 环境列表
+
+`mixum env list` 默认只显示已托管或镜像名包含 `mixumos` 的环境，避免把构建/普通
+容器混进 Agent 环境列表。`--all` 才会列出 runtime 里的全部容器。
 
 ## Runtime 选择
 
