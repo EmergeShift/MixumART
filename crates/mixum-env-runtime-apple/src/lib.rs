@@ -9,7 +9,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use mixum_env_core::container::{Container, ContainerState, CreateSpec, PortMapping};
+use mixum_env_core::container::{
+    Container, ContainerState, CreateSpec, InspectedContainer, PortMapping,
+};
 use mixum_env_core::error::EnvError;
 use mixum_env_core::process;
 use mixum_env_core::runtime::{RuntimeBackend, RuntimeKind, RuntimeStatus};
@@ -68,7 +70,7 @@ impl RuntimeBackend for AppleContainerBackend {
         parse_list(&stdout)
     }
 
-    async fn inspect_container(&self, id: &str) -> Result<CreateSpec, EnvError> {
+    async fn inspect_container(&self, id: &str) -> Result<InspectedContainer, EnvError> {
         let out = process::run("container", &["inspect", id], LIST_TIMEOUT).await?;
         if !out.success {
             return Err(EnvError::CommandFailed {
@@ -115,6 +117,13 @@ impl RuntimeBackend for AppleContainerBackend {
     async fn start_container(&self, id: &str) -> Result<(), EnvError> {
         let out = process::run("container", &["start", id], WRITE_TIMEOUT).await?;
         out.into_stdout("container start").map(|_| ())
+    }
+
+    async fn exec_capture(&self, id: &str, command: &[&str]) -> Result<String, EnvError> {
+        let mut args: Vec<&str> = vec!["exec", id];
+        args.extend_from_slice(command);
+        let out = process::run("container", &args, WRITE_TIMEOUT).await?;
+        out.into_stdout("container exec")
     }
 
     async fn stop_container(&self, id: &str) -> Result<(), EnvError> {
@@ -298,24 +307,22 @@ impl AppleEntry {
     }
 }
 
-fn parse_inspect(raw: &str) -> Result<CreateSpec, EnvError> {
+fn parse_inspect(raw: &str) -> Result<InspectedContainer, EnvError> {
     let entries: Vec<InspectEntry> = serde_json::from_str(raw)?;
     let entry = entries
         .into_iter()
         .next()
         .ok_or_else(|| EnvError::Parse("container inspect 返回空数组".into()))?;
     let config = entry.configuration;
-    let image = config
+    let image_digest = config
         .image
         .descriptor
         .as_ref()
         .map(|descriptor| descriptor.digest.clone())
-        .filter(|digest| digest.starts_with("sha256:"))
-        .map(|digest| format!("{}@{}", config.image.reference, digest))
-        .unwrap_or(config.image.reference);
-    Ok(CreateSpec {
+        .filter(|digest| digest.starts_with("sha256:"));
+    let spec = CreateSpec {
         name: config.id,
-        image,
+        image: config.image.reference,
         ports: config
             .published_ports
             .iter()
@@ -342,7 +349,8 @@ fn parse_inspect(raw: &str) -> Result<CreateSpec, EnvError> {
                 .chain(config.init_process.arguments)
                 .collect()
         },
-    })
+    };
+    Ok(InspectedContainer { spec, image_digest })
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -471,12 +479,13 @@ mod tests {
             "publishedPorts":[{"containerPort":7601,"hostPort":17601,"proto":"tcp"}]
         }}]"#;
         let spec = parse_inspect(raw).unwrap();
-        assert_eq!(spec.name, "map-node");
-        assert_eq!(spec.image, "127.0.0.1:15000/mixumos:fix1@sha256:abc");
-        assert_eq!(spec.ports[0].host, 17601);
-        assert_eq!(spec.ports[0].container, 7601);
-        assert_eq!(spec.env.get("A").map(String::as_str), Some("1"));
-        assert_eq!(spec.command, vec!["/entrypoint.sh", "--flag"]);
+        assert_eq!(spec.spec.name, "map-node");
+        assert_eq!(spec.spec.image, "127.0.0.1:15000/mixumos:fix1");
+        assert_eq!(spec.image_digest.as_deref(), Some("sha256:abc"));
+        assert_eq!(spec.spec.ports[0].host, 17601);
+        assert_eq!(spec.spec.ports[0].container, 7601);
+        assert_eq!(spec.spec.env.get("A").map(String::as_str), Some("1"));
+        assert_eq!(spec.spec.command, vec!["/entrypoint.sh", "--flag"]);
     }
 
     #[tokio::test]
@@ -484,16 +493,16 @@ mod tests {
     async fn live_inspect_map_node() {
         let spec = backend().inspect_container("map-node").await.unwrap();
         println!("{spec:?}");
-        assert_eq!(spec.name, "map-node");
-        assert!(!spec.image.is_empty());
+        assert_eq!(spec.spec.name, "map-node");
+        assert!(!spec.spec.image.is_empty());
         assert!(
-            spec.ports
+            spec.spec.ports
                 .iter()
                 .any(|port| port.container == 7601 && port.host == 17601),
             "应包含 17601->7601"
         );
         assert_eq!(
-            spec.env.get("PATH").map(String::as_str),
+            spec.spec.env.get("PATH").map(String::as_str),
             Some("/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
         );
     }

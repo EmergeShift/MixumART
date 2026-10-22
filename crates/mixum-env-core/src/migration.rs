@@ -16,6 +16,9 @@ pub struct MigrationManifest {
     pub version: u32,
     pub source: MigrationSource,
     pub container: CreateSpec,
+    /// 镜像 digest（`sha256:...`）；目标端可据此校验/拉取。
+    #[serde(default)]
+    pub image_digest: Option<String>,
     pub mart: MartRef,
     #[serde(default)]
     pub gui_sessions: Vec<serde_json::Value>,
@@ -46,10 +49,12 @@ pub struct MartRef {
 impl MigrationManifest {
     /// 镜像引用里若带 `@sha256:`，取 digest；否则 None（由目标端按 tag pull）。
     pub fn image_digest(&self) -> Option<&str> {
-        self.container
-            .image
-            .split_once("@sha256:")
-            .map(|(_, digest)| digest)
+        self.image_digest.as_deref().or_else(|| {
+            self.container
+                .image
+                .split_once("@sha256:")
+                .map(|(_, digest)| digest)
+        })
     }
 
     pub fn write(&self, path: impl AsRef<Path>) -> std::io::Result<()> {
@@ -87,6 +92,7 @@ mod tests {
                 env: BTreeMap::new(),
                 command: Vec::new(),
             },
+            image_digest: Some("abc".into()),
             mart: MartRef {
                 file: "mixum-01J.mart".into(),
                 sha256: "abc".into(),

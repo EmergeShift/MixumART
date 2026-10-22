@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use mixum_env_core::{
     BackendStatus, Container, CreateSpec, MartRef, MigrationManifest, MigrationSource,
-    RuntimeKind, MIGRATION_VERSION,
+    InspectedContainer, PortMapping, RuntimeKind, MIGRATION_VERSION,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -65,7 +65,7 @@ pub async fn environment_container_spec(
     kind: RuntimeKind,
     container_id: String,
     state: State<'_, AppState>,
-) -> Result<CreateSpec, String> {
+) -> Result<InspectedContainer, String> {
     let backend = state
         .registry
         .get(kind)
@@ -491,6 +491,91 @@ fn connection_for(app: &AppHandle, container_id: &str) -> Result<EnvironmentConn
         .ok_or_else(|| format!("环境 {container_id} 还没有连接档案"))
 }
 
+fn free_host_port(used: &mut std::collections::HashSet<u16>) -> Result<u16, String> {
+    for _ in 0..32 {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0))
+            .map_err(|error| format!("分配端口: {error}"))?;
+        let port = listener
+            .local_addr()
+            .map_err(|error| format!("读取端口: {error}"))?
+            .port();
+        if used.insert(port) {
+            return Ok(port);
+        }
+    }
+    Err("找不到可用端口".into())
+}
+
+async fn wait_agent_token(
+    backend: &dyn mixum_env_core::RuntimeBackend,
+    id: &str,
+) -> Result<String, String> {
+    for _ in 0..120 {
+        if let Ok(output) = backend
+            .exec_capture(id, &["cat", "/var/lib/mixum/admin-token"])
+            .await
+        {
+            let token = output.trim();
+            if !token.is_empty() {
+                return Ok(token.to_owned());
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+    Err("等待 agentd 令牌超时".into())
+}
+
+async fn transfer_node(
+    source: &MapClient,
+    target: &MapClient,
+    node: &str,
+    origin: &str,
+) -> Result<String, String> {
+    let reply = source
+        .snapshot_export(node)
+        .await
+        .map_err(|error| error.to_string())?;
+    let file = reply
+        .get("file")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "snap.export 未返回 file".to_string())?
+        .to_owned();
+    let expected = reply
+        .get("sha256")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let data = source
+        .get_file(&format!("transfers/{file}"))
+        .await
+        .map_err(|error| error.to_string())?;
+    let actual: String = Sha256::digest(&data)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    if !expected.is_empty() && actual != expected {
+        return Err("迁移文件 sha256 校验失败".into());
+    }
+
+    let name = Path::new(&file)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "迁移文件名无效".to_string())?;
+    target
+        .put_file(name, &data)
+        .await
+        .map_err(|error| error.to_string())?;
+    let reply = target
+        .snapshot_import(name, origin)
+        .await
+        .map_err(|error| error.to_string())?;
+    reply
+        .get("node")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| "snap.import 未返回 node".to_string())
+}
+
 async fn snapshot_client(app: &AppHandle, container_id: &str) -> Result<MapClient, String> {
     let connection = connection_for(app, container_id)?;
     MapClient::connect(
@@ -634,6 +719,7 @@ pub async fn environment_snapshot_export(
     container_id: String,
     node: String,
     spec: Option<CreateSpec>,
+    image_digest: Option<String>,
     runtime: Option<String>,
     branch: Option<String>,
 ) -> Result<MigrationFile, String> {
@@ -697,6 +783,7 @@ pub async fn environment_snapshot_export(
                     .unwrap_or(0),
             },
             container: spec,
+            image_digest,
             mart: MartRef {
                 file: name.to_owned(),
                 sha256: actual.clone(),
@@ -736,50 +823,104 @@ pub async fn environment_migrate(
     origin: Option<String>,
 ) -> Result<String, String> {
     let source = snapshot_client(&app, &source_container_id).await?;
-    let reply = source
-        .snapshot_export(&node)
+    let target = snapshot_client(&app, &target_container_id).await?;
+    transfer_node(&source, &target, &node, origin.as_deref().unwrap_or("mixumart")).await
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MigrateNewResult {
+    pub target_container_id: String,
+    pub target_node: String,
+    pub agentd_addr: String,
+}
+
+/// 在本机按源容器规格新建一个环境，然后把 `.mart` 迁移过去。
+/// 端口会重新分配，避免和源容器冲突；agentd 令牌从容器内读取并写入连接档案。
+#[tauri::command]
+pub async fn environment_migrate_new(
+    app: AppHandle,
+    source_container_id: String,
+    source_kind: RuntimeKind,
+    target_kind: RuntimeKind,
+    node: String,
+    name: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<MigrateNewResult, String> {
+    let source_backend = state
+        .registry
+        .get(source_kind)
+        .ok_or_else(|| format!("没有注册 {source_kind} 后端"))?;
+    let inspected = source_backend
+        .inspect_container(&source_container_id)
         .await
         .map_err(|error| error.to_string())?;
-    let file = reply
-        .get("file")
-        .and_then(Value::as_str)
-        .ok_or_else(|| "snap.export 未返回 file".to_string())?
-        .to_owned();
-    let expected = reply
-        .get("sha256")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_owned();
-    let data = source
-        .get_file(&format!("transfers/{file}"))
-        .await
-        .map_err(|error| error.to_string())?;
-    let actual: String = Sha256::digest(&data)
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect();
-    if !expected.is_empty() && actual != expected {
-        return Err("迁移文件 sha256 校验失败".into());
+    let spec = inspected.spec;
+    if !spec.ports.iter().any(|port| port.container == 7601) {
+        return Err("源容器没有映射 agentd 7601，无法自动迁移".into());
     }
 
-    let name = Path::new(&file)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| "迁移文件名无效".to_string())?;
-    let target = snapshot_client(&app, &target_container_id).await?;
-    target
-        .put_file(name, &data)
+    let mut used = std::collections::HashSet::new();
+    let mut agentd_host = None;
+    let mut ports = Vec::new();
+    for port in &spec.ports {
+        let host = free_host_port(&mut used)?;
+        if port.container == 7601 {
+            agentd_host = Some(host);
+        }
+        ports.push(PortMapping {
+            host,
+            container: port.container,
+            protocol: port.protocol.clone(),
+        });
+    }
+    let agentd_host = agentd_host.ok_or_else(|| "没有 agentd 端口映射".to_string())?;
+
+    let name = name
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| format!("mixum-{}", node.chars().take(8).collect::<String>()));
+    let target_backend = state
+        .registry
+        .get(target_kind)
+        .ok_or_else(|| format!("没有注册 {target_kind} 后端"))?;
+    let container = target_backend
+        .create_container(CreateSpec {
+            name,
+            image: spec.image,
+            ports,
+            mounts: Vec::new(),
+            env: spec.env,
+            command: Vec::new(),
+        })
         .await
         .map_err(|error| error.to_string())?;
-    let reply = target
-        .snapshot_import(name, origin.as_deref().unwrap_or("mixumart"))
+    target_backend
+        .start_container(&container.id)
         .await
         .map_err(|error| error.to_string())?;
-    reply
-        .get("node")
-        .and_then(Value::as_str)
-        .map(ToOwned::to_owned)
-        .ok_or_else(|| "snap.import 未返回 node".to_string())
+    let token = wait_agent_token(&*target_backend, &container.id).await?;
+    let addr = format!("127.0.0.1:{agentd_host}");
+    let mut connections = load_connection_map(&app)?;
+    connections.insert(
+        container.id.clone(),
+        EnvironmentConnection {
+            addr: addr.clone(),
+            token: token.clone(),
+            fingerprint: None,
+        },
+    );
+    save_connection_map(&app, &connections)?;
+
+    let source = snapshot_client(&app, &source_container_id).await?;
+    let target = MapClient::connect(&addr, &token, None)
+        .await
+        .map_err(|error| error.to_string())?;
+    let target_node = transfer_node(&source, &target, &node, "mixumart").await?;
+    Ok(MigrateNewResult {
+        target_container_id: container.id,
+        target_node,
+        agentd_addr: addr,
+    })
 }
 
 /// 把本机 `.mart` 上传到目标环境并导入为快照节点。

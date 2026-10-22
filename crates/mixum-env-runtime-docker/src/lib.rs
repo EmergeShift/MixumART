@@ -97,6 +97,13 @@ impl RuntimeBackend for DockerBackend {
         out.into_stdout("docker start").map(|_| ())
     }
 
+    async fn exec_capture(&self, id: &str, command: &[&str]) -> Result<String, EnvError> {
+        let mut args: Vec<&str> = vec!["exec", id];
+        args.extend_from_slice(command);
+        let out = process::run("docker", &args, WRITE_TIMEOUT).await?;
+        out.into_stdout("docker exec")
+    }
+
     async fn stop_container(&self, id: &str) -> Result<(), EnvError> {
         let out = process::run("docker", &["stop", id], WRITE_TIMEOUT).await?;
         out.into_stdout("docker stop").map(|_| ())
