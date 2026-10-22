@@ -35,6 +35,11 @@ pub enum Command {
         #[command(subcommand)]
         command: EnvCommand,
     },
+    /// Root-container consent requests.
+    Root {
+        #[command(subcommand)]
+        command: RootCommand,
+    },
     /// Chrome cookie/tab bridge.
     Browser {
         #[command(subcommand)]
@@ -341,6 +346,32 @@ pub struct CreateArgs {
     /// Create a root container. Human-only: requires typing ROOT after the risk notice.
     #[arg(long)]
     pub root: bool,
+    /// Create a root container using a human-approved request id.
+    #[arg(long)]
+    pub root_request: Option<String>,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum RootCommand {
+    /// Agent-side: create a consent request with stance and reason.
+    Request {
+        #[arg(long)]
+        title: String,
+        #[arg(long)]
+        image: String,
+        #[arg(long, value_enum)]
+        stance: RootStance,
+        #[arg(long, default_value = "")]
+        reason: String,
+    },
+    /// Human-side: approve a request after host-password authentication.
+    Approve { id: String },
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum RootStance {
+    Agree,
+    Disagree,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]

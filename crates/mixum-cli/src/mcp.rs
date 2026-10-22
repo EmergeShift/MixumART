@@ -140,6 +140,12 @@ fn tools() -> Vec<Value> {
             vec!["selector"],
         ),
         tool(
+            "mixum_root_request",
+            "Ask a human to approve a root container. Returns a request id and exact CLI approval command; approval is never performed by the agent.",
+            json!({"title":{"type":"string"},"image":{"type":"string"},"stance":{"type":"string","enum":["agree","disagree"]},"reason":{"type":"string"}}),
+            vec!["title","image","stance"],
+        ),
+        tool(
             "mixum_window_screenshot",
             "Capture one window as a PNG image. Returns MCP image content; this is the agent's screen for computer use.",
             json!({"selector":{"type":"string"},"window":{"type":"integer"}}),
@@ -420,6 +426,37 @@ fn call_tool(name: &str, arguments: &Value) -> std::result::Result<Value, String
                     }
                     _ => {}
                 }
+            }
+        }
+        "mixum_root_request" => {
+            let title = arguments
+                .get("title")
+                .and_then(Value::as_str)
+                .ok_or("title is required")?;
+            let image = arguments
+                .get("image")
+                .and_then(Value::as_str)
+                .ok_or("image is required")?;
+            let stance = arguments
+                .get("stance")
+                .and_then(Value::as_str)
+                .ok_or("stance is required")?;
+            let reason = arguments
+                .get("reason")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            args.extend([
+                "root".into(),
+                "request".into(),
+                "--title".into(),
+                title.into(),
+                "--image".into(),
+                image.into(),
+                "--stance".into(),
+                stance.into(),
+            ]);
+            if !reason.is_empty() {
+                args.extend(["--reason".into(), reason.into()]);
             }
         }
         "mixum_window_screenshot" => {

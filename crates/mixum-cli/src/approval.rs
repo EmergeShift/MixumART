@@ -1,0 +1,174 @@
+//! Local two-party consent records for root containers.
+//!
+//! The agent can create a request (with its stance and reason); only a human at
+//! an interactive terminal can approve it after host-password authentication.
+
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+
+use crate::output::{self, CliError, Result};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RootRequest {
+    pub id: String,
+    pub title: String,
+    pub image: String,
+    /// `agree` or `disagree`; the agent must state why when it agrees.
+    pub agent_stance: String,
+    pub agent_reason: String,
+    pub created_at_ms: u128,
+    #[serde(default)]
+    pub approved: bool,
+    #[serde(default)]
+    pub consumed: bool,
+}
+
+pub fn request(
+    data_dir: &Path,
+    title: &str,
+    image: &str,
+    stance: &str,
+    reason: &str,
+    json: bool,
+) -> Result<()> {
+    if !matches!(stance, "agree" | "disagree") {
+        return Err(CliError::usage("stance must be agree or disagree"));
+    }
+    if stance == "agree" && reason.trim().is_empty() {
+        return Err(CliError::usage(
+            "agent must explain why it agrees to a root container",
+        ));
+    }
+    if title.trim().is_empty() || image.trim().is_empty() {
+        return Err(CliError::usage("title and image are required"));
+    }
+    let id = format!("root-{}", ulid::Ulid::new());
+    let request = RootRequest {
+        id: id.clone(),
+        title: title.trim().to_owned(),
+        image: image.trim().to_owned(),
+        agent_stance: stance.to_owned(),
+        agent_reason: reason.trim().to_owned(),
+        created_at_ms: now_ms(),
+        approved: false,
+        consumed: false,
+    };
+    save(data_dir, &request)?;
+    if json {
+        output::print_json(&json!({
+            "id": id,
+            "approveCommand": format!("mixum root approve {id}"),
+            "request": request,
+        }));
+    } else {
+        println!("root request {id}");
+        println!("agent stance: {stance}");
+        if !reason.trim().is_empty() {
+            println!("agent reason: {}", reason.trim());
+        }
+        println!("approve as human: mixum root approve {id}");
+    }
+    Ok(())
+}
+
+pub fn approve(data_dir: &Path, id: &str, json: bool) -> Result<()> {
+    let mut request = load(data_dir, id)?;
+    if request.consumed {
+        return Err(CliError::conflict("request already consumed"));
+    }
+    if request.approved {
+        return Err(CliError::conflict("request already approved"));
+    }
+    eprintln!("ROOT CONTAINER REQUEST {}", request.id);
+    eprintln!("title: {}", request.title);
+    eprintln!("image: {}", request.image);
+    eprintln!("agent stance: {}", request.agent_stance);
+    eprintln!("agent reason: {}", request.agent_reason);
+    eprintln!("A root container can modify its own system and read its mounted secrets.");
+    host_authenticate()?;
+    request.approved = true;
+    save(data_dir, &request)?;
+    if json {
+        output::print_json(&json!({"id": request.id, "approved": true}));
+    } else {
+        println!("approved root request {}", request.id);
+        println!(
+            "create with: mixum env create --title \"{}\" --image {} --root-request {}",
+            request.title, request.image, request.id
+        );
+    }
+    Ok(())
+}
+
+pub fn approved(data_dir: &Path, id: &str) -> Result<RootRequest> {
+    let request = load(data_dir, id)?;
+    if !request.approved || request.consumed {
+        return Err(CliError::conflict(
+            "root request is not approved or already used",
+        ));
+    }
+    Ok(request)
+}
+
+pub fn consume(data_dir: &Path, id: &str) -> Result<()> {
+    let mut request = load(data_dir, id)?;
+    request.consumed = true;
+    save(data_dir, &request)
+}
+
+fn path(data_dir: &Path, id: &str) -> Result<PathBuf> {
+    if id.is_empty()
+        || !id
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+    {
+        return Err(CliError::usage("invalid root request id"));
+    }
+    Ok(data_dir.join("approvals").join(format!("{id}.json")))
+}
+
+fn load(data_dir: &Path, id: &str) -> Result<RootRequest> {
+    let path = path(data_dir, id)?;
+    let data = std::fs::read(&path)
+        .map_err(|error| CliError::io(format!("read root request: {error}")))?;
+    serde_json::from_slice(&data)
+        .map_err(|error| CliError::io(format!("parse root request: {error}")))
+}
+
+fn save(data_dir: &Path, request: &RootRequest) -> Result<()> {
+    let path = path(data_dir, &request.id)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| CliError::io(format!("create approvals: {error}")))?;
+    }
+    let data = serde_json::to_vec_pretty(request)
+        .map_err(|error| CliError::io(format!("serialize root request: {error}")))?;
+    std::fs::write(path, data).map_err(|error| CliError::io(format!("write root request: {error}")))
+}
+
+fn host_authenticate() -> Result<()> {
+    use std::io::IsTerminal;
+    if !std::io::stdin().is_terminal() {
+        return Err(CliError::usage(
+            "root approval requires an interactive human terminal",
+        ));
+    }
+    let status = std::process::Command::new("sudo")
+        .arg("-v")
+        .status()
+        .map_err(|error| CliError::runtime(format!("host authentication unavailable: {error}")))?;
+    if !status.success() {
+        return Err(CliError::conflict("host authentication failed"));
+    }
+    Ok(())
+}
+
+fn now_ms() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default()
+}
