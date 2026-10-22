@@ -3,10 +3,15 @@ import { listen } from '@tauri-apps/api/event'
 
 import {
   closeContainerTerminal,
+  containerSpec,
   containerTerminalInput,
   createEnvironment,
   errorText,
   listContainers,
+  listMigrations,
+  migrateSnapshot,
+  migrateSnapshotNew,
+  type MigrationFile,
   listSurfaces,
   loadEnvironmentConnections,
   openContainerTerminal,
@@ -15,7 +20,9 @@ import {
   removeEnvironment,
   removeEnvironmentConnection,
   saveEnvironmentConnection,
-  snapshotCreate,
+  snapshotCreateKind,
+  snapshotExport,
+  snapshotImport,
   snapshotRestore,
   snapshotTree,
   startEnvironment,
@@ -88,7 +95,12 @@ export function Containers({ backends }: Props) {
   const [snapshotError, setSnapshotError] = useState<string | null>(null)
   const [snapshotLoading, setSnapshotLoading] = useState(false)
   const [snapshotLabel, setSnapshotLabel] = useState('')
+  const [snapshotKind, setSnapshotKind] = useState('disk')
   const [snapshotAction, setSnapshotAction] = useState<string | null>(null)
+  const [migrations, setMigrations] = useState<MigrationFile[]>([])
+  const [migrationPath, setMigrationPath] = useState('')
+  const [migrationNotice, setMigrationNotice] = useState('')
+  const [migrationTarget, setMigrationTarget] = useState('')
   const [terminal, setTerminal] = useState<Container | null>(null)
   const [terminalId, setTerminalId] = useState<number | null>(null)
   const [terminalLines, setTerminalLines] = useState<string[]>([])
@@ -351,7 +363,7 @@ export function Containers({ backends }: Props) {
     setSnapshotAction('create')
     setSnapshotError(null)
     try {
-      await snapshotCreate(browser.id, snapshotLabel)
+      await snapshotCreateKind(browser.id, snapshotKind, snapshotLabel)
       setSnapshotLabel('')
       await loadSnapshots(browser)
     } catch (err) {
@@ -369,6 +381,97 @@ export function Containers({ backends }: Props) {
     try {
       await snapshotRestore(browser.id, node)
       await loadSnapshots(browser)
+    } catch (err) {
+      setSnapshotError(errorText(err))
+    } finally {
+      setSnapshotAction(null)
+    }
+  }
+
+  const exportSnapshot = async (node: string) => {
+    if (!browser) return
+    setSnapshotAction(`export:${node}`)
+    setSnapshotError(null)
+    setMigrationNotice('')
+    try {
+      let inspected = null
+      if (kind) {
+        try {
+          inspected = await containerSpec(kind, browser.id)
+        } catch {
+          inspected = null
+        }
+      }
+      const file = await snapshotExport(
+        browser.id,
+        node,
+        inspected?.spec ?? null,
+        inspected?.imageDigest ?? null,
+        kind ?? undefined,
+        snapshots?.branch ?? undefined,
+      )
+      setMigrationNotice(`已导出 ${file.path}（${file.size} 字节）`)
+      setMigrations(await listMigrations())
+    } catch (err) {
+      setSnapshotError(errorText(err))
+    } finally {
+      setSnapshotAction(null)
+    }
+  }
+
+  const refreshMigrations = async () => {
+    try {
+      setMigrations(await listMigrations())
+    } catch (err) {
+      setSnapshotError(errorText(err))
+    }
+  }
+
+  const importMigration = async () => {
+    if (!browser || !migrationPath) return
+    if (!window.confirm(`把 ${migrationPath} 导入当前环境？会新增一个快照节点。`)) return
+    setSnapshotAction('import')
+    setSnapshotError(null)
+    setMigrationNotice('')
+    try {
+      const node = await snapshotImport(browser.id, migrationPath)
+      setMigrationNotice(`已导入节点 ${node}`)
+      await loadSnapshots(browser)
+    } catch (err) {
+      setSnapshotError(errorText(err))
+    } finally {
+      setSnapshotAction(null)
+    }
+  }
+
+  const migrateToTarget = async (node: string) => {
+    if (!browser || !migrationTarget) return
+    if (!window.confirm(`把快照 ${node} 迁移到所选环境？`)) return
+    setSnapshotAction(`migrate:${node}`)
+    setSnapshotError(null)
+    setMigrationNotice('')
+    try {
+      const targetNode = await migrateSnapshot(browser.id, migrationTarget, node)
+      setMigrationNotice(`已迁移，目标节点 ${targetNode}`)
+    } catch (err) {
+      setSnapshotError(errorText(err))
+    } finally {
+      setSnapshotAction(null)
+    }
+  }
+
+  const migrateToNew = async (node: string) => {
+    if (!browser || !kind) return
+    if (!window.confirm(`在本机按当前规格新建环境，并把快照 ${node} 迁移过去？`)) return
+    setSnapshotAction(`new:${node}`)
+    setSnapshotError(null)
+    setMigrationNotice('')
+    try {
+      const result = await migrateSnapshotNew(browser.id, kind, kind, node)
+      setMigrationNotice(
+        `已新建 ${result.targetContainerId}，节点 ${result.targetNode}（${result.agentdAddr}）`,
+      )
+      await load()
     } catch (err) {
       setSnapshotError(errorText(err))
     } finally {
@@ -645,6 +748,15 @@ export function Containers({ backends }: Props) {
                   </button>
                 </div>
                 <div className="snapshot-create">
+                  <select
+                    value={snapshotKind}
+                    onChange={(event) => setSnapshotKind(event.target.value)}
+                    title="memory/hybrid 需要运行中的任务 + CRIU"
+                  >
+                    <option value="disk">磁盘</option>
+                    <option value="memory">内存</option>
+                    <option value="hybrid">混合</option>
+                  </select>
                   <input
                     value={snapshotLabel}
                     onChange={(event) => setSnapshotLabel(event.target.value)}
@@ -659,6 +771,45 @@ export function Containers({ backends }: Props) {
                     创建快照
                   </button>
                 </div>
+                <div className="snapshot-create">
+                  <select
+                    value={migrationPath}
+                    onChange={(event) => setMigrationPath(event.target.value)}
+                  >
+                    <option value="">选择本机迁移包…</option>
+                    {migrations.map((file) => (
+                      <option key={file.path} value={file.path}>
+                        {file.path.split('/').pop()}（{file.size} B）
+                      </option>
+                    ))}
+                  </select>
+                  <button className="ghost" onClick={() => void refreshMigrations()}>
+                    扫描迁移包
+                  </button>
+                  <button
+                    className="ghost"
+                    onClick={() => void importMigration()}
+                    disabled={!migrationPath || snapshotAction === 'import'}
+                  >
+                    导入
+                  </button>
+                </div>
+                <div className="snapshot-create">
+                  <select
+                    value={migrationTarget}
+                    onChange={(event) => setMigrationTarget(event.target.value)}
+                  >
+                    <option value="">迁移目标环境…</option>
+                    {(containers ?? [])
+                      .filter((container) => container.id !== browser.id)
+                      .map((container) => (
+                        <option key={container.id} value={container.id}>
+                          {container.name}
+                        </option>
+                      ))}
+                  </select>
+                </div>
+                {migrationNotice && <p className="muted">{migrationNotice}</p>}
                 {snapshotError && <div className="error">{snapshotError}</div>}
                 {snapshotLoading ? (
                   <p className="muted">读取快照树…</p>
@@ -692,6 +843,27 @@ export function Containers({ backends }: Props) {
                               disabled={snapshotAction === node.id}
                             >
                               回退
+                            </button>
+                            <button
+                              className="ghost"
+                              onClick={() => void exportSnapshot(node.id)}
+                              disabled={snapshotAction === `export:${node.id}`}
+                            >
+                              导出
+                            </button>
+                            <button
+                              className="ghost"
+                              onClick={() => void migrateToTarget(node.id)}
+                              disabled={!migrationTarget || snapshotAction === `migrate:${node.id}`}
+                            >
+                              迁移
+                            </button>
+                            <button
+                              className="ghost"
+                              onClick={() => void migrateToNew(node.id)}
+                              disabled={snapshotAction === `new:${node.id}`}
+                            >
+                              新环境迁移
                             </button>
                           </td>
                         </tr>
