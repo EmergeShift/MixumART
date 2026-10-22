@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { listen } from '@tauri-apps/api/event'
 
 import logo from './assets/logo.png'
-import { errorText, hostInfo, listApprovals, runtimeStatus, type ApprovalView } from './api'
+import { errorText, hostInfo, listApprovals, listPendingPrivileges, runtimeStatus, type ApprovalView, type PendingPrivilege } from './api'
 import { isDemo } from './demo'
 import { statusLabel, statusTone } from './status'
 import { ThemeToggle, WindowControls } from './components/Chrome'
@@ -51,6 +51,7 @@ export default function App() {
   const [error, setError] = useState<string | null>(null)
   const [privilege, setPrivilege] = useState<PrivilegeEvent | null>(null)
   const [approvals, setApprovals] = useState<ApprovalView[]>([])
+  const [sudoRequests, setSudoRequests] = useState<PendingPrivilege[]>([])
   const [showApprovals, setShowApprovals] = useState(false)
   const [themeMode, setThemeMode] = useState<ThemeMode>(getStoredThemeMode)
   const [resolvedTheme, setResolvedTheme] = useState<ResolvedTheme>(() =>
@@ -105,6 +106,9 @@ export default function App() {
     listApprovals()
       .then(setApprovals)
       .catch(() => undefined)
+    listPendingPrivileges()
+      .then(setSudoRequests)
+      .catch(() => undefined)
   }, [])
 
   useEffect(() => {
@@ -129,9 +133,9 @@ export default function App() {
 
   const chromeActions = (
     <div className="chrome-actions">
-      {approvals.length > 0 && (
+      {approvals.length + sudoRequests.length > 0 && (
         <button type="button" className="btn ghost" onClick={() => setShowApprovals(true)}>
-          审批 {approvals.length}
+          审批 {approvals.length + sudoRequests.length}
         </button>
       )}
       {isDemo() && <span className="demo-badge">演示数据</span>}
@@ -242,6 +246,7 @@ export default function App() {
       {showApprovals && (
         <ApprovalCenter
           approvals={approvals}
+          sudoRequests={sudoRequests}
           onClose={() => setShowApprovals(false)}
           onChanged={refreshApprovals}
         />

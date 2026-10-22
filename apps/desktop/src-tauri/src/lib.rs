@@ -150,6 +150,7 @@ pub fn run() {
             commands::environment_run_command,
             commands::environment_privilege_decide,
             commands::list_approvals,
+            commands::list_pending_privileges,
             commands::approve_root_approval,
             commands::approve_browser_approval,
             commands::deny_approval,

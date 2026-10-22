@@ -393,3 +393,17 @@ export const approveBrowserApproval = (id: string) =>
 
 export const denyApproval = (id: string) =>
   isDemo() ? demoDelay(undefined) : invoke<void>('deny_approval', { id })
+
+export type PendingPrivilege = {
+  containerId: string
+  id: string
+  taskId?: string
+  program: string
+  args?: string[]
+  cwd?: string
+  reason?: string
+  risk?: string
+}
+
+export const listPendingPrivileges = () =>
+  isDemo() ? demoDelay<PendingPrivilege[]>([]) : invoke<PendingPrivilege[]>('list_pending_privileges')
