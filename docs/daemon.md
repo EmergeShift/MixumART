@@ -56,6 +56,9 @@ socket 权限为 `0600`，数据目录为 `0700`；只允许当前系统用户�
 | `snapshot.create` | `{selector, label?}` |
 | `port.check` | `{port}` |
 | `port.list` | `{}` |
+| `config.show` | `{}` |
+| `config.set` | `{key, value}` |
+| `config.unset` | `{key}` |
 
 实现方式：daemon 用 sibling `mixum --json ...` 执行同一套规则，不复制端口、
 状态或 MAP 逻辑。这样 CLI 和 daemon 的行为不会漂移。

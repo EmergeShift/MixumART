@@ -45,6 +45,7 @@ pub async fn wait_ready(
     port: u16,
     timeout: u64,
 ) -> Result<MapReady> {
+    let _ = mixum_env_map::forget_known_host(&format!("127.0.0.1:{port}"));
     let deadline = Instant::now() + Duration::from_secs(timeout);
     loop {
         let last_error = match connect(registry, kind, container_id, port, None).await {
