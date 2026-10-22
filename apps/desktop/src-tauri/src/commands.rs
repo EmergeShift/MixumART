@@ -1254,6 +1254,40 @@ pub struct OpenSurfaceRequest {
     pub height: u32,
 }
 
+/// 推给 WebView 的一帧。PNG 走 base64 而不是 `Vec<u8>`：
+/// Tauri 事件是 JSON，`Vec<u8>` 会被序列化成数字数组（体积约 4 倍，
+/// JS 侧还要逐元素解析）；base64 只有 1.33 倍，且解码是一次线性扫描。
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SurfaceFrameEvent {
+    surface: u32,
+    full_w: u32,
+    full_h: u32,
+    x: u32,
+    y: u32,
+    w: u32,
+    h: u32,
+    format: u8,
+    data: String,
+}
+
+impl From<&mixum_env_surface::Frame> for SurfaceFrameEvent {
+    fn from(frame: &mixum_env_surface::Frame) -> Self {
+        use base64::Engine as _;
+        Self {
+            surface: frame.surface,
+            full_w: frame.full_w,
+            full_h: frame.full_h,
+            x: frame.x,
+            y: frame.y,
+            w: frame.w,
+            h: frame.h,
+            format: frame.format,
+            data: base64::engine::general_purpose::STANDARD.encode(&frame.data),
+        }
+    }
+}
+
 /// 为一个 surface 打开 Tauri 窗口。窗口加载完成后才连 MAP/attach，避免
 /// 首帧比 React 监听器更早到达。
 #[tauri::command]
@@ -1310,6 +1344,12 @@ pub fn open_surface_window(app: AppHandle, request: OpenSurfaceRequest) -> Resul
             }
         }
     };
+    // 原生叠加层自己在画时，就不要再把每一帧塞进 WebView（macOS 上原本
+    // 两套渲染同时跑，帧还要序列化成 JSON 传给 canvas）。
+    #[cfg(target_os = "macos")]
+    let native_overlay = native_ptr.is_some();
+    #[cfg(not(target_os = "macos"))]
+    let native_overlay = false;
 
     let (input_tx, input_rx) = tokio_mpsc::unbounded_channel::<InputEvent>();
     let (close_tx, close_rx) = oneshot::channel::<()>();
@@ -1406,11 +1446,14 @@ pub fn open_surface_window(app: AppHandle, request: OpenSurfaceRequest) -> Resul
                             }
                             #[cfg(target_os = "macos")]
                             crate::macos::push_frame(&app_for_session, surface, &frame);
-                            let _ = app_for_session.emit_to(
-                                &label_for_session,
-                                "surface-frame",
-                                &frame,
-                            );
+                            if !native_overlay {
+                                let event = SurfaceFrameEvent::from(&frame);
+                                let _ = app_for_session.emit_to(
+                                    &label_for_session,
+                                    "surface-frame",
+                                    &event,
+                                );
+                            }
                         }
                         Ok(_) => {}
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {

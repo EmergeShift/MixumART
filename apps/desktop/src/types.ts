@@ -106,7 +106,8 @@ export interface SurfaceFrame {
   w: number
   h: number
   format: number
-  data: number[]
+  /** PNG，base64 编码：Tauri 事件是 JSON，数字数组会有约 4 倍体积。 */
+  data: string
 }
 
 export type SurfaceInputEvent =
