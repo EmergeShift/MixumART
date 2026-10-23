@@ -538,6 +538,55 @@ async fn connection_for_container(
     if let Some(connection) = load_connection_map(app)?.remove(container_id) {
         return Ok(connection);
     }
+    if let Some(connection) = discover_connections(state, false)
+        .await
+        .get(container_id)
+        .cloned()
+    {
+        return Ok(connection);
+    }
+    // A container created after the cached snapshot: refresh once on an explicit miss.
+    if let Some(connection) = discover_connections(state, true)
+        .await
+        .get(container_id)
+        .cloned()
+    {
+        return Ok(connection);
+    }
+    Err(format!("环境 {container_id} 还没有连接档案"))
+}
+
+/// Discovery shells out (container list + admin-token exec), so cache it for a
+/// short TTL instead of repeating it on every 5s approval poll.
+const DISCOVERY_TTL: Duration = Duration::from_secs(60);
+
+type DiscoveryCache =
+    std::sync::Mutex<Option<(std::time::Instant, HashMap<String, EnvironmentConnection>)>>;
+
+/// Serializes cold discovery so overlapping 5s polls cannot each spawn a
+/// container list/token exec run.
+static DISCOVERY_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+fn discovery_cache() -> &'static DiscoveryCache {
+    static CACHE: std::sync::OnceLock<DiscoveryCache> = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+async fn discover_connections(
+    state: &State<'_, AppState>,
+    force: bool,
+) -> HashMap<String, EnvironmentConnection> {
+    let _guard = DISCOVERY_LOCK.lock().await;
+    if !force {
+        if let Ok(cache) = discovery_cache().lock() {
+            if let Some((at, map)) = cache.as_ref() {
+                if at.elapsed() < DISCOVERY_TTL {
+                    return map.clone();
+                }
+            }
+        }
+    }
+    let mut discovered = HashMap::new();
     for kind in RuntimeKind::ALL {
         let Some(backend) = state.registry.get(kind) else {
             continue;
@@ -545,33 +594,34 @@ async fn connection_for_container(
         let Ok(containers) = backend.list_containers().await else {
             continue;
         };
-        let Some(container) = containers
-            .into_iter()
-            .find(|container| container.id == container_id)
-        else {
-            continue;
-        };
-        if container.state != mixum_env_core::ContainerState::Running {
-            continue;
+        for container in containers {
+            if container.state != mixum_env_core::ContainerState::Running {
+                continue;
+            }
+            let Some(port) = container
+                .ports
+                .iter()
+                .find(|mapping| mapping.container == 7601)
+            else {
+                continue;
+            };
+            let Ok(token) = backend.admin_token(&container.id).await else {
+                continue;
+            };
+            discovered.insert(
+                container.id.clone(),
+                EnvironmentConnection {
+                    addr: format!("127.0.0.1:{}", port.host),
+                    token,
+                    fingerprint: None,
+                },
+            );
         }
-        let Some(port) = container
-            .ports
-            .iter()
-            .find(|mapping| mapping.container == 7601)
-        else {
-            continue;
-        };
-        let token = backend
-            .admin_token(&container.id)
-            .await
-            .map_err(|error| error.to_string())?;
-        return Ok(EnvironmentConnection {
-            addr: format!("127.0.0.1:{}", port.host),
-            token,
-            fingerprint: None,
-        });
     }
-    Err(format!("环境 {container_id} 还没有连接档案"))
+    if let Ok(mut cache) = discovery_cache().lock() {
+        *cache = Some((std::time::Instant::now(), discovered.clone()));
+    }
+    discovered
 }
 
 fn free_host_port(used: &mut std::collections::HashSet<u16>) -> Result<u16, String> {
@@ -2048,39 +2098,10 @@ pub async fn list_pending_privileges(
     let mut map = load_connection_map(&app)?;
     // Managed environments are listed from the runtime, but their connection
     // tokens are only saved after the user opens Manage. Pending sudo requests
-    // must still surface in Mart without that extra click.
-    for kind in RuntimeKind::ALL {
-        let Some(backend) = state.registry.get(kind) else {
-            continue;
-        };
-        let Ok(containers) = backend.list_containers().await else {
-            continue;
-        };
-        for container in containers {
-            if map.contains_key(&container.id)
-                || container.state != mixum_env_core::ContainerState::Running
-            {
-                continue;
-            }
-            let Some(port) = container
-                .ports
-                .iter()
-                .find(|mapping| mapping.container == 7601)
-            else {
-                continue;
-            };
-            let Ok(token) = backend.admin_token(&container.id).await else {
-                continue;
-            };
-            map.insert(
-                container.id.clone(),
-                EnvironmentConnection {
-                    addr: format!("127.0.0.1:{}", port.host),
-                    token,
-                    fingerprint: None,
-                },
-            );
-        }
+    // must still surface in Mart without that extra click. Discovery is cached
+    // briefly because this command is polled every 5s.
+    for (container_id, connection) in discover_connections(&state, false).await {
+        map.entry(container_id).or_insert(connection);
     }
     let mut out = Vec::new();
     for (container_id, connection) in map {

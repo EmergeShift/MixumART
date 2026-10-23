@@ -4,6 +4,7 @@
 # Usage: dist/package-cli.sh [output-dir]
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
 OUT="${1:-$ROOT/dist}"
 VERSION="$(python3 - "$ROOT/Cargo.toml" <<'PY'
 import sys,re
