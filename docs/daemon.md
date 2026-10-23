@@ -1,5 +1,7 @@
 # mixum-artd
 
+> **状态：部分实现。** `mixum-artd` 已存在，但公开命令面尚未暴露。
+> **Status: partial.** `mixum-artd` exists, but its public command surface is not exposed yet.
 `mixum-artd` 是宿主侧 Unix socket API。它不替代 `mixum` CLI，而是给浏览器、
 MCP、IDE 或未来的 `mixum-artd` 客户端提供长期控制面。
 

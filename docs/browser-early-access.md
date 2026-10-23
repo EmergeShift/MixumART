@@ -1,5 +1,7 @@
 # Mixum Browser Bridge — early access
 
+> **Status: early access.** Not in the Chrome Web Store yet; developer mode only.
+> **状态：早期访问。** 尚未上架 Chrome Web Store，只能开发者模式加载。
 This build is for early testing before the Chrome Web Store listing is approved.
 Chrome does not allow a CLI or desktop app to silently install an extension.
 Two steps are always required:

@@ -305,7 +305,7 @@ MixumART/
 
 | 文档 | 内容 |
 |---|---|
-| [架构](docs/architecture.md) | 定位、与 mixumOS 的分工、进程模型、路线图 |
+| [架构](docs/architecture.zh-CN.md) | 定位、与 mixumOS 的分工、进程模型、路线图 |
 | [CLI](docs/cli.md) | 命令契约、端口、selector、JSON、退出码 |
 | [Daemon](docs/daemon.md) | `mixum-artd` 协议与方法 |
 | [显示](docs/display.md) | B 路线合成器、surface/damage、输入、Metal、XWayland |

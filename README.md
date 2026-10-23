@@ -320,6 +320,7 @@ MixumART/
 | [Runtime contract](docs/runtime-contract.md) | Backend semantics, errors, serialization |
 | [UI](docs/ui.md) | View structure, design tokens, copy |
 | [Contributing](docs/contributing.md) | Environment, commands, cross-platform rules, known pits |
+| [Documentation map](DOCS.md) | Language, status and docs-first items for every page |
 
 Most design documents are currently written in Chinese; the CLI/daemon contracts and the tests are the English-readable source of truth. Translation help is welcome.
 
