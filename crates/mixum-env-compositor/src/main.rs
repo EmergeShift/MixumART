@@ -11,6 +11,11 @@ fn main() {
     eprintln!("mixum-env-compositor is Linux-only (run it inside the mixumOS container)");
 }
 
+// Frame arithmetic (BGRA→RGBA, blit, damage diff, PNG encode). Pure buffers, so
+// it also builds and is tested on the host platforms we develop on.
+#[cfg(any(target_os = "linux", test))]
+mod pixels;
+
 #[cfg(target_os = "linux")]
 fn main() {
     if let Err(error) = linux::run() {
@@ -95,6 +100,10 @@ mod linux {
     const WINDOW_WIDTH: i32 = 1000;
     const WINDOW_HEIGHT: i32 = 700;
     const TCP_PORT: u16 = 7603;
+
+    use crate::pixels::{
+        bgra_to_rgba, diff_bbox, encode_png, extract, Canvas, PngMode, SurfacePixels,
+    };
 
     #[derive(Default)]
     struct ClientState {
@@ -282,7 +291,7 @@ mod linux {
         wl_surface: WlSurface,
         window: X11Surface,
         parent: Option<u32>,
-        rgba: Option<(usize, usize, Vec<u8>)>,
+        rgba: Option<SurfacePixels>,
     }
 
     struct Art {
@@ -486,16 +495,16 @@ mod linux {
                 if self.overlay_parent_id(overlay) != Some(root_id) {
                     continue;
                 }
-                let Some((width, height, _)) = &overlay.rgba else {
+                let Some(pixels) = &overlay.rgba else {
                     continue;
                 };
                 let geometry = overlay.window.geometry();
                 let left = (geometry.loc.x - parent_origin.x) as f64;
                 let top = (geometry.loc.y - parent_origin.y) as f64;
                 if x >= left
-                    && x < left + *width as f64
+                    && x < left + pixels.width as f64
                     && y >= top
-                    && y < top + *height as f64
+                    && y < top + pixels.height as f64
                 {
                     hit = Some((overlay.wl_surface.clone(), x - left, y - top));
                 }
@@ -752,7 +761,7 @@ mod linux {
                 }
                 if let Some(png) = entry
                     .have_prev
-                    .then(|| encode_png(&entry.prev, entry.width, entry.height))
+                    .then(|| encode_png(&entry.prev, entry.width, entry.height, PngMode::Full))
                     .flatten()
                     .or_else(|| entry.last_full.clone())
                 {
@@ -784,7 +793,7 @@ mod linux {
             // so subsurfaces/popups are present.
             let Some(png) = entry
                 .have_prev
-                .then(|| encode_png(&entry.prev, entry.width, entry.height))
+                .then(|| encode_png(&entry.prev, entry.width, entry.height, PngMode::Full))
                 .flatten()
                 .or_else(|| entry.last_full.clone())
             else {
@@ -848,7 +857,7 @@ mod linux {
             (location.x, location.y)
         }
 
-        fn read_states_rgba(states: &SurfaceData) -> Option<(usize, usize, Vec<u8>)> {
+        fn read_states_rgba(states: &SurfaceData) -> Option<SurfacePixels> {
             let buffer = states
                 .data_map
                 .get::<RendererSurfaceStateUserData>()
@@ -872,22 +881,7 @@ mod linux {
                 };
                 let source =
                     unsafe { std::slice::from_raw_parts(ptr.add(offset), stride * height) };
-                let mut rgba = vec![0u8; width * height * 4];
-                for row in 0..height {
-                    let src = &source[row * stride..row * stride + width * 4];
-                    let dst = &mut rgba[row * width * 4..(row + 1) * width * 4];
-                    for col in 0..width {
-                        let b = src[col * 4];
-                        let g = src[col * 4 + 1];
-                        let r = src[col * 4 + 2];
-                        let a = if opaque { 255 } else { src[col * 4 + 3] };
-                        dst[col * 4] = r;
-                        dst[col * 4 + 1] = g;
-                        dst[col * 4 + 2] = b;
-                        dst[col * 4 + 3] = a;
-                    }
-                }
-                Some((width, height, rgba))
+                Some(bgra_to_rgba(source, stride, width, height, opaque))
             })
             .ok()
             .flatten();
@@ -895,12 +889,12 @@ mod linux {
             captured
         }
 
-        fn read_surface_rgba(surface: &WlSurface) -> Option<(usize, usize, Vec<u8>)> {
+        fn read_surface_rgba(surface: &WlSurface) -> Option<SurfacePixels> {
             smithay::wayland::compositor::with_states(surface, Self::read_states_rgba)
         }
 
         fn composite(&self, root: &WlSurface, canvas_w: usize, canvas_h: usize) -> Option<Vec<u8>> {
-            let mut canvas = vec![0u8; canvas_w * canvas_h * 4];
+            let mut canvas = Canvas::new(canvas_w, canvas_h);
             let mut drew = false;
             with_surface_tree_upward(
                 root,
@@ -913,39 +907,11 @@ mod linux {
                 |_surface, states, location: &(i32, i32)| {
                     let (ox, oy) = Self::offset_from_states(states);
                     let (x, y) = (location.0 + ox, location.1 + oy);
-                    let Some((width, height, rgba)) = Self::read_states_rgba(states) else {
+                    let Some(pixels) = Self::read_states_rgba(states) else {
                         return;
                     };
                     drew = true;
-                    for row in 0..height {
-                        let dy = y + row as i32;
-                        if dy < 0 || dy >= canvas_h as i32 {
-                            continue;
-                        }
-                        for col in 0..width {
-                            let dx = x + col as i32;
-                            if dx < 0 || dx >= canvas_w as i32 {
-                                continue;
-                            }
-                            let src = (row * width + col) * 4;
-                            let dst = (dy as usize * canvas_w + dx as usize) * 4;
-                            let alpha = rgba[src + 3] as u32;
-                            if alpha == 0 {
-                                continue;
-                            }
-                            if alpha == 255 {
-                                canvas[dst..dst + 4].copy_from_slice(&rgba[src..src + 4]);
-                            } else {
-                                let inv = 255 - alpha;
-                                for channel in 0..3 {
-                                    canvas[dst + channel] = ((rgba[src + channel] as u32 * alpha
-                                        + canvas[dst + channel] as u32 * inv)
-                                        / 255) as u8;
-                                }
-                                canvas[dst + 3] = 255;
-                            }
-                        }
-                    }
+                    canvas.blit(x, y, &pixels);
                 },
                 |_, _, _| true,
             );
@@ -953,40 +919,11 @@ mod linux {
             // PopupManager tracks them with parent-relative locations.
             for (popup, location) in PopupManager::popups_for_surface(root) {
                 let popup_surface = popup.wl_surface();
-                let Some((width, height, rgba)) = Self::read_surface_rgba(popup_surface) else {
+                let Some(pixels) = Self::read_surface_rgba(popup_surface) else {
                     continue;
                 };
                 drew = true;
-                let (x, y) = (location.x, location.y);
-                for row in 0..height {
-                    let dy = y + row as i32;
-                    if dy < 0 || dy >= canvas_h as i32 {
-                        continue;
-                    }
-                    for col in 0..width {
-                        let dx = x + col as i32;
-                        if dx < 0 || dx >= canvas_w as i32 {
-                            continue;
-                        }
-                        let src = (row * width + col) * 4;
-                        let dst = (dy as usize * canvas_w + dx as usize) * 4;
-                        let alpha = rgba[src + 3] as u32;
-                        if alpha == 0 {
-                            continue;
-                        }
-                        if alpha == 255 {
-                            canvas[dst..dst + 4].copy_from_slice(&rgba[src..src + 4]);
-                        } else {
-                            let inv = 255 - alpha;
-                            for channel in 0..3 {
-                                canvas[dst + channel] = ((rgba[src + channel] as u32 * alpha
-                                    + canvas[dst + channel] as u32 * inv)
-                                    / 255) as u8;
-                            }
-                            canvas[dst + 3] = 255;
-                        }
-                    }
-                }
+                canvas.blit(location.x, location.y, &pixels);
             }
             // X11 override-redirect windows are not in the Wayland surface
             // tree. Draw them into their parent host window at their X11
@@ -1008,42 +945,13 @@ mod linux {
                 let geometry = overlay.window.geometry();
                 let x = geometry.loc.x - parent_origin.x;
                 let y = geometry.loc.y - parent_origin.y;
-                let Some((width, height, rgba)) = overlay.rgba.as_ref() else {
+                let Some(pixels) = overlay.rgba.as_ref() else {
                     continue;
                 };
-                let (width, height) = (*width, *height);
                 drew = true;
-                for row in 0..height {
-                    let dy = y + row as i32;
-                    if dy < 0 || dy >= canvas_h as i32 {
-                        continue;
-                    }
-                    for col in 0..width {
-                        let dx = x + col as i32;
-                        if dx < 0 || dx >= canvas_w as i32 {
-                            continue;
-                        }
-                        let src = (row * width + col) * 4;
-                        let dst = (dy as usize * canvas_w + dx as usize) * 4;
-                        let alpha = rgba[src + 3] as u32;
-                        if alpha == 0 {
-                            continue;
-                        }
-                        if alpha == 255 {
-                            canvas[dst..dst + 4].copy_from_slice(&rgba[src..src + 4]);
-                        } else {
-                            let inv = 255 - alpha;
-                            for channel in 0..3 {
-                                canvas[dst + channel] = ((rgba[src + channel] as u32 * alpha
-                                    + canvas[dst + channel] as u32 * inv)
-                                    / 255) as u8;
-                            }
-                            canvas[dst + 3] = 255;
-                        }
-                    }
-                }
+                canvas.blit(x, y, pixels);
             }
-            drew.then_some(canvas)
+            drew.then(|| canvas.into_pixels())
         }
 
         fn overlay_parent_id(&self, overlay: &X11Overlay) -> Option<u32> {
@@ -1096,9 +1004,9 @@ mod linux {
                 .map(|entry| (entry.width, entry.height))
                 .unwrap_or((0, 0));
             if width == 0 || height == 0 {
-                if let Some((w, h, _)) = Self::read_surface_rgba(&root) {
-                    width = w;
-                    height = h;
+                if let Some(pixels) = Self::read_surface_rgba(&root) {
+                    width = pixels.width;
+                    height = pixels.height;
                 }
             }
             if width == 0 || height == 0 {
@@ -1126,7 +1034,7 @@ mod linux {
                     announce = Some((id, width, height, entry.title.clone(), entry.app_id.clone()));
                 }
                 if !entry.have_prev || entry.width != width || entry.height != height {
-                    if let Some(png) = encode_png(&rgba, width, height) {
+                    if let Some(png) = encode_png(&rgba, width, height, PngMode::Full) {
                         entry.last_full = Some(png.clone());
                         outgoing = Some((0, 0, width, height, png));
                     }
@@ -1136,7 +1044,7 @@ mod linux {
                     entry.have_prev = true;
                 } else if let Some((x, y, w, h)) = diff_bbox(&entry.prev, &rgba, width, height) {
                     let patch = extract(&rgba, width, x, y, w, h);
-                    if let Some(png) = encode_png(&patch, w, h) {
+                    if let Some(png) = encode_png(&patch, w, h, PngMode::Patch) {
                         outgoing = Some((x, y, w, h, png));
                     }
                     entry.prev = rgba;
@@ -1566,63 +1474,6 @@ mod linux {
                 })
         })
         .unwrap_or_default()
-    }
-
-    fn encode_png(rgba: &[u8], width: usize, height: usize) -> Option<Vec<u8>> {
-        let mut out = Vec::new();
-        {
-            let mut encoder = png::Encoder::new(&mut out, width as u32, height as u32);
-            encoder.set_color(png::ColorType::Rgba);
-            encoder.set_depth(png::BitDepth::Eight);
-            let mut writer = encoder.write_header().ok()?;
-            writer.write_image_data(rgba).ok()?;
-        }
-        Some(out)
-    }
-
-    fn diff_bbox(
-        previous: &[u8],
-        current: &[u8],
-        width: usize,
-        height: usize,
-    ) -> Option<(usize, usize, usize, usize)> {
-        let mut min_x = width;
-        let mut min_y = height;
-        let mut max_x = 0usize;
-        let mut max_y = 0usize;
-        let mut found = false;
-        for y in 0..height {
-            let a = &previous[y * width * 4..(y + 1) * width * 4];
-            let b = &current[y * width * 4..(y + 1) * width * 4];
-            if a == b {
-                continue;
-            }
-            let mut first = None;
-            let mut last = 0usize;
-            for x in 0..width {
-                if a[x * 4..x * 4 + 4] != b[x * 4..x * 4 + 4] {
-                    first.get_or_insert(x);
-                    last = x;
-                }
-            }
-            if let Some(first) = first {
-                found = true;
-                min_x = min_x.min(first);
-                max_x = max_x.max(last);
-                min_y = min_y.min(y);
-                max_y = max_y.max(y);
-            }
-        }
-        found.then_some((min_x, min_y, max_x - min_x + 1, max_y - min_y + 1))
-    }
-
-    fn extract(rgba: &[u8], width: usize, x: usize, y: usize, w: usize, h: usize) -> Vec<u8> {
-        let mut patch = vec![0u8; w * h * 4];
-        for row in 0..h {
-            let src = &rgba[((y + row) * width + x) * 4..((y + row) * width + x + w) * 4];
-            patch[row * w * 4..(row + 1) * w * 4].copy_from_slice(src);
-        }
-        patch
     }
 
     fn broadcast(clients: &Arc<Mutex<Vec<TcpStream>>>, kind: u8, payload: &[u8]) {
