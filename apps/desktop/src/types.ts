@@ -112,5 +112,6 @@ export interface SurfaceFrame {
 export type SurfaceInputEvent =
   | { type: 'pointer_motion'; surface: number; x: number; y: number }
   | { type: 'pointer_button'; surface: number; button: 'left' | 'right' | 'middle'; action: 'press' | 'release' }
+  | { type: 'pointer_axis'; surface: number; action: 'scroll_up' | 'scroll_down' }
   | { type: 'key'; surface: number; keysym: string; action: 'press' | 'release' }
   | { type: 'text'; surface: number; text: string }

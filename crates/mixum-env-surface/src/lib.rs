@@ -82,6 +82,12 @@ pub enum InputEvent {
         button: String,
         action: String,
     },
+    /// Wheel / touchpad scroll. `action` is `scroll_up` or `scroll_down`;
+    /// the host folds fine-grained deltas into whole notches before sending.
+    PointerAxis {
+        surface: u32,
+        action: String,
+    },
     Key {
         surface: u32,
         keysym: String,
@@ -223,6 +229,27 @@ mod tests {
         let (kind, payload) = read_message(&mut Cursor::new(msg)).unwrap();
         assert_eq!(kind, MSG_FRAME);
         assert_eq!(payload, b"hello");
+    }
+
+    /// agentd 的 `display.input` 已经接受 `pointer_axis`（CLI 的
+    /// `mixum env scroll` 就是这么发的），这里锁住同一个 wire 形状。
+    #[test]
+    fn pointer_axis_wire_shape() {
+        let event = InputEvent::PointerAxis {
+            surface: 1000,
+            action: "scroll_down".into(),
+        };
+        let value = serde_json::to_value(&event).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "type": "pointer_axis",
+                "surface": 1000,
+                "action": "scroll_down",
+            })
+        );
+        let back: InputEvent = serde_json::from_value(value).unwrap();
+        assert_eq!(back, event);
     }
 
     #[test]
