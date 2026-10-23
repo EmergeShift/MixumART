@@ -1585,21 +1585,37 @@ pub fn open_surface_window(app: AppHandle, request: OpenSurfaceRequest) -> Resul
         };
         let _ = app_for_session.emit_to(&label_for_session, "surface-info", &info);
 
-        let mut input_rx = input_rx;
+        // 输入走独立任务：一次 `display.input` 卡住（agentd 侧背压）不能拖住帧
+        // 接收和后续点击。单条请求 2s 超时，超时只记录，不堵队列。
+        {
+            let client = client.clone();
+            let app = app_for_session.clone();
+            let label = label_for_session.clone();
+            let mut input_rx = input_rx;
+            tokio::spawn(async move {
+                while let Some(event) = input_rx.recv().await {
+                    let result = tokio::time::timeout(
+                        Duration::from_secs(2),
+                        client.input(surface, &event),
+                    )
+                    .await;
+                    match result {
+                        Ok(Ok(())) => {}
+                        Ok(Err(error)) => {
+                            let _ = app.emit_to(&label, "surface-input-error", error.to_string());
+                        }
+                        Err(_) => {
+                            eprintln!("surface {surface} input timed out: display.input");
+                        }
+                    }
+                }
+            });
+        }
         let mut close_rx = close_rx;
         let mut first_frame = true;
         loop {
             tokio::select! {
                 _ = &mut close_rx => break,
-                Some(event) = input_rx.recv() => {
-                    if let Err(error) = client.input(surface, &event).await {
-                        let _ = app_for_session.emit_to(
-                            &label_for_session,
-                            "surface-input-error",
-                            error.to_string(),
-                        );
-                    }
-                }
                 result = frames.recv() => {
                     match result {
                         Ok(frame) if frame.surface == surface => {

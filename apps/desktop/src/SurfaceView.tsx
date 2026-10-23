@@ -88,6 +88,41 @@ export function SurfaceView({ surface, addr }: Props) {
     void surfaceInput(surface, event).catch((error: unknown) => setStatus(String(error)))
   }
 
+  // 滚轮/触控板：React 的 onWheel 在根节点上是 passive 的，拦不住页面滚动，
+  // 这里挂原生非 passive 监听。触控板一次只有几像素，按 40px = 1 格累积，
+  // 每帧最多发 3 格——否则一次甩动会把输入队列灌满（issue #47 的卡死）。
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    let accumulated = 0
+    let queued = 0
+    let frame = 0
+    const flush = () => {
+      frame = 0
+      if (queued === 0) return
+      const action = queued > 0 ? 'scroll_down' : 'scroll_up'
+      const steps = Math.min(Math.abs(queued), 3)
+      queued += queued > 0 ? -steps : steps
+      for (let i = 0; i < steps; i += 1) send({ type: 'pointer_axis', surface, action })
+      if (queued !== 0) frame = window.requestAnimationFrame(flush)
+    }
+    const onWheel = (event: WheelEvent) => {
+      event.preventDefault()
+      const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? 400 : 1
+      accumulated += event.deltaY * unit
+      const notches = Math.trunc(accumulated / 40)
+      if (notches === 0) return
+      accumulated -= notches * 40
+      queued += notches
+      if (frame === 0) frame = window.requestAnimationFrame(flush)
+    }
+    canvas.addEventListener('wheel', onWheel, { passive: false })
+    return () => {
+      canvas.removeEventListener('wheel', onWheel)
+      if (frame !== 0) window.cancelAnimationFrame(frame)
+    }
+  }, [surface])
+
   const point = (event: React.PointerEvent<HTMLCanvasElement>) => {
     const canvas = event.currentTarget
     const rect = canvas.getBoundingClientRect()
