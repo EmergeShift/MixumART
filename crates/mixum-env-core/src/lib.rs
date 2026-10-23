@@ -12,9 +12,7 @@ pub mod migration;
 pub mod process;
 pub mod runtime;
 
-pub use container::{
-    Container, ContainerState, CreateSpec, InspectedContainer, Mount, PortMapping,
-};
+pub use container::{Container, ContainerState, CreateSpec, InspectedContainer, Mount, PortMapping};
 pub use error::EnvError;
 pub use migration::{MartRef, MigrationManifest, MigrationSource, MIGRATION_VERSION};
 pub use runtime::{BackendRegistry, BackendStatus, RuntimeBackend, RuntimeKind, RuntimeStatus};
