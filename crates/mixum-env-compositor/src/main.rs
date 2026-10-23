@@ -113,13 +113,16 @@ mod linux {
 
     /// B compositor 作为 agentd 的 comp 客户端：JSON 控制 + 0x04 PNG 帧。
     struct MapTransport {
-        /// 写 agentd 的通道。帧走有界队列、满了就丢；控制消息（window.open/close）
-        /// 走无界队列，不能丢。
-        ///
-        /// 之前是直接在主循环里 `write_all`：agentd 一慢，合成器就卡在 socket 上，
-        /// 输入事件一起处理不了，宿主侧表现为 `display.input` 超时、窗口“卡死”。
+        /// 控制消息（window.open/close 等），无界队列，不能丢。
         control: Sender<Vec<u8>>,
-        frames: mpsc::SyncSender<Vec<u8>>,
+        /// 帧只保留最新一帧：新帧直接覆盖还没写出去的那一帧。
+        ///
+        /// 不能用有界队列 + try_send —— 队列满时丢的是刚产生的新帧，留下的是最旧
+        /// 的几帧；持续背压后最后一次重绘可能正好被丢掉，画面就永久停在中间帧
+        /// （issue #56）。槽位语义保证「最后一帧一定保留」，也没有排队延迟。
+        latest_frame: Arc<Mutex<Option<Vec<u8>>>>,
+        /// 容量 1 的唤醒信号：槽位里有新帧时通知 writer，不承载数据。
+        frame_ready: mpsc::SyncSender<()>,
     }
 
     impl MapTransport {
@@ -129,21 +132,33 @@ mod linux {
             let mut reader = stream.try_clone()?;
             let mut writer = stream;
             let (control_tx, control_rx) = mpsc::channel::<Vec<u8>>();
-            let (frame_tx, frame_rx) = mpsc::sync_channel::<Vec<u8>>(8);
+            let latest_frame = Arc::new(Mutex::new(None::<Vec<u8>>));
+            let (frame_ready_tx, frame_ready_rx) = mpsc::sync_channel::<()>(1);
+            let writer_frame = Arc::clone(&latest_frame);
             std::thread::spawn(move || loop {
-                let message = match control_rx.try_recv() {
-                    Ok(message) => message,
-                    Err(mpsc::TryRecvError::Empty) => {
-                        match frame_rx.recv_timeout(std::time::Duration::from_millis(4)) {
-                            Ok(message) => message,
-                            Err(mpsc::RecvTimeoutError::Timeout) => continue,
-                            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                // 先把控制消息排空（window.open / close 不能被帧压住）。
+                loop {
+                    match control_rx.try_recv() {
+                        Ok(message) => {
+                            if writer.write_all(&message).is_err() {
+                                return;
+                            }
+                        }
+                        Err(mpsc::TryRecvError::Empty) => break,
+                        Err(mpsc::TryRecvError::Disconnected) => return,
+                    }
+                }
+                match frame_ready_rx.recv_timeout(std::time::Duration::from_millis(4)) {
+                    Ok(()) => {
+                        let frame = writer_frame.lock().ok().and_then(|mut slot| slot.take());
+                        if let Some(message) = frame {
+                            if writer.write_all(&message).is_err() {
+                                return;
+                            }
                         }
                     }
-                    Err(mpsc::TryRecvError::Disconnected) => break,
-                };
-                if writer.write_all(&message).is_err() {
-                    break;
+                    Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                    Err(mpsc::RecvTimeoutError::Disconnected) => return,
                 }
             });
             let (event_tx, event_rx) = mpsc::channel();
@@ -184,7 +199,8 @@ mod linux {
             Ok((
                 Self {
                     control: control_tx,
-                    frames: frame_tx,
+                    latest_frame,
+                    frame_ready: frame_ready_tx,
                 },
                 event_rx,
             ))
@@ -242,8 +258,12 @@ mod linux {
             message.extend_from_slice(&(payload.len() as u32).to_le_bytes());
             message.push(0x04);
             message.extend_from_slice(&payload);
-            // 帧可以丢：队列满说明 agentd / 宿主跟不上，丢掉旧帧远好过卡住主循环。
-            let _ = self.frames.try_send(message);
+            // 覆盖式槽位：只保留最新一帧，中间帧被直接替换掉。
+            if let Ok(mut slot) = self.latest_frame.lock() {
+                *slot = Some(message);
+            }
+            // 唤醒 writer；信号是容量 1 的，重复唤醒会被合并。
+            let _ = self.frame_ready.try_send(());
         }
     }
 
