@@ -147,6 +147,8 @@ export function Agents() {
     setAgentError(null)
     setAgentInstalling(null)
     setAgentInstallName('')
+    setAgentInstallState(null)
+    installIdRef.current = null
     localStorage.removeItem('mixum.map.node')
     localStorage.removeItem('mixum.map.fp')
   }, [remoteAddr])
@@ -585,6 +587,11 @@ export function Agents() {
                 setAgentEnvId(value)
                 setAgentRows(null)
                 setAgentError(null)
+                setAgentLines(null)
+                setAgentInstalling(null)
+                setAgentInstallName('')
+                setAgentInstallState(null)
+                installIdRef.current = null
                 if (value !== REMOTE_TARGET) {
                   const next = agentEnvs.find((item) => item.id === value)
                   if (next) void refreshAgentStatus(next)
