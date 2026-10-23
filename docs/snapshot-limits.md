@@ -41,6 +41,14 @@ criu dump   -> 0
 criu restore-> 0
 ```
 
+The agentd path is now also verified: a memory snapshot of a sandboxed `sleep`
+was created (15 chunks), and `snap.restore` returned success with the restored
+task back in the container. Two important details were required:
+
+- memory-only snapshots skip the host SIGSTOP freeze (CRIU freezes itself);
+- memory-snapshot environments keep the sandbox cgroup directory, and restore
+  thaws it before CRIU moves the task back in.
+
 So the real requirements are:
 
 1. custom kernel with `CONFIG_CHECKPOINT_RESTORE` (and PID/user namespaces);
