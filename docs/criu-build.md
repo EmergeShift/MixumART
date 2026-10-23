@@ -1,5 +1,10 @@
 # Patched CRIU 4.1 for mixumOS
 
+`criu-mixum` is shipped as a source package in mixumOS
+(`dist/pkgs/criu/PKGBUILD`) and is a dependency of `mixum-base`, so normal
+images get the patched `/usr/bin/criu`. The manual build below remains useful
+for non-mixumOS hosts.
+
 The stock Arch `criu` 4.2.1 crashes in the parasite on the 6.18 mixum kernel
 (`si_status=11`). Build 4.1 locally:
 
