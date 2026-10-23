@@ -9,7 +9,7 @@ linked below.
 
 - English text exists for 15 of 15 pages; 9 of those also have a Chinese
   `.zh-CN.md` counterpart (`architecture`, `cli`, `contributing`, `daemon`, `display`, `module-map`, `runtime-contract`, `support-matrix`, `ui`).
-- - English-only pages still needing a Chinese counterpart: `base-env`,
+- English-only pages still needing a Chinese counterpart: `base-env`,
   `browser-bridge`, `browser-early-access`, `criu-build`, `privilege`,
   `snapshot-limits`.
 
