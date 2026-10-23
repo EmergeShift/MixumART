@@ -46,8 +46,12 @@ hang was caused by agentd SIGSTOP-freezing the task before CRIU; memory-only
 snapshots now skip that pre-freeze. Disk/hybrid still freeze for file
 consistency.
 
-A memory-only snapshot currently captures only process memory and restores into
-the existing disk state; use hybrid if both tree and memory must move together.
+A memory-only snapshot captures only process memory and restores into the
+existing disk state; use hybrid if both tree and memory must move together.
+
+Verified agentd path: memory snapshot created 15 chunks, `snap.restore` returned
+success, and the `sleep` task reappeared in the container. The sandbox cgroup is
+kept for memory environments and thawed before CRIU restore.
 
 The patched binary can also be selected explicitly:
 
