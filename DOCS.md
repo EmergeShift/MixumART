@@ -12,7 +12,7 @@ linked below.
   `cli`, `contributing`, `daemon`, `display`, `module-map`, `privilege`,
   `runtime-contract`, `support-matrix`, `ui`).
 - English-only pages still needing a Chinese counterpart: `browser-bridge`,
-  `criu-build`, `snapshot-limits`.
+  `snapshot-limits`.
 
 ## Pages
 
@@ -24,7 +24,7 @@ linked below.
 | [browser early access](docs/browser-early-access.md) | early access | [English](docs/browser-early-access.md) | [中文](docs/browser-early-access.zh-CN.md) |
 | [CLI](docs/cli.md) | current | [English](docs/cli.md) | [中文](docs/cli.zh-CN.md) |
 | [contributing](docs/contributing.md) | current | [English](docs/contributing.md) | [中文](docs/contributing.zh-CN.md) |
-| [CRIU build](docs/criu-build.md) | current | [English](docs/criu-build.md) | pending |
+| [CRIU build](docs/criu-build.md) | current | [English](docs/criu-build.md) | [中文](docs/criu-build.zh-CN.md) |
 | [daemon](docs/daemon.md) | partial | [English](docs/daemon.md) | [中文](docs/daemon.zh-CN.md) |
 | [display](docs/display.md) | current (B0/B1/B2) | [English](docs/display.md) | [中文](docs/display.zh-CN.md) |
 | [module map](docs/module-map.md) | current | [English](docs/module-map.md) | [中文](docs/module-map.zh-CN.md) |
