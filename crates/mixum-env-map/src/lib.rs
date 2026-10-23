@@ -8,7 +8,10 @@ use std::{
     collections::HashMap,
     fmt,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
     time::Duration,
 };
 
@@ -64,23 +67,97 @@ struct Envelope {
     seq: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     reply_to: Option<String>,
+    /// RFC 0003:gateway 路由目标;直连节点忽略。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    node: Option<String>,
     ts: i64,
     #[serde(default)]
     payload: Value,
 }
 
 impl Envelope {
-    fn request(op: &str, payload: Value) -> Self {
+    fn request(op: &str, payload: Value, node: Option<&str>) -> Self {
         Self {
             v: 1,
             id: Ulid::new().to_string(),
             op: op.to_owned(),
             seq: None,
             reply_to: None,
+            node: node.map(ToOwned::to_owned),
             ts: now_ms(),
             payload,
         }
     }
+}
+
+/// 配对码换取的设备凭据(RFC 0003)。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PairClaim {
+    pub token: String,
+    pub device_id: String,
+}
+
+/// gateway.device.list 的一条设备记录(owner 隔离由服务端保证)。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeviceInfo {
+    pub jti: String,
+    #[serde(default)]
+    pub name: String,
+    pub sub: String,
+    pub owner: String,
+    #[serde(default)]
+    pub iat: i64,
+}
+
+fn remote_error(reply: &Envelope) -> MapError {
+    let code = reply
+        .payload
+        .get("code")
+        .and_then(Value::as_str)
+        .unwrap_or("error")
+        .to_owned();
+    let message = reply
+        .payload
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_owned();
+    MapError::Remote { code, message }
+}
+
+fn parse_pair_claim(reply: Envelope) -> Result<PairClaim, MapError> {
+    if reply.op.ends_with(".err") {
+        return Err(remote_error(&reply));
+    }
+    let token = reply
+        .payload
+        .get("token")
+        .and_then(Value::as_str)
+        .ok_or_else(|| MapError::Protocol("pair.claim 未返回 token".into()))?
+        .to_owned();
+    let device_id = reply
+        .payload
+        .get("deviceId")
+        .and_then(Value::as_str)
+        .ok_or_else(|| MapError::Protocol("pair.claim 未返回 deviceId".into()))?
+        .to_owned();
+    Ok(PairClaim { token, device_id })
+}
+
+fn parse_nodes(reply: &Envelope) -> Vec<String> {
+    reply
+        .payload
+        .get("nodes")
+        .and_then(Value::as_array)
+        .map(|nodes| {
+            nodes
+                .iter()
+                .filter_map(Value::as_str)
+                .map(ToOwned::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn now_ms() -> i64 {
@@ -122,6 +199,10 @@ pub struct MapClient {
     events: broadcast::Sender<PushEvent>,
     /// 进行中的 file.get：transfer id → 累积缓冲。
     files: Arc<Mutex<HashMap<u32, FileTransfer>>>,
+    /// RFC 0003:gateway 路由目标;None = 直连节点或由 gateway 默认路由。
+    node: Arc<Mutex<Option<String>>>,
+    /// hello.ok 的 server 字段表明对端是 gateway(而非直连 agentd)。
+    gateway: Arc<AtomicBool>,
     pub fingerprint: String,
 }
 
@@ -140,6 +221,60 @@ impl fmt::Debug for MapClient {
     }
 }
 
+type MapSocket =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+/// 建立 WSS + 指纹固定连接,返回 socket 与观测到的服务器指纹。
+async fn open_socket(
+    addr: &str,
+    fingerprint: Option<&str>,
+) -> Result<(MapSocket, String), MapError> {
+    let address = ws_addr(addr)?;
+    let known_path = known_hosts_path();
+    let known = load_known(&known_path)?;
+    let explicit_fingerprint = fingerprint.is_some();
+    let expected = fingerprint
+        .map(ToOwned::to_owned)
+        .or_else(|| known.get(addr).cloned());
+    let first_connection = expected.is_none();
+    let observed = Arc::new(Mutex::new(None));
+    let provider = rustls::crypto::ring::default_provider();
+    let verifier = PinVerifier {
+        expected,
+        observed: Arc::clone(&observed),
+        supported_algorithms: provider.signature_verification_algorithms,
+    };
+    let config = rustls::ClientConfig::builder_with_provider(Arc::new(provider))
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .map_err(|error| MapError::Config(error.to_string()))?
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(verifier))
+        .with_no_client_auth();
+    let connector = Connector::Rustls(Arc::new(config));
+    let mut request = address
+        .into_client_request()
+        .map_err(|error| MapError::WebSocket(error.to_string()))?;
+    request.headers_mut().insert(
+        "Sec-WebSocket-Protocol",
+        HeaderValue::from_static("mixum.v1"),
+    );
+    let (stream, _) = connect_async_tls_with_config(request, None, false, Some(connector))
+        .await
+        .map_err(|error| MapError::WebSocket(error.to_string()))?;
+    let fingerprint = observed
+        .lock()
+        .expect("fingerprint lock")
+        .clone()
+        .ok_or_else(|| MapError::Config("TLS 未返回服务器证书".into()))?;
+    if first_connection {
+        eprintln!("首次连接 {addr}，服务器证书指纹：{fingerprint}");
+    }
+    if !known.contains_key(addr) || explicit_fingerprint {
+        save_known(&known_path, addr, &fingerprint)?;
+    }
+    Ok((stream, fingerprint))
+}
+
 impl MapClient {
     /// Connect, pin/verify the server certificate, then perform session.hello.
     pub async fn connect(
@@ -147,50 +282,7 @@ impl MapClient {
         token: &str,
         fingerprint: Option<&str>,
     ) -> Result<Self, MapError> {
-        let address = ws_addr(addr)?;
-        let known_path = known_hosts_path();
-        let known = load_known(&known_path)?;
-        let explicit_fingerprint = fingerprint.is_some();
-        let expected = fingerprint
-            .map(ToOwned::to_owned)
-            .or_else(|| known.get(addr).cloned());
-        let first_connection = expected.is_none();
-        let observed = Arc::new(Mutex::new(None));
-        let provider = rustls::crypto::ring::default_provider();
-        let verifier = PinVerifier {
-            expected,
-            observed: Arc::clone(&observed),
-            supported_algorithms: provider.signature_verification_algorithms,
-        };
-        let config = rustls::ClientConfig::builder_with_provider(Arc::new(provider))
-            .with_protocol_versions(&[&rustls::version::TLS13])
-            .map_err(|error| MapError::Config(error.to_string()))?
-            .dangerous()
-            .with_custom_certificate_verifier(Arc::new(verifier))
-            .with_no_client_auth();
-        let connector = Connector::Rustls(Arc::new(config));
-        let mut request = address
-            .into_client_request()
-            .map_err(|error| MapError::WebSocket(error.to_string()))?;
-        request.headers_mut().insert(
-            "Sec-WebSocket-Protocol",
-            HeaderValue::from_static("mixum.v1"),
-        );
-        let (stream, _) = connect_async_tls_with_config(request, None, false, Some(connector))
-            .await
-            .map_err(|error| MapError::WebSocket(error.to_string()))?;
-        let fingerprint = observed
-            .lock()
-            .expect("fingerprint lock")
-            .clone()
-            .ok_or_else(|| MapError::Config("TLS 未返回服务器证书".into()))?;
-        if first_connection {
-            eprintln!("首次连接 {addr}，服务器证书指纹：{fingerprint}");
-        }
-        if !known.contains_key(addr) || explicit_fingerprint {
-            save_known(&known_path, addr, &fingerprint)?;
-        }
-
+        let (stream, fingerprint) = open_socket(addr, fingerprint).await?;
         let (mut write, mut read) = stream.split();
         let (tx, mut outgoing) = mpsc::channel::<Message>(64);
         let (frame_tx, _) = broadcast::channel(128);
@@ -281,6 +373,8 @@ impl MapClient {
             frames: frame_tx,
             events: event_tx,
             files: reader_files,
+            node: Arc::new(Mutex::new(None)),
+            gateway: Arc::new(AtomicBool::new(false)),
             fingerprint,
         };
         let hello = client
@@ -292,11 +386,119 @@ impl MapClient {
         if hello.op != "session.hello.ok" {
             return Err(MapError::Protocol(format!("handshake: {}", hello.op)));
         }
+        if hello
+            .payload
+            .get("server")
+            .and_then(Value::as_str)
+            .is_some_and(|server| server.starts_with("mixum-gateway"))
+        {
+            client.gateway.store(true, Ordering::Relaxed);
+        }
         Ok(client)
     }
 
     pub fn frames(&self) -> broadcast::Receiver<Frame> {
         self.frames.subscribe()
+    }
+
+    /// 对端是 gateway 时,控制面 op(node.list/pair/device)才可用。
+    pub fn is_gateway(&self) -> bool {
+        self.gateway.load(Ordering::Relaxed)
+    }
+
+    /// 设置后续信封的 gateway 路由目标(None = 让 gateway 默认路由)。
+    pub fn set_node(&self, node: Option<String>) {
+        *self.node.lock().expect("node lock") = node;
+    }
+
+    pub fn node(&self) -> Option<String> {
+        self.node.lock().expect("node lock").clone()
+    }
+
+    /// gateway.node.list → 在线节点名(RFC 0003)。
+    pub async fn node_list(&self) -> Result<Vec<String>, MapError> {
+        let reply = self.call("gateway.node.list", json!({})).await?;
+        Ok(parse_nodes(&reply))
+    }
+
+    /// 用户会话生成一次性配对码,返回 (code, expiresIn 秒)。
+    pub async fn pair_create(&self) -> Result<(String, u64), MapError> {
+        let reply = self.call("gateway.pair.create", json!({})).await?;
+        let code = reply
+            .payload
+            .get("code")
+            .and_then(Value::as_str)
+            .ok_or_else(|| MapError::Protocol("pair.create 未返回 code".into()))?
+            .to_owned();
+        let expires = reply
+            .payload
+            .get("expiresIn")
+            .and_then(Value::as_u64)
+            .unwrap_or(300);
+        Ok((code, expires))
+    }
+
+    /// 设备列表(owner 隔离由服务端保证)。
+    pub async fn device_list(&self) -> Result<Vec<DeviceInfo>, MapError> {
+        let reply = self.call("gateway.device.list", json!({})).await?;
+        let devices = reply
+            .payload
+            .get("devices")
+            .cloned()
+            .unwrap_or_else(|| Value::Array(Vec::new()));
+        Ok(serde_json::from_value(devices)?)
+    }
+
+    /// 吊销设备令牌(owner 或 admin)。
+    pub async fn device_revoke(&self, jti: &str) -> Result<bool, MapError> {
+        let reply = self
+            .call("gateway.device.revoke", json!({ "jti": jti }))
+            .await?;
+        Ok(reply
+            .payload
+            .get("revoked")
+            .and_then(Value::as_bool)
+            .unwrap_or(false))
+    }
+
+    /// RFC 0003:未认证设备用配对码换设备令牌(首条消息),随后用该 token connect。
+    pub async fn pair_claim(
+        addr: &str,
+        code: &str,
+        device_name: &str,
+        fingerprint: Option<&str>,
+    ) -> Result<PairClaim, MapError> {
+        let (mut stream, _fingerprint) = open_socket(addr, fingerprint).await?;
+        let request = Envelope::request(
+            "gateway.pair.claim",
+            json!({ "code": code, "deviceName": device_name }),
+            None,
+        );
+        stream
+            .send(Message::Text(serde_json::to_string(&request)?.into()))
+            .await
+            .map_err(|error| MapError::WebSocket(error.to_string()))?;
+        let reply = tokio::time::timeout(CLIENT_TIMEOUT, async {
+            loop {
+                match stream.next().await {
+                    Some(Ok(Message::Text(text))) => {
+                        let Ok(envelope) = serde_json::from_str::<Envelope>(&text) else {
+                            continue;
+                        };
+                        if envelope.reply_to.as_deref() == Some(request.id.as_str()) {
+                            break Ok(envelope);
+                        }
+                    }
+                    Some(Ok(_)) => continue,
+                    Some(Err(error)) => break Err(MapError::WebSocket(error.to_string())),
+                    None => break Err(MapError::WebSocket("连接在应答前关闭".into())),
+                }
+            }
+        })
+        .await
+        .map_err(|_| MapError::Timeout("gateway.pair.claim".into()))??;
+        let _ = stream.close(None).await;
+        parse_pair_claim(reply)
     }
 
     pub async fn list(&self) -> Result<Vec<SurfaceInfo>, MapError> {
@@ -591,7 +793,8 @@ impl MapClient {
     }
 
     async fn call(&self, op: &str, payload: Value) -> Result<Envelope, MapError> {
-        let request = Envelope::request(op, payload);
+        let node = self.node.lock().expect("node lock").clone();
+        let request = Envelope::request(op, payload, node.as_deref());
         let (sender, receiver) = oneshot::channel();
         self.pending
             .lock()
@@ -610,19 +813,7 @@ impl MapClient {
             .map_err(|_| MapError::Timeout(op.to_owned()))?
             .map_err(|_| MapError::WebSocket("连接在应答前关闭".into()))?;
         if reply.op.ends_with(".err") {
-            let code = reply
-                .payload
-                .get("code")
-                .and_then(Value::as_str)
-                .unwrap_or("error")
-                .to_owned();
-            let message = reply
-                .payload
-                .get("message")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_owned();
-            return Err(MapError::Remote { code, message });
+            return Err(remote_error(&reply));
         }
         Ok(reply)
     }
@@ -953,6 +1144,48 @@ mod tests {
             normalize_fingerprint("AA:bb:01"),
             normalize_fingerprint("aa:BB:01")
         );
+    }
+
+    #[test]
+    fn envelope_node_is_optional_and_skipped_when_none() {
+        let with = Envelope::request("display.list", json!({}), Some("home-01"));
+        let text = serde_json::to_string(&with).unwrap();
+        assert!(text.contains("\"node\":\"home-01\""), "{text}");
+
+        let without = Envelope::request("display.list", json!({}), None);
+        let text = serde_json::to_string(&without).unwrap();
+        assert!(!text.contains("\"node\""), "{text}");
+    }
+
+    #[test]
+    fn parses_gateway_pair_claim_and_nodes() {
+        let claim: Envelope = serde_json::from_str(
+            r#"{"v":1,"id":"x","op":"gateway.pair.claim.ok","replyTo":"r","ts":0,
+                "payload":{"token":"t","deviceId":"dev-1"}}"#,
+        )
+        .unwrap();
+        let parsed = parse_pair_claim(claim).unwrap();
+        assert_eq!(
+            (parsed.token.as_str(), parsed.device_id.as_str()),
+            ("t", "dev-1")
+        );
+
+        let nodes: Envelope = serde_json::from_str(
+            r#"{"v":1,"id":"x","op":"gateway.node.list.ok","ts":0,
+                "payload":{"nodes":["a","b"]}}"#,
+        )
+        .unwrap();
+        assert_eq!(parse_nodes(&nodes), vec!["a", "b"]);
+
+        let err: Envelope = serde_json::from_str(
+            r#"{"v":1,"id":"x","op":"gateway.pair.claim.err","ts":0,
+                "payload":{"code":"conflict","message":"频繁"}}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            parse_pair_claim(err),
+            Err(MapError::Remote { code, .. }) if code == "conflict"
+        ));
     }
 }
 
