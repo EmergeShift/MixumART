@@ -24,7 +24,7 @@ linked below.
 | [browser-bridge](docs/browser-bridge.md) | current | [English](docs/browser-bridge.md) | pending |
 | [browser early access](docs/browser-early-access.md) | early access | [English](docs/browser-early-access.md) | pending |
 | [CLI](docs/cli.md) | current | [English](docs/cli.md) | [中文](docs/cli.zh-CN.md) |
-| [contributing](docs/contributing.md) | current | pending | [中文](docs/contributing.md) |
+| [contributing](docs/contributing.md) | current | [English](docs/contributing.md) | [中文](docs/contributing.zh-CN.md) |
 | [CRIU build](docs/criu-build.md) | current | [English](docs/criu-build.md) | pending |
 | [daemon](docs/daemon.md) | partial | [English](docs/daemon.md) | [中文](docs/daemon.zh-CN.md) |
 | [display](docs/display.md) | current (B0/B1/B2) | [English](docs/display.md) | [中文](docs/display.zh-CN.md) |
