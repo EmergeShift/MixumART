@@ -81,11 +81,11 @@ apps/desktop/src  ──invoke──▶  apps/desktop/src-tauri
 |------------|--------|
 | 新增一个 runtime（如 Podman） | `core/runtime.rs` 加 `RuntimeKind` 变体 → 新建 `crates/mixum-env-runtime-podman` → `lib.rs` 的 `build_registry` 加分支 → `docs/` 补一行 |
 | 给容器列表加字段（如 CPU/内存） | `core/container.rs` 的 `Container` → 各后端解析各自实现 → `src/types.ts` → 表格列 |
-| 新增容器操作（启动/停止/删除） | 先在 `docs/runtime-contract.md` 定语义 → 后端 crate 实现 trait 方法 → `commands.rs` → `api.ts` → UI |
+| 新增容器操作（启动/停止/删除） | 先在 `docs/runtime-contract.zh-CN.md` 定语义 → 后端 crate 实现 trait 方法 → `commands.rs` → `api.ts` → UI |
 | 新增 Tauri 命令 | `commands.rs` → `lib.rs` 的 `generate_handler!` → `api.ts` 包一层 |
 | 新增页面 | `src/views/` → `App.tsx` 的 Tab → `docs/ui.md` 补视图表 |
 | 改状态文案 | 只展示 → `src/status.ts`；改协议字段 → `core/runtime.rs`（走契约流程） |
-| 新增错误种类 | `core/error.rs` + `docs/runtime-contract.md` 的错误映射表 |
+| 新增错误种类 | `core/error.rs` + `docs/runtime-contract.zh-CN.md` 的错误映射表 |
 | 处理平台差异 | 对应 runtime crate 内部，用 `cfg`；**不要**放进 core |
 | 升级依赖 | Rust：根 `Cargo.toml` 的 `[workspace.dependencies]`；前端：`apps/desktop/package.json` |
 | 加构建/发布脚本 | 新建 `scripts/`（目前没有） |
@@ -95,7 +95,7 @@ apps/desktop/src  ──invoke──▶  apps/desktop/src-tauri
 - WSL 2 组只改 `crates/mixum-env-runtime-wsl2/**`，以及自己新增的文档；
 - 该 crate 已经注册进 GUI，在 Windows 上会显示「接入中」，所以**不需要**本组配合就能联调；
 - 如果契约不够用（缺字段、缺错误、缺 trait 方法）：
-  1. 先改 `docs/runtime-contract.md` 说明动机；
+  1. 先改 `docs/runtime-contract.zh-CN.md` 说明动机；
   2. PR 标题带 `[contract]`；
   3. 本组与 WSL 2 组各一人 review 后再合；
 - 共享文件（根 `Cargo.toml`、`lib.rs`、`types.ts`）的改动保持小步，冲突时由本组统一合并；
@@ -105,7 +105,7 @@ apps/desktop/src  ──invoke──▶  apps/desktop/src-tauri
 
 改 `mixum-env-core` 的公开 API 时，逐项确认：
 
-- [ ] `docs/runtime-contract.md` 已更新
+- [ ] `docs/runtime-contract.zh-CN.md` 已更新
 - [ ] 三个后端都能编译（Windows 也不能落下）
 - [ ] `src/types.ts` 已同步
 - [ ] 序列化有单测覆盖（字段名是契约的一部分）

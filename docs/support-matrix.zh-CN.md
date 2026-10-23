@@ -155,7 +155,7 @@ criu restore --images-dir /tmp/d --shell-job
 
 ## 7. 与其它文档的关系
 
-- 运行时契约：[`runtime-contract.md`](runtime-contract.md)
+- 运行时契约：[`runtime-contract.zh-CN.md`](runtime-contract.zh-CN.md)
 - 显示架构：[`display.md`](display.md)
 - 内核构建与验收：`mixumos/kernel/README.md`
 - 迁移包格式：`mixumos/docs/migration.md`（待补）

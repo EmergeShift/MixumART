@@ -256,7 +256,7 @@ MixumART 是 alpha。macOS 应用没有签名（还没买 Apple Developer Progra
 - **Tauri 最小权限。** 桌面端只开需要的 capability；平台逻辑留在 Rust，不放进 webview。
 - **当前构建不含遥测。** MixumART 不回传数据，没有账号，也没有更新信标。未来若加入可选统计，会在生态级 [TRUST 承诺](https://github.com/EmergeShift/Mixum-Agent-Protocol/blob/main/TRUST.md)中说明，且默认关闭。
 
-运行时契约与错误映射见 [docs/runtime-contract.md](docs/runtime-contract.md)；显示威胁模型见 [docs/display.zh-CN.md](docs/display.zh-CN.md)。
+运行时契约与错误映射见 [docs/runtime-contract.zh-CN.md](docs/runtime-contract.zh-CN.md)；显示威胁模型见 [docs/display.zh-CN.md](docs/display.zh-CN.md)。
 
 ## 我们可能错在哪
 
@@ -309,7 +309,7 @@ MixumART/
 | [CLI](docs/cli.zh-CN.md) | 命令契约、端口、selector、JSON、退出码 |
 | [Daemon](docs/daemon.zh-CN.md) | `mixum-artd` 协议与方法 |
 | [显示](docs/display.zh-CN.md) | B 路线合成器、surface/damage、输入、Metal、XWayland |
-| [运行时契约](docs/runtime-contract.md) | 后端语义、错误、序列化 |
+| [运行时契约](docs/runtime-contract.zh-CN.md) | 后端语义、错误、序列化 |
 | [界面](docs/ui.zh-CN.md) | 视图结构、设计 token、文案 |
 | [贡献](docs/contributing.zh-CN.md) | 环境、命令、跨平台规则、已知坑 |
 

@@ -1,11 +1,14 @@
-# 运行时后端契约
+> English translation of the Chinese document. Original: [runtime-contract.zh-CN.md](runtime-contract.zh-CN.md). Technical review pending.
 
-所有 runtime 后端共享同一份契约。**它定义了并行开发的边界**：WSL 2 组实现自己的
-`RuntimeBackend`，本组不需要改 GUI。
+# Runtime backend contract
 
-代码位置：`crates/mixum-env-core/src/runtime.rs`。
+All runtime backends share one contract. **It defines the boundary for parallel
+development**: the WSL 2 group implements its own `RuntimeBackend`, and this group
+does not need to change the GUI.
 
-## 1. 契约
+Code: `crates/mixum-env-core/src/runtime.rs`.
+
+## 1. Contract
 
 ```rust
 #[async_trait]
@@ -14,7 +17,7 @@ pub trait RuntimeBackend: Send + Sync {
     async fn probe(&self) -> RuntimeStatus;
     async fn list_containers(&self) -> Result<Vec<Container>, EnvError>;
 
-    // 以下四个在 M0 有默认实现：直接返回 EnvError::Unimplemented。
+    // The four below have default M0 implementations: return EnvError::Unimplemented.
     async fn create_container(&self, spec: CreateSpec) -> Result<Container, EnvError>;
     async fn start_container(&self, id: &str) -> Result<(), EnvError>;
     async fn stop_container(&self, id: &str) -> Result<(), EnvError>;
@@ -22,79 +25,83 @@ pub trait RuntimeBackend: Send + Sync {
 }
 ```
 
-写操作在 M0 有默认实现，返回 `EnvError::Unimplemented`。**后端不实现也要能编译**，
-这样 UI 可以先长出来。
+The write operations have M0 defaults that return `EnvError::Unimplemented`. **A
+backend must compile even when it does not implement them**, so the UI can grow first.
 
-## 2. `probe` 的语义
+## 2. `probe` semantics
 
-`probe` 是状态查询，不是错误通道：
+`probe` is a status query, not an error channel:
 
-| 返回 | 含义 | 典型触发 |
-|------|------|----------|
-| `Ready { version, detail }` | CLI 存在且 daemon 正常 | `docker version` 成功；`container system status` 报 `running` |
-| `NotInstalled { hint }` | 可执行文件不在 PATH | `ENOENT` |
-| `NotRunning { hint }` | 工具在，服务没起来 | Docker Desktop 未启动、`container system` 未 start |
-| `Unsupported { reason }` | 平台不支持，或后端尚未接入 | macOS 上的 WSL 2；占位实现 |
+| Return | Meaning | Typical trigger |
+|---|---|---|
+| `Ready { version, detail }` | CLI exists and the daemon is healthy | `docker version` succeeds; `container system status` reports `running` |
+| `NotInstalled { hint }` | executable not on PATH | `ENOENT` |
+| `NotRunning { hint }` | tool exists, service is down | Docker Desktop not started, `container system` not started |
+| `Unsupported { reason }` | platform unsupported, or backend not wired | WSL 2 on macOS; placeholder implementation |
 
-硬性要求：
+Hard requirements:
 
-- **不返回 `Err`**：daemon 挂了是状态，不是异常；
-- **不 panic**、不阻塞超过 5 秒；
-- 无副作用，不修改任何配置；
-- `hint` 是给用户看的下一步操作（例如「执行 container system start」），不是日志。
+- **Never return `Err`**: a dead daemon is a state, not an exception.
+- **No panic**, no blocking longer than 5 seconds.
+- No side effects; do not modify any configuration.
+- `hint` is the user's next action (e.g. "run container system start"), not a log line.
 
-## 3. 方法语义
+## 3. Method semantics
 
-| 方法 | 成功 | 失败 |
-|------|------|------|
-| `list_containers` | 返回**含已停止**的容器；没有容器返回空 `Vec` | CLI 缺失 → `NotInstalled`；输出无法解析 → `Parse`；非零退出 → `CommandFailed` |
-| `create_container` | 返回创建后的摘要（状态可以是 `created`） | 重名、镜像不存在等映射为 `CommandFailed`（M1 细化错误类型） |
-| `start_container` | 容器进入 `running` | 幂等约定：**已运行视为成功** |
-| `stop_container` | 容器进入 `stopped` | 幂等约定：**已停止视为成功** |
-| `remove_container` | 容器消失 | 幂等约定：**不存在视为成功** |
+| Method | Success | Failure |
+|---|---|---|
+| `list_containers` | returns containers **including stopped ones**; empty `Vec` when none | CLI missing → `NotInstalled`; unparsable output → `Parse`; non-zero exit → `CommandFailed` |
+| `create_container` | returns the created summary (state may be `created`) | duplicate name, missing image etc. map to `CommandFailed` (finer error types in M1) |
+| `start_container` | container enters `running` | idempotency: **already running counts as success** |
+| `stop_container` | container enters `stopped` | idempotency: **already stopped counts as success** |
+| `remove_container` | container is gone | idempotency: **absent counts as success** |
 
-幂等约定的目的：UI 重试与并发点击不应产生用户无法理解的错误。
+The point of the idempotency rules: UI retries and double clicks must not produce
+errors the user cannot understand.
 
-WSL 2 的字段映射、写操作超时与额外的幂等细节见 §9。
+WSL 2 field mapping, write timeouts and extra idempotency details are in §9.
 
-## 4. 外部命令规则
+## 4. External command rules
 
-统一走 `mixum_env_core::process::run`：
+Always go through `mixum_env_core::process::run`:
 
 ```rust
 process::run("docker", &["ps", "-a", "--no-trunc", "--format", "{{json .}}"], LIST_TIMEOUT).await
 ```
 
-- 只传 argv，**不经过 shell**；命令里不允许出现用户输入拼接的字符串；
-- 超时：探测 5s，列举 10s；WSL 2 写操作 create 10min（rootfs tar 可达 GB 级）、
-  start/stop/remove 30s；超时返回 `EnvError::Timeout`；
-- `stdin` 一律关闭，避免子进程等待输入；
-- 可执行文件找不到时统一返回 `NotInstalled`，安装提示由后端补充；
-- **编码**：`process::run` 按 UTF-8 解码；wsl.exe 等控制台工具输出
-  UTF-16LE，走 `process::run_raw`（返回原始字节）由后端自行解码
-  （启发式见 wsl2 后端 `decode_console`）。
+- Pass argv only, **never through a shell**; user input must not be concatenated into
+  the command.
+- Timeouts: 5 s for probe, 10 s for list; WSL 2 create 10 min (rootfs tar can be GB
+  scale), start/stop/remove 30 s; timeout returns `EnvError::Timeout`.
+- `stdin` is always closed, so a child cannot wait for input.
+- A missing executable returns `NotInstalled`; the backend adds the install hint.
+- **Encoding**: `process::run` decodes UTF-8; console tools such as wsl.exe print
+  UTF-16LE, so use `process::run_raw` (raw bytes) and decode in the backend (see the
+  wsl2 backend's `decode_console` heuristic).
 
-## 5. 错误映射
+## 5. Error mapping
 
-`EnvError` → 命令层字符串 → 前端错误条。展示文案由 `Display` 决定。
+`EnvError` → command-layer string → frontend error bar. The `Display` impl decides
+the copy.
 
-| 错误 | 触发 | 用户看到 |
-|------|------|----------|
-| `Unsupported` | 平台不符 / 未接入 | 灰色徽章 + 原因（`probe`） |
-| `NotInstalled` | `ENOENT` | 红色徽章 + 安装命令（`probe`） |
-| `Timeout` | 超过超时 | 错误条：命令 + 秒数 |
-| `CommandFailed` | 非零退出 | 错误条：命令 + stderr 首行 |
-| `Parse` | 输出格式变化 | 错误条：提示可能升级了 runtime |
-| `Io` | 进程无法启动 | 错误条 |
-| `Unimplemented` | 骨架占位 | 错误条（M1 前不应从 UI 触达） |
+| Error | Trigger | What the user sees |
+|---|---|---|
+| `Unsupported` | platform mismatch / not wired | grey badge + reason (`probe`) |
+| `NotInstalled` | `ENOENT` | red badge + install command (`probe`) |
+| `Timeout` | deadline exceeded | error bar: command + seconds |
+| `CommandFailed` | non-zero exit | error bar: command + first stderr line |
+| `Parse` | output format changed | error bar: hint that the runtime may have upgraded |
+| `Io` | process failed to start | error bar |
+| `Unimplemented` | skeleton placeholder | error bar (should not be reachable from the UI before M1) |
 
-`probe` 不返回错误，服务未启动体现为 `RuntimeStatus::NotRunning`（橙色徽章 + 启动提示）。
+`probe` never returns an error; a stopped service appears as
+`RuntimeStatus::NotRunning` (orange badge + start hint).
 
-## 6. 序列化契约（前后端共享）
+## 6. Serialization contract (shared frontend/backend)
 
-- `RuntimeKind` 用 **snake_case** 字符串：`docker` / `wsl2` / `apple_container`；
-- 结构体字段用 **camelCase**（`createdAt`、`readOnly`）；
-- `RuntimeStatus` 用 `state` 做判别字段：
+- `RuntimeKind` uses **snake_case** strings: `docker` / `wsl2` / `apple_container`.
+- Struct fields use **camelCase** (`createdAt`, `readOnly`).
+- `RuntimeStatus` uses `state` as the discriminant:
 
 ```json
 {
@@ -116,91 +123,101 @@ process::run("docker", &["ps", "-a", "--no-trunc", "--format", "{{json .}}"], LI
 }
 ```
 
-前端镜像在 `apps/desktop/src/types.ts`；**字段名是契约的一部分**，改名前先改这份文档。
+The frontend mirror is `apps/desktop/src/types.ts`; **field names are part of the
+contract** — update this document before renaming.
 
-## 7. 实现一个新后端
+## 7. Implementing a new backend
 
-1. 新建 `crates/mixum-env-runtime-<name>/`，依赖 `mixum-env-core`；
-2. 实现 `RuntimeBackend`，在 `crates/mixum-env-runtime-<name>/src/lib.rs` 暴露
-   `pub fn backend() -> Arc<dyn RuntimeBackend>`；
-3. 在 `mixum-env-core/src/runtime.rs` 的 `RuntimeKind` 加变体（`ALL` 与 `id()`）；
-4. 在 `apps/desktop/src-tauri/src/lib.rs` 的 `build_registry()` 加分支；
-5. 在 `docs/module-map.md` 的归属表补一行。
+1. Create `crates/mixum-env-runtime-<name>/`, depending on `mixum-env-core`.
+2. Implement `RuntimeBackend` and expose
+   `pub fn backend() -> Arc<dyn RuntimeBackend>` from
+   `crates/mixum-env-runtime-<name>/src/lib.rs`.
+3. Add a variant to `RuntimeKind` in `mixum-env-core/src/runtime.rs` (`ALL` and `id()`).
+4. Add a branch to `build_registry()` in `apps/desktop/src-tauri/src/lib.rs`.
+5. Add a row to the ownership table in `docs/module-map.md`.
 
-平台专属的后端（WSL 2）也要在其它平台编译通过：`probe` 返回 `Unsupported` 即可。
+A platform-specific backend (WSL 2) must still compile on other platforms:
+`probe` returns `Unsupported`.
 
-## 8. 测试要求
+## 8. Testing requirements
 
-- **纯函数解析必须有单测**，样例直接取真实 CLI 输出（见两个后端的 `mod tests`）；
-- 序列化字段名用单测锁定；
-- 依赖本机 runtime 的端到端检查用 `#[ignore]` 标记，不阻塞 CI：
+- **Pure parsing functions must have unit tests**, with samples taken from real CLI
+  output (see the two backends' `mod tests`).
+- Serialization field names are locked by unit tests.
+- End-to-end checks that need a local runtime are `#[ignore]`d and do not block CI:
 
 ```sh
 cargo test --workspace
-cargo test -p mixum-env-runtime-apple -- --ignored   # 需要本机 container 服务
-cargo test -p mixum-env-runtime-docker -- --ignored  # 需要本机 docker daemon
-cargo test -p mixum-env-runtime-wsl2 -- --ignored    # 需要本机 WSL
+cargo test -p mixum-env-runtime-apple -- --ignored   # needs a local container service
+cargo test -p mixum-env-runtime-docker -- --ignored  # needs a local docker daemon
+cargo test -p mixum-env-runtime-wsl2 -- --ignored    # needs local WSL
 ```
 
-## 9. WSL 2 写操作（并行组，2026-10-19）
+## 9. WSL 2 write operations (parallel group, 2026-10-19)
 
-WSL 2 没有「容器」这一层：一个 mixumOS 节点 = 一个 `mixum-*` 发行版，由
-`wsl --import` 从 rootfs tar 导入。所以写操作的字段映射和 Docker 不同，
-**语义以本节为准**。
+WSL 2 has no "container" layer: one mixumOS node = one `mixum-*` distro imported from
+a rootfs tar with `wsl --import`. Field mapping and semantics therefore differ from
+Docker; **this section is authoritative**.
 
-| 方法 | 等价 CLI | 超时 |
-|------|----------|------|
-| `create_container` | `wsl --import <name> <installDir> <rootfs.tar>` | 10 分钟 |
-| `start_container` | `wsl -d <id> -e /bin/true` | 30s |
-| `stop_container` | `wsl --terminate <id>` | 30s |
-| `remove_container` | `wsl --unregister <id>` | 30s |
+| Method | Equivalent CLI | Timeout |
+|---|---|---|
+| `create_container` | `wsl --import <name> <installDir> <rootfs.tar>` | 10 minutes |
+| `start_container` | `wsl -d <id> -e /bin/true` | 30 s |
+| `stop_container` | `wsl --terminate <id>` | 30 s |
+| `remove_container` | `wsl --unregister <id>` | 30 s |
 
-`CreateSpec` 在 WSL 2 下的字段映射：
+`CreateSpec` field mapping on WSL 2:
 
-| 字段 | 含义 |
-|------|------|
-| `name` | 发行版名，`mixum-` 前缀 + `[A-Za-z0-9._-]` 后缀（见下方命名规则） |
-| `image` | **本地 rootfs 路径**——WSL 没有镜像仓库，节点来自 mixumOS `dist/` 产物；`.tar` 与 `.tar.gz` 都支持 |
-| `ports` / `mounts` / `env` / `command` | 无对应物，**非空即报错**，不静默忽略 |
+| Field | Meaning |
+|---|---|
+| `name` | distro name: `mixum-` prefix + `[A-Za-z0-9._-]` suffix (naming rules below) |
+| `image` | **local rootfs path** — WSL has no image registry; nodes come from mixumOS `dist/` output; `.tar` and `.tar.gz` are supported |
+| `ports` / `mounts` / `env` / `command` | no equivalent; **non-empty is an error**, never silently ignored |
 
-命名规则（列表过滤、写操作保护、安装目录拼接共用同一份实现
-`validate_name`，避免「列得出来但点不动」）：
+Naming rules (list filtering, write protection and install-directory joining share
+one `validate_name`, so "listed but not clickable" cannot happen):
 
-- 前缀必须是 `mixum-`（不区分大小写），`mixum` / `mixumfoo` 都不算节点；
-- 后缀非空，只允许 `[A-Za-z0-9._-]`；含分隔符、`..` 或以 `.` 结尾一律拒绝——
-  这个名字会拼进安装目录，放开就等于允许路径穿越。
+- the prefix must be `mixum-` (case-insensitive); `mixum` / `mixumfoo` are not nodes;
+- the suffix is non-empty and only `[A-Za-z0-9._-]`; separators, `..` or a trailing
+  `.` are rejected — the name is joined into the install directory, so allowing them
+  would allow path traversal.
 
-安装位置：`%MIXUM_WSL_INSTALL_ROOT%\<name>`；未设置时
-`%LOCALAPPDATA%\mixum\wsl\<name>`，目录不存在则创建。导入失败会清掉这个
-目录，否则同名重试会被非空目录挡住；`remove` 成功后也会顺手清理。
+Install location: `%MIXUM_WSL_INSTALL_ROOT%\<name>`; if unset,
+`%LOCALAPPDATA%\mixum\wsl\<name>`, created if absent. A failed import removes that
+directory, otherwise a same-name retry is blocked by a non-empty directory; `remove`
+also cleans it up.
 
-硬性要求：
+Hard requirements:
 
-- **只动 `mixum-` 前缀的发行版**：`start` / `stop` / `remove` 收到其它名字直接拒绝，
-  避免把宿主自己的 `Ubuntu-24.04` / `docker-desktop` terminate 或 unregister 掉；
-- 非 Windows 宿主：`probe` 返回 `Unsupported`，其余方法直接返回
-  `EnvError::Unsupported`，不要落到「找不到 wsl.exe」的 `NotInstalled`；
-- `remove` 会删掉 `ext4.vhdx`，**不可逆**，UI 层必须二次确认；
-- 幂等：`stop` / `remove` 遇到不存在的发行版视为成功；`stop` 遇到**已存在但已停止**
-  的发行版同样视为成功（先看状态再决定要不要 `--terminate`）；
-  `create` 重名视为失败；`start` 遇到不存在的发行版是错误；
-- `start` 只把发行版实例拉起（`wsl -d <id> -e /bin/true`），是**临时拉起**。
-  **WSL 在无进程约 15s 后自动回到 `Stopped`**，`Running` 仅表示「当前有活动会话」；
-  常驻服务（`mixumd` / entrypoint）的启动语义在后续里程碑以新契约补充。
-  在常驻服务接入前，UI 上的「运行中」文案应说明这是临时状态；
-- 是否「存在」以 `wsl --list --verbose` 的解析结果为准，不去猜错误文案；
-- 解析以「最后一列是版本号」锚定，不写死 STATE 枚举：WSL 新增状态时
-  （如 `Uninstalling`）该行仍会列出，展示层降级为 `Unknown`；
-- 「一个发行版都没有」不是错误：`list_containers` 返回空 `Vec`。
+- **Only touch distros with the `mixum-` prefix**: `start` / `stop` / `remove` reject
+  any other name, so the host's own `Ubuntu-24.04` / `docker-desktop` cannot be
+  terminated or unregistered.
+- Non-Windows host: `probe` returns `Unsupported`, and the other methods return
+  `EnvError::Unsupported`; do not fall through to `NotInstalled` ("wsl.exe not found").
+- `remove` deletes `ext4.vhdx` and is **irreversible**; the UI must confirm twice.
+- Idempotency: `stop` / `remove` treat an absent distro as success; `stop` treats an
+  existing but stopped distro as success (check state before `--terminate`);
+  `create` treats a duplicate name as failure; `start` on an absent distro is an error.
+- `start` only brings the distro instance up (`wsl -d <id> -e /bin/true`), temporarily.
+  **WSL returns to `Stopped` about 15 s after the last process exits**; `Running` means
+  "there is an active session now". Resident services (`mixumd` / entrypoint) get a new
+  contract in a later milestone. Until then, the UI's "running" copy should say this is
+  temporary.
+- "Exists" is determined by parsing `wsl --list --verbose`, not by guessing error text.
+- Parsing anchors on "the last column is the version", not a hard-coded STATE enum: a
+  new WSL state (e.g. `Uninstalling`) still lists the row, and display degrades to
+  `Unknown`.
+- "No distros at all" is not an error: `list_containers` returns an empty `Vec`.
 
-### 资源类方法（设置页 / 环境终端）
+### Resource methods (settings page / environment terminal)
 
-| 方法 | WSL 2 的实现 | 为什么 |
-|------|--------------|--------|
-| `images` | 返回空列表 | WSL 没有镜像仓库，节点来自本地 rootfs tar，导入后不存在「镜像」这一层 |
-| `disk_usage` | `N 个节点 · X GiB` + 安装根目录 | WSL 没有 `system df`，`ext4.vhdx` 是唯一能反映真实占用的东西 |
-| `logs` | `journalctl -u mixumd …`，回退 `/var/log/mixumd.log` / `dmesg` | 节点内部是 systemd journal；优先 mixumd 服务日志，读取失败返回 `Err`（日志实现已随 #34 合入） |
+| Method | WSL 2 implementation | Why |
+|---|---|---|
+| `images` | empty list | WSL has no image registry; nodes come from a local rootfs tar, and after import there is no "image" layer |
+| `disk_usage` | `N nodes · X GiB` + install root | WSL has no `system df`; `ext4.vhdx` is the only thing reflecting real usage |
+| `logs` | `journalctl -u mixumd …`, falling back to `/var/log/mixumd.log` / `dmesg` | the node uses the systemd journal; prefer the mixumd service log, return `Err` if reading fails (log implementation merged in #34) |
 
-这三个方法以前走 trait 默认实现（`Unimplemented`），设置页会把一个正常的
-WSL 2 后端显示成「能力尚未实现」。**「没有这个概念」和「读取失败」必须区分**：
-前者返回空/零值，后者才返回 `Err`。
+These three used to fall back to the trait default (`Unimplemented`), so the settings
+page showed a healthy WSL 2 backend as "capability not implemented". **"No such
+concept" and "read failed" must be distinguished**: the former returns empty/zero, the
+latter returns `Err`.
