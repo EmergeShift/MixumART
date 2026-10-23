@@ -7,19 +7,19 @@ linked below.
 
 ## Coverage (2026-10-24)
 
-- English text exists for 15 of 15 pages; 13 of those also have a Chinese
-  `.zh-CN.md` counterpart (`architecture`, `base-env`, `browser-early-access`,
-  `cli`, `contributing`, `criu-build`, `daemon`, `display`, `module-map`,
-  `privilege`, `runtime-contract`, `support-matrix`, `ui`).
-- English-only pages still needing a Chinese counterpart: `browser-bridge`.
-
+- English text exists for 15 of 15 pages; 14 of those also have a Chinese
+  `.zh-CN.md` counterpart (`architecture`, `base-env`, `browser-bridge`,
+  `browser-early-access`, `cli`, `contributing`, `criu-build`, `daemon`,
+  `display`, `module-map`, `privilege`, `runtime-contract`, `support-matrix`,
+  `ui`).
+- 
 ## Pages
 
 | Page | Status | English | 中文 |
 |---|---|---|---|
 | [architecture](docs/architecture.md) | current | [English](docs/architecture.md) | [中文](docs/architecture.zh-CN.md) |
 | [base-env](docs/base-env.md) | current | [English](docs/base-env.md) | [中文](docs/base-env.zh-CN.md) |
-| [browser-bridge](docs/browser-bridge.md) | current | [English](docs/browser-bridge.md) | pending |
+| [browser-bridge](docs/browser-bridge.md) | current | [English](docs/browser-bridge.md) | [中文](docs/browser-bridge.zh-CN.md) |
 | [browser early access](docs/browser-early-access.md) | early access | [English](docs/browser-early-access.md) | [中文](docs/browser-early-access.zh-CN.md) |
 | [CLI](docs/cli.md) | current | [English](docs/cli.md) | [中文](docs/cli.zh-CN.md) |
 | [contributing](docs/contributing.md) | current | [English](docs/contributing.md) | [中文](docs/contributing.zh-CN.md) |
