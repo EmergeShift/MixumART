@@ -13,4 +13,7 @@ Mixum Browser Bridge runs locally in Chrome.
 - Removing the extension stops all access. The local Mixum runtime deletes its
   lease files after applying them.
 
-Contact: security@mixum.dev
+Contact: security@emergeshift.com
+
+
+Privacy policy URL: https://mixum.emergeshift.com/privacy/browser-bridge (under construction; see #64)
