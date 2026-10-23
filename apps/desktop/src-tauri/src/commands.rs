@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use mixum_env_core::{
-    BackendStatus, Container, CreateSpec, MartRef, MigrationManifest, MigrationSource,
-    InspectedContainer, PortMapping, RuntimeKind, MIGRATION_VERSION,
+    BackendStatus, Container, CreateSpec, InspectedContainer, MartRef, MigrationManifest,
+    MigrationSource, PortMapping, RuntimeKind, MIGRATION_VERSION,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -529,6 +529,51 @@ fn connection_for(app: &AppHandle, container_id: &str) -> Result<EnvironmentConn
         .ok_or_else(|| format!("环境 {container_id} 还没有连接档案"))
 }
 
+/// Resolve a managed environment even before the user saved a connection.
+async fn connection_for_container(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    container_id: &str,
+) -> Result<EnvironmentConnection, String> {
+    if let Some(connection) = load_connection_map(app)?.remove(container_id) {
+        return Ok(connection);
+    }
+    for kind in RuntimeKind::ALL {
+        let Some(backend) = state.registry.get(kind) else {
+            continue;
+        };
+        let Ok(containers) = backend.list_containers().await else {
+            continue;
+        };
+        let Some(container) = containers
+            .into_iter()
+            .find(|container| container.id == container_id)
+        else {
+            continue;
+        };
+        if container.state != mixum_env_core::ContainerState::Running {
+            continue;
+        }
+        let Some(port) = container
+            .ports
+            .iter()
+            .find(|mapping| mapping.container == 7601)
+        else {
+            continue;
+        };
+        let token = backend
+            .admin_token(&container.id)
+            .await
+            .map_err(|error| error.to_string())?;
+        return Ok(EnvironmentConnection {
+            addr: format!("127.0.0.1:{}", port.host),
+            token,
+            fingerprint: None,
+        });
+    }
+    Err(format!("环境 {container_id} 还没有连接档案"))
+}
+
 fn free_host_port(used: &mut std::collections::HashSet<u16>) -> Result<u16, String> {
     for _ in 0..32 {
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0))
@@ -862,7 +907,13 @@ pub async fn environment_migrate(
 ) -> Result<String, String> {
     let source = snapshot_client(&app, &source_container_id).await?;
     let target = snapshot_client(&app, &target_container_id).await?;
-    transfer_node(&source, &target, &node, origin.as_deref().unwrap_or("mixumart")).await
+    transfer_node(
+        &source,
+        &target,
+        &node,
+        origin.as_deref().unwrap_or("mixumart"),
+    )
+    .await
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -1718,10 +1769,10 @@ pub async fn remote_clipboard(app: AppHandle, surface: u32) -> Result<String, St
     client.clipboard().await.map_err(|error| error.to_string())
 }
 
-
 #[tauri::command]
 pub async fn environment_privilege_decide(
     app: AppHandle,
+    state: State<'_, AppState>,
     container_id: String,
     id: String,
     approve: bool,
@@ -1730,7 +1781,7 @@ pub async fn environment_privilege_decide(
     if approve {
         authenticate_host_privilege()?;
     }
-    let connection = connection_for(&app, &container_id)?;
+    let connection = connection_for_container(&app, &state, &container_id).await?;
     let client = MapClient::connect(
         &connection.addr,
         &connection.token,
@@ -1750,7 +1801,10 @@ fn authenticate_host_privilege() -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
         let status = std::process::Command::new("/usr/bin/osascript")
-            .args(["-e", "do shell script \"true\" with administrator privileges"])
+            .args([
+                "-e",
+                "do shell script \"true\" with administrator privileges",
+            ])
             .status()
             .map_err(|error| format!("host authentication unavailable: {error}"))?;
         if !status.success() {
@@ -1770,7 +1824,10 @@ fn authenticate_host_privilege() -> Result<(), String> {
         return Ok(());
     }
     #[allow(unreachable_code)]
-    Err("host authentication is not implemented on this platform; use `mixum privilege approve`".into())
+    Err(
+        "host authentication is not implemented on this platform; use `mixum privilege approve`"
+            .into(),
+    )
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -1864,7 +1921,10 @@ pub fn list_approvals(app: AppHandle) -> Result<Vec<ApprovalView>, String> {
                     .get("createdAtMs")
                     .and_then(Value::as_u64)
                     .unwrap_or_default() as u128,
-                approved: value.get("approved").and_then(Value::as_bool).unwrap_or(false),
+                approved: value
+                    .get("approved")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
                 action: format!("mixum browser approve {id}"),
             });
         } else {
@@ -1891,7 +1951,10 @@ pub fn list_approvals(app: AppHandle) -> Result<Vec<ApprovalView>, String> {
                     .get("createdAtMs")
                     .and_then(Value::as_u64)
                     .unwrap_or_default() as u128,
-                approved: value.get("approved").and_then(Value::as_bool).unwrap_or(false),
+                approved: value
+                    .get("approved")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
                 action: format!("mixum root approve {id}"),
             });
         }
@@ -1917,8 +1980,11 @@ pub fn approve_root_approval(app: AppHandle, id: String) -> Result<(), String> {
     let data = std::fs::read(&path).map_err(|error| error.to_string())?;
     let mut value: Value = serde_json::from_slice(&data).map_err(|error| error.to_string())?;
     value["approved"] = Value::Bool(true);
-    std::fs::write(path, serde_json::to_vec_pretty(&value).map_err(|error| error.to_string())?)
-        .map_err(|error| error.to_string())?;
+    std::fs::write(
+        path,
+        serde_json::to_vec_pretty(&value).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
     append_approval_audit(&app, "root_approved", &id, serde_json::json!({}));
     Ok(())
 }
@@ -1959,8 +2025,47 @@ pub fn approve_browser_approval(app: AppHandle, id: String) -> Result<(), String
 /// Pending sudo requests across environments with a saved MAP connection.
 /// Approval stays in `environment_privilege_decide` (OS authentication again).
 #[tauri::command]
-pub async fn list_pending_privileges(app: AppHandle) -> Result<Vec<Value>, String> {
-    let map = load_connection_map(&app)?;
+pub async fn list_pending_privileges(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Vec<Value>, String> {
+    let mut map = load_connection_map(&app)?;
+    // Managed environments are listed from the runtime, but their connection
+    // tokens are only saved after the user opens Manage. Pending sudo requests
+    // must still surface in Mart without that extra click.
+    for kind in RuntimeKind::ALL {
+        let Some(backend) = state.registry.get(kind) else {
+            continue;
+        };
+        let Ok(containers) = backend.list_containers().await else {
+            continue;
+        };
+        for container in containers {
+            if map.contains_key(&container.id)
+                || container.state != mixum_env_core::ContainerState::Running
+            {
+                continue;
+            }
+            let Some(port) = container
+                .ports
+                .iter()
+                .find(|mapping| mapping.container == 7601)
+            else {
+                continue;
+            };
+            let Ok(token) = backend.admin_token(&container.id).await else {
+                continue;
+            };
+            map.insert(
+                container.id.clone(),
+                EnvironmentConnection {
+                    addr: format!("127.0.0.1:{}", port.host),
+                    token,
+                    fingerprint: None,
+                },
+            );
+        }
+    }
     let mut out = Vec::new();
     for (container_id, connection) in map {
         let client = match MapClient::connect(
