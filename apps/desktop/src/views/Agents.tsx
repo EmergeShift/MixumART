@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from 'react'
-import { listen } from '@tauri-apps/api/event'
 
 import {
   agentCatalog,
@@ -23,7 +22,6 @@ import {
   setAgentCredential,
   type AgentEnvironmentInfo,
   type AgentInfo,
-  type AgentInstallEvent,
   type AgentProfile,
   type AgentStatus,
 } from '../api'
@@ -425,26 +423,6 @@ export function Agents() {
       .catch(() => undefined)
   }, [])
 
-  useEffect(() => {
-    let dispose: (() => void) | undefined
-    listen<AgentInstallEvent>('agent-install', (event) => {
-      const payload = event.payload
-      if (!payload.installId || payload.installId !== installIdRef.current) return
-      if (payload.kind === 'log' && payload.line) {
-        setAgentLines((previous) => [...(previous ?? []), payload.line as string])
-        return
-      }
-      if (payload.kind === 'state') {
-        setAgentInstallState(payload.state ?? null)
-        if (payload.message) setAgentError(payload.message)
-      }
-    })
-      .then((unlisten) => {
-        dispose = unlisten
-      })
-      .catch(() => undefined)
-    return () => dispose?.()
-  }, [])
 
   const save = async () => {
     if (!editing) return
