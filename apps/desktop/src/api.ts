@@ -72,6 +72,16 @@ export const runEnvironmentCommand = (containerId: string, command: string) =>
     ? demoDelay<CommandResult>({ taskId: 'demo', state: 'completed', lines: [`$ ${command}`, '(demo)'], error: null })
     : invoke<CommandResult>('environment_run_command', { containerId, command })
 
+export const decidePrivilege = (
+  containerId: string,
+  id: string,
+  approve: boolean,
+  reason = '',
+) =>
+  isDemo()
+    ? demoDelay(undefined)
+    : invoke<void>('environment_privilege_decide', { containerId, id, approve, reason })
+
 export const snapshotTree = (containerId: string) =>
   isDemo()
     ? demoDelay({ head: 'demo', branch: 'main', nodes: [] })
@@ -82,6 +92,15 @@ export const snapshotCreate = (containerId: string, label: string) =>
     ? demoDelay({ id: 'demo', label })
     : invoke<unknown>('environment_snapshot_create', { containerId, label: label || null })
 
+export const snapshotCreateKind = (containerId: string, kind: string, label: string) =>
+  isDemo()
+    ? demoDelay({ id: 'demo', kind, label })
+    : invoke<unknown>('environment_snapshot_create_kind', {
+        containerId,
+        kind,
+        label: label || null,
+      })
+
 export const snapshotRestore = (containerId: string, node: string) =>
   isDemo()
     ? demoDelay({ restoredTo: node })
@@ -91,6 +110,101 @@ export const snapshotFork = (containerId: string, node: string, branch: string) 
   isDemo()
     ? demoDelay({ branch })
     : invoke<unknown>('environment_snapshot_fork', { containerId, node, branch })
+
+export type MigrationFile = {
+  path: string
+  size: number
+  sha256: string
+  manifestPath?: string | null
+}
+
+export type ContainerSpec = {
+  name: string
+  image: string
+  ports: { host: number; container: number; protocol: string }[]
+  mounts: unknown[]
+  env: Record<string, string>
+  command: string[]
+}
+
+export type InspectedContainer = {
+  spec: ContainerSpec
+  imageDigest?: string | null
+}
+
+export const containerSpec = (kind: string, containerId: string) =>
+  isDemo()
+    ? demoDelay<InspectedContainer | null>(null)
+    : invoke<InspectedContainer>('environment_container_spec', { kind, containerId })
+
+export const snapshotExport = (
+  containerId: string,
+  node: string,
+  spec?: ContainerSpec | null,
+  imageDigest?: string | null,
+  runtime?: string,
+  branch?: string,
+) =>
+  isDemo()
+    ? demoDelay<MigrationFile>({ path: '/tmp/demo.mart', size: 0, sha256: '' })
+    : invoke<MigrationFile>('environment_snapshot_export', {
+        containerId,
+        node,
+        spec: spec ?? null,
+        imageDigest: imageDigest ?? null,
+        runtime: runtime ?? null,
+        branch: branch ?? null,
+      })
+
+export const snapshotImport = (containerId: string, path: string, origin?: string) =>
+  isDemo()
+    ? demoDelay('demo-node')
+    : invoke<string>('environment_snapshot_import', { containerId, path, origin })
+
+export type MigrateNewResult = {
+  targetContainerId: string
+  targetNode: string
+  agentdAddr: string
+}
+
+export const migrateSnapshotNew = (
+  sourceContainerId: string,
+  sourceKind: string,
+  targetKind: string,
+  node: string,
+  name?: string,
+) =>
+  isDemo()
+    ? demoDelay<MigrateNewResult>({
+        targetContainerId: 'demo-target',
+        targetNode: 'demo-node',
+        agentdAddr: '127.0.0.1:17601',
+      })
+    : invoke<MigrateNewResult>('environment_migrate_new', {
+        sourceContainerId,
+        sourceKind,
+        targetKind,
+        node,
+        name: name ?? null,
+      })
+
+export const migrateSnapshot = (
+  sourceContainerId: string,
+  targetContainerId: string,
+  node: string,
+  origin?: string,
+) =>
+  isDemo()
+    ? demoDelay('demo-node')
+    : invoke<string>('environment_migrate', {
+        sourceContainerId,
+        targetContainerId,
+        node,
+        origin,
+      })
+
+export const listMigrations = () =>
+  isDemo() ? demoDelay<MigrationFile[]>([]) : invoke<MigrationFile[]>('list_migrations')
 
 export type AgentProfile = {
   id: string
@@ -254,3 +368,43 @@ export const surfacePutFile = (surface: number, name: string, data: number[]) =>
   isDemo()
     ? Promise.resolve(`/demo/transfers/${name}`)
     : invoke<string>('surface_put_file', { surface, name, data })
+
+export type ApprovalView = {
+  kind: 'root' | 'browser'
+  id: string
+  title: string
+  selector?: string | null
+  domains: string[]
+  urls: string[]
+  agentStance?: string | null
+  agentReason?: string | null
+  createdAtMs: number
+  approved: boolean
+  action: string
+}
+
+export const listApprovals = () =>
+  isDemo() ? demoDelay<ApprovalView[]>([]) : invoke<ApprovalView[]>('list_approvals')
+
+export const approveRootApproval = (id: string) =>
+  isDemo() ? demoDelay(undefined) : invoke<void>('approve_root_approval', { id })
+
+export const approveBrowserApproval = (id: string) =>
+  isDemo() ? demoDelay(undefined) : invoke<void>('approve_browser_approval', { id })
+
+export const denyApproval = (id: string) =>
+  isDemo() ? demoDelay(undefined) : invoke<void>('deny_approval', { id })
+
+export type PendingPrivilege = {
+  containerId: string
+  id: string
+  taskId?: string
+  program: string
+  args?: string[]
+  cwd?: string
+  reason?: string
+  risk?: string
+}
+
+export const listPendingPrivileges = () =>
+  isDemo() ? demoDelay<PendingPrivilege[]>([]) : invoke<PendingPrivilege[]>('list_pending_privileges')

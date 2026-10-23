@@ -136,8 +136,86 @@ fn tools() -> Vec<Value> {
         tool(
             "mixum_snapshot_create",
             "Create a disk snapshot for an environment.",
-            json!({"selector":{"type":"string"},"label":{"type":"string"}}),
+            json!({"selector":{"type":"string"},"label":{"type":"string"},"kind":{"type":"string","enum":["disk","memory","hybrid"],"default":"disk"}}),
             vec!["selector"],
+        ),
+        tool(
+            "mixum_browser_request",
+            "Ask a human to approve Chrome domains for one environment. Approval and the actual share happen only through the human CLI/Mart.",
+            json!({"selector":{"type":"string"},"domains":{"type":"array","items":{"type":"string"}},"urls":{"type":"array","items":{"type":"string"}},"reason":{"type":"string"}}),
+            vec!["selector","domains"],
+        ),
+        tool(
+            "mixum_root_request",
+            "Ask a human to approve a root container. Returns a request id and exact CLI approval command; approval is never performed by the agent.",
+            json!({"title":{"type":"string"},"image":{"type":"string"},"stance":{"type":"string","enum":["agree","disagree"]},"reason":{"type":"string"}}),
+            vec!["title","image","stance"],
+        ),
+        tool(
+            "mixum_window_screenshot",
+            "Capture one window as a PNG image. Returns MCP image content; this is the agent's screen for computer use.",
+            json!({"selector":{"type":"string"},"window":{"type":"integer"}}),
+            vec!["selector","window"],
+        ),
+        tool(
+            "mixum_window_click",
+            "Click inside a container window using window-local coordinates.",
+            json!({"selector":{"type":"string"},"window":{"type":"integer"},"x":{"type":"number"},"y":{"type":"number"},"button":{"type":"string","enum":["left","middle","right"],"default":"left"}}),
+            vec!["selector","window","x","y"],
+        ),
+        tool(
+            "mixum_window_move",
+            "Move the pointer inside a container window.",
+            json!({"selector":{"type":"string"},"window":{"type":"integer"},"x":{"type":"number"},"y":{"type":"number"}}),
+            vec!["selector","window","x","y"],
+        ),
+        tool(
+            "mixum_window_type",
+            "Commit composed text into a container window (IME-safe; use for arbitrary Unicode).",
+            json!({"selector":{"type":"string"},"window":{"type":"integer"},"text":{"type":"string"}}),
+            vec!["selector","window","text"],
+        ),
+        tool(
+            "mixum_window_key",
+            "Send one keysym such as Return or a (with mods) to a container window.",
+            json!({"selector":{"type":"string"},"window":{"type":"integer"},"keysym":{"type":"string"},"mods":{"type":"array","items":{"type":"string"}}}),
+            vec!["selector","window","keysym"],
+        ),
+        tool(
+            "mixum_window_scroll",
+            "Scroll a container window at a point.",
+            json!({"selector":{"type":"string"},"window":{"type":"integer"},"x":{"type":"number"},"y":{"type":"number"},"direction":{"type":"string","enum":["up","down"],"default":"down"}}),
+            vec!["selector","window","x","y"],
+        ),
+        tool(
+            "mixum_window_focus",
+            "Focus a container window before typing or key input.",
+            json!({"selector":{"type":"string"},"window":{"type":"integer"}}),
+            vec!["selector","window"],
+        ),
+        tool(
+            "mixum_snapshot_restore",
+            "Restore a snapshot in place. Destructive: confirm must be exactly RESTORE.",
+            json!({"selector":{"type":"string"},"node":{"type":"string"},"confirm":{"type":"string"}}),
+            vec!["selector","node","confirm"],
+        ),
+        tool(
+            "mixum_snapshot_fork",
+            "Fork a snapshot into a new branch.",
+            json!({"selector":{"type":"string"},"node":{"type":"string"},"branch":{"type":"string"}}),
+            vec!["selector","node","branch"],
+        ),
+        tool(
+            "mixum_snapshot_export",
+            "Export a snapshot as a .mart bundle to a host path.",
+            json!({"selector":{"type":"string"},"node":{"type":"string"},"out":{"type":"string"}}),
+            vec!["selector","node","out"],
+        ),
+        tool(
+            "mixum_snapshot_import",
+            "Import a .mart bundle from a host path into an environment.",
+            json!({"selector":{"type":"string"},"file":{"type":"string"},"origin":{"type":"string"}}),
+            vec!["selector","file"],
         ),
         tool(
             "mixum_port_check",
@@ -152,6 +230,37 @@ fn handle_tool(id: &Value, request: &Value) -> Value {
     let params = request.get("params").cloned().unwrap_or(Value::Null);
     let name = params.get("name").and_then(Value::as_str).unwrap_or("");
     let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
+    if name == "mixum_window_screenshot" {
+        return match call_tool(name, &arguments) {
+            Ok(value) => {
+                if let Some(data) = value.get("pngBase64").and_then(Value::as_str) {
+                    json!({
+                        "jsonrpc":"2.0",
+                        "id":id,
+                        "result": {
+                            "content": [
+                                {"type":"image","data":data,"mimeType":"image/png"},
+                                {"type":"text","text":serde_json::to_string_pretty(&json!({
+                                    "selector": arguments.get("selector"),
+                                    "window": arguments.get("window"),
+                                    "width": value.get("width"),
+                                    "height": value.get("height"),
+                                    "bytes": value.get("bytes")
+                                })).unwrap_or_default()}
+                            ],
+                            "isError": false
+                        }
+                    })
+                } else {
+                    json!({"jsonrpc":"2.0","id":id,"result":{"content":[{"type":"text","text":"screenshot returned no PNG"}],"isError":true}})
+                }
+            }
+            Err(error) => json!({
+                "jsonrpc":"2.0","id":id,
+                "result":{"content":[{"type":"text","text":error}],"isError":true}
+            }),
+        };
+    }
     match call_tool(name, &arguments) {
         Ok(value) => json!({
             "jsonrpc":"2.0",
@@ -266,6 +375,278 @@ fn call_tool(name: &str, arguments: &Value) -> std::result::Result<Value, String
             if let Some(label) = arguments.get("label").and_then(Value::as_str) {
                 args.extend(["--label".into(), label.into()]);
             }
+            if let Some(kind) = arguments.get("kind").and_then(Value::as_str) {
+                args.extend(["--kind".into(), kind.into()]);
+            }
+        }
+        "mixum_snapshot_restore"
+        | "mixum_snapshot_fork"
+        | "mixum_snapshot_export"
+        | "mixum_snapshot_import" => {
+            let selector = arguments
+                .get("selector")
+                .and_then(Value::as_str)
+                .ok_or("selector is required")?;
+            let sub = match name {
+                "mixum_snapshot_restore" => "restore",
+                "mixum_snapshot_fork" => "fork",
+                "mixum_snapshot_export" => "export",
+                _ => "import",
+            };
+            args.extend(["env".into(), "snapshot".into(), sub.into(), selector.into()]);
+            if name == "mixum_snapshot_import" {
+                let file = arguments
+                    .get("file")
+                    .and_then(Value::as_str)
+                    .ok_or("file is required")?;
+                args.extend(["--file".into(), file.into()]);
+                if let Some(origin) = arguments.get("origin").and_then(Value::as_str) {
+                    args.extend(["--origin".into(), origin.into()]);
+                }
+            } else {
+                let node = arguments
+                    .get("node")
+                    .and_then(Value::as_str)
+                    .ok_or("node is required")?;
+                args.push(node.into());
+                match name {
+                    "mixum_snapshot_restore" => {
+                        if arguments.get("confirm").and_then(Value::as_str) != Some("RESTORE") {
+                            return Err("confirm must be exactly RESTORE".into());
+                        }
+                        args.push("--yes".into());
+                    }
+                    "mixum_snapshot_fork" => {
+                        let branch = arguments
+                            .get("branch")
+                            .and_then(Value::as_str)
+                            .ok_or("branch is required")?;
+                        args.extend(["--branch".into(), branch.into()]);
+                    }
+                    "mixum_snapshot_export" => {
+                        let out = arguments
+                            .get("out")
+                            .and_then(Value::as_str)
+                            .ok_or("out is required")?;
+                        args.extend(["--out".into(), out.into()]);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        "mixum_browser_request" => {
+            let selector = arguments
+                .get("selector")
+                .and_then(Value::as_str)
+                .ok_or("selector is required")?;
+            let domains = arguments
+                .get("domains")
+                .and_then(Value::as_array)
+                .ok_or("domains is required")?;
+            let reason = arguments
+                .get("reason")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            args.extend(["browser".into(), "request".into(), selector.into()]);
+            for domain in domains.iter().filter_map(Value::as_str) {
+                args.extend(["--domain".into(), domain.into()]);
+            }
+            if !reason.is_empty() {
+                args.extend(["--reason".into(), reason.into()]);
+            }
+        }
+        "mixum_root_request" => {
+            let title = arguments
+                .get("title")
+                .and_then(Value::as_str)
+                .ok_or("title is required")?;
+            let image = arguments
+                .get("image")
+                .and_then(Value::as_str)
+                .ok_or("image is required")?;
+            let stance = arguments
+                .get("stance")
+                .and_then(Value::as_str)
+                .ok_or("stance is required")?;
+            let reason = arguments
+                .get("reason")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            args.extend([
+                "root".into(),
+                "request".into(),
+                "--title".into(),
+                title.into(),
+                "--image".into(),
+                image.into(),
+                "--stance".into(),
+                stance.into(),
+            ]);
+            if !reason.is_empty() {
+                args.extend(["--reason".into(), reason.into()]);
+            }
+        }
+        "mixum_window_screenshot" => {
+            let selector = arguments
+                .get("selector")
+                .and_then(Value::as_str)
+                .ok_or("selector is required")?;
+            let window = arguments
+                .get("window")
+                .and_then(Value::as_u64)
+                .ok_or("window is required")?;
+            args.extend([
+                "env".into(),
+                "screenshot".into(),
+                selector.into(),
+                "--window".into(),
+                window.to_string(),
+            ]);
+        }
+        "mixum_window_click" | "mixum_window_move" => {
+            let selector = arguments
+                .get("selector")
+                .and_then(Value::as_str)
+                .ok_or("selector is required")?;
+            let window = arguments
+                .get("window")
+                .and_then(Value::as_u64)
+                .ok_or("window is required")?;
+            let x = arguments
+                .get("x")
+                .and_then(Value::as_f64)
+                .ok_or("x is required")?;
+            let y = arguments
+                .get("y")
+                .and_then(Value::as_f64)
+                .ok_or("y is required")?;
+            let sub = if name == "mixum_window_click" {
+                "click"
+            } else {
+                "move"
+            };
+            args.extend([
+                "env".into(),
+                sub.into(),
+                selector.into(),
+                "--window".into(),
+                window.to_string(),
+                "--x".into(),
+                x.to_string(),
+                "--y".into(),
+                y.to_string(),
+            ]);
+            if name == "mixum_window_click" {
+                if let Some(button) = arguments.get("button").and_then(Value::as_str) {
+                    args.extend(["--button".into(), button.into()]);
+                }
+            }
+        }
+        "mixum_window_type" => {
+            let selector = arguments
+                .get("selector")
+                .and_then(Value::as_str)
+                .ok_or("selector is required")?;
+            let window = arguments
+                .get("window")
+                .and_then(Value::as_u64)
+                .ok_or("window is required")?;
+            let text = arguments
+                .get("text")
+                .and_then(Value::as_str)
+                .ok_or("text is required")?;
+            args.extend([
+                "env".into(),
+                "type".into(),
+                selector.into(),
+                "--window".into(),
+                window.to_string(),
+                text.into(),
+            ]);
+        }
+        "mixum_window_key" => {
+            let selector = arguments
+                .get("selector")
+                .and_then(Value::as_str)
+                .ok_or("selector is required")?;
+            let window = arguments
+                .get("window")
+                .and_then(Value::as_u64)
+                .ok_or("window is required")?;
+            let keysym = arguments
+                .get("keysym")
+                .and_then(Value::as_str)
+                .ok_or("keysym is required")?;
+            args.extend([
+                "env".into(),
+                "key".into(),
+                selector.into(),
+                "--window".into(),
+                window.to_string(),
+                keysym.into(),
+            ]);
+            if let Some(mods) = arguments.get("mods").and_then(Value::as_array) {
+                let mods = mods
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join(",");
+                if !mods.is_empty() {
+                    args.extend(["--mods".into(), mods]);
+                }
+            }
+        }
+        "mixum_window_scroll" => {
+            let selector = arguments
+                .get("selector")
+                .and_then(Value::as_str)
+                .ok_or("selector is required")?;
+            let window = arguments
+                .get("window")
+                .and_then(Value::as_u64)
+                .ok_or("window is required")?;
+            let x = arguments
+                .get("x")
+                .and_then(Value::as_f64)
+                .ok_or("x is required")?;
+            let y = arguments
+                .get("y")
+                .and_then(Value::as_f64)
+                .ok_or("y is required")?;
+            let direction = arguments
+                .get("direction")
+                .and_then(Value::as_str)
+                .unwrap_or("down");
+            args.extend([
+                "env".into(),
+                "scroll".into(),
+                selector.into(),
+                "--window".into(),
+                window.to_string(),
+                "--x".into(),
+                x.to_string(),
+                "--y".into(),
+                y.to_string(),
+                "--direction".into(),
+                direction.into(),
+            ]);
+        }
+        "mixum_window_focus" => {
+            let selector = arguments
+                .get("selector")
+                .and_then(Value::as_str)
+                .ok_or("selector is required")?;
+            let window = arguments
+                .get("window")
+                .and_then(Value::as_u64)
+                .ok_or("window is required")?;
+            args.extend([
+                "env".into(),
+                "focus".into(),
+                selector.into(),
+                "--window".into(),
+                window.to_string(),
+            ]);
         }
         "mixum_port_check" => {
             let port = arguments

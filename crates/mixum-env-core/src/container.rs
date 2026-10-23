@@ -59,10 +59,17 @@ impl PortMapping {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Mount {
+    /// `bind` (default) or `volume`.
+    #[serde(default = "default_mount_kind")]
+    pub kind: String,
     pub source: String,
     pub target: String,
     #[serde(default)]
     pub read_only: bool,
+}
+
+fn default_mount_kind() -> String {
+    "bind".into()
 }
 
 /// 列表用的容器摘要。刻意不含 runtime 私有字段。
@@ -96,6 +103,20 @@ pub struct CreateSpec {
     pub env: BTreeMap<String, String>,
     #[serde(default)]
     pub command: Vec<String>,
+    /// Extra Linux capabilities for the container. Empty means runtime default.
+    /// Only explicit opt-in features (memory snapshots) should set this.
+    #[serde(default)]
+    pub cap_add: Vec<String>,
+}
+
+/// `inspect` 的完整结果：可重建的 spec + 镜像 digest（不塞进 image 引用，
+/// 避免部分 runtime 不认 `repo:tag@sha256:...` 的拉取格式）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InspectedContainer {
+    pub spec: CreateSpec,
+    #[serde(default)]
+    pub image_digest: Option<String>,
 }
 
 #[cfg(test)]

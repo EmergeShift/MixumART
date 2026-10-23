@@ -7,12 +7,16 @@
 //! 4. 前端 `src/api.ts` 包一层带类型的 invoke。
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use mixum_env_core::{BackendStatus, Container, CreateSpec, RuntimeKind};
+use mixum_env_core::{
+    BackendStatus, Container, CreateSpec, MartRef, MigrationManifest, MigrationSource,
+    InspectedContainer, PortMapping, RuntimeKind, MIGRATION_VERSION,
+};
 use serde::Serialize;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use tauri::State;
 
 use crate::AppState;
@@ -54,6 +58,22 @@ pub async fn list_containers(
         .list_containers()
         .await
         .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+pub async fn environment_container_spec(
+    kind: RuntimeKind,
+    container_id: String,
+    state: State<'_, AppState>,
+) -> Result<InspectedContainer, String> {
+    let backend = state
+        .registry
+        .get(kind)
+        .ok_or_else(|| format!("没有注册 {kind} 后端"))?;
+    backend
+        .inspect_container(&container_id)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -500,6 +520,91 @@ fn connection_for(app: &AppHandle, container_id: &str) -> Result<EnvironmentConn
         .ok_or_else(|| format!("环境 {container_id} 还没有连接档案"))
 }
 
+fn free_host_port(used: &mut std::collections::HashSet<u16>) -> Result<u16, String> {
+    for _ in 0..32 {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0))
+            .map_err(|error| format!("分配端口: {error}"))?;
+        let port = listener
+            .local_addr()
+            .map_err(|error| format!("读取端口: {error}"))?
+            .port();
+        if used.insert(port) {
+            return Ok(port);
+        }
+    }
+    Err("找不到可用端口".into())
+}
+
+async fn wait_agent_token(
+    backend: &dyn mixum_env_core::RuntimeBackend,
+    id: &str,
+) -> Result<String, String> {
+    for _ in 0..120 {
+        if let Ok(output) = backend
+            .exec_capture(id, &["cat", "/var/lib/mixum/admin-token"])
+            .await
+        {
+            let token = output.trim();
+            if !token.is_empty() {
+                return Ok(token.to_owned());
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+    Err("等待 agentd 令牌超时".into())
+}
+
+async fn transfer_node(
+    source: &MapClient,
+    target: &MapClient,
+    node: &str,
+    origin: &str,
+) -> Result<String, String> {
+    let reply = source
+        .snapshot_export(node)
+        .await
+        .map_err(|error| error.to_string())?;
+    let file = reply
+        .get("file")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "snap.export 未返回 file".to_string())?
+        .to_owned();
+    let expected = reply
+        .get("sha256")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let data = source
+        .get_file(&format!("transfers/{file}"))
+        .await
+        .map_err(|error| error.to_string())?;
+    let actual: String = Sha256::digest(&data)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    if !expected.is_empty() && actual != expected {
+        return Err("迁移文件 sha256 校验失败".into());
+    }
+
+    let name = Path::new(&file)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "迁移文件名无效".to_string())?;
+    target
+        .put_file(name, &data)
+        .await
+        .map_err(|error| error.to_string())?;
+    let reply = target
+        .snapshot_import(name, origin)
+        .await
+        .map_err(|error| error.to_string())?;
+    reply
+        .get("node")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| "snap.import 未返回 node".to_string())
+}
+
 async fn snapshot_client(app: &AppHandle, container_id: &str) -> Result<MapClient, String> {
     let connection = connection_for(app, container_id)?;
     MapClient::connect(
@@ -537,6 +642,20 @@ pub async fn environment_snapshot_create(
 }
 
 #[tauri::command]
+pub async fn environment_snapshot_create_kind(
+    app: AppHandle,
+    container_id: String,
+    kind: String,
+    label: Option<String>,
+) -> Result<Value, String> {
+    let client = snapshot_client(&app, &container_id).await?;
+    client
+        .snapshot_create_kind(&kind, label.as_deref())
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 pub async fn environment_snapshot_restore(
     app: AppHandle,
     container_id: String,
@@ -561,6 +680,309 @@ pub async fn environment_snapshot_fork(
         .snapshot_fork(&node, &branch)
         .await
         .map_err(|error| error.to_string())
+}
+
+async fn node_gui_sessions(client: &MapClient, node: &str) -> Vec<Value> {
+    let Ok(tree) = client.snapshot_tree().await else {
+        return Vec::new();
+    };
+    tree.get("nodes")
+        .and_then(Value::as_array)
+        .and_then(|nodes| {
+            nodes
+                .iter()
+                .find(|entry| entry.get("id").and_then(Value::as_str) == Some(node))
+        })
+        .and_then(|entry| entry.get("guiSessions"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+}
+
+fn migration_dir() -> PathBuf {
+    dirs::cache_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("mixum/migrations")
+}
+
+/// 列出本机缓存里的迁移包（`.mart`）。
+#[tauri::command]
+pub async fn list_migrations() -> Result<Vec<MigrationFile>, String> {
+    let dir = migration_dir();
+    let mut out = Vec::new();
+    let Ok(mut entries) = tokio::fs::read_dir(&dir).await else {
+        return Ok(out);
+    };
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("mart") {
+            continue;
+        }
+        let Ok(metadata) = entry.metadata().await else {
+            continue;
+        };
+        out.push(MigrationFile {
+            path: path.to_string_lossy().into_owned(),
+            size: metadata.len(),
+            sha256: String::new(),
+            manifest_path: None,
+        });
+    }
+    out.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(out)
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MigrationFile {
+    pub path: String,
+    pub size: u64,
+    pub sha256: String,
+    pub manifest_path: Option<String>,
+}
+
+/// 导出快照节点为 `.mart` 并下载到本机缓存。用户不需要手工拖文件。
+#[tauri::command]
+pub async fn environment_snapshot_export(
+    app: AppHandle,
+    container_id: String,
+    node: String,
+    spec: Option<CreateSpec>,
+    image_digest: Option<String>,
+    runtime: Option<String>,
+    branch: Option<String>,
+) -> Result<MigrationFile, String> {
+    let client = snapshot_client(&app, &container_id).await?;
+    let reply = client
+        .snapshot_export(&node)
+        .await
+        .map_err(|error| error.to_string())?;
+    let file = reply
+        .get("file")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "snap.export 未返回 file".to_string())?
+        .to_owned();
+    let expected = reply
+        .get("sha256")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+
+    let data = client
+        .get_file(&format!("transfers/{file}"))
+        .await
+        .map_err(|error| error.to_string())?;
+    let actual: String = Sha256::digest(&data)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    if !expected.is_empty() && actual != expected {
+        return Err("迁移文件 sha256 校验失败".into());
+    }
+
+    let dir = migration_dir();
+    tokio::fs::create_dir_all(&dir)
+        .await
+        .map_err(|error| format!("创建迁移缓存目录: {error}"))?;
+    let name = Path::new(&file)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "迁移文件名无效".to_string())?;
+    let path = dir.join(name);
+    tokio::fs::write(&path, &data)
+        .await
+        .map_err(|error| format!("写入迁移文件: {error}"))?;
+
+    let gui_sessions = if spec.is_some() {
+        node_gui_sessions(&client, &node).await
+    } else {
+        Vec::new()
+    };
+    let manifest_path = if let Some(spec) = spec {
+        let manifest = MigrationManifest {
+            version: MIGRATION_VERSION,
+            source: MigrationSource {
+                container_id,
+                runtime: runtime.unwrap_or_default(),
+                node,
+                branch: branch.unwrap_or_default(),
+                exported_at: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|duration| duration.as_secs())
+                    .unwrap_or(0),
+            },
+            container: spec,
+            image_digest,
+            mart: MartRef {
+                file: name.to_owned(),
+                sha256: actual.clone(),
+                size: data.len() as u64,
+            },
+            gui_sessions,
+        };
+        let stem = name.trim_end_matches(".mart");
+        let manifest_path = dir.join(format!("{stem}.migration.json"));
+        tokio::fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&manifest)
+                .map_err(|error| format!("序列化迁移元数据: {error}"))?,
+        )
+        .await
+        .map_err(|error| format!("写入迁移元数据: {error}"))?;
+        Some(manifest_path.to_string_lossy().into_owned())
+    } else {
+        None
+    };
+
+    Ok(MigrationFile {
+        path: path.to_string_lossy().into_owned(),
+        size: data.len() as u64,
+        sha256: actual,
+        manifest_path,
+    })
+}
+
+/// 直接从源环境导出 `.mart` 并迁移到目标环境（不需要落盘/手工拖文件）。
+#[tauri::command]
+pub async fn environment_migrate(
+    app: AppHandle,
+    source_container_id: String,
+    target_container_id: String,
+    node: String,
+    origin: Option<String>,
+) -> Result<String, String> {
+    let source = snapshot_client(&app, &source_container_id).await?;
+    let target = snapshot_client(&app, &target_container_id).await?;
+    transfer_node(&source, &target, &node, origin.as_deref().unwrap_or("mixumart")).await
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MigrateNewResult {
+    pub target_container_id: String,
+    pub target_node: String,
+    pub agentd_addr: String,
+}
+
+/// 在本机按源容器规格新建一个环境，然后把 `.mart` 迁移过去。
+/// 端口会重新分配，避免和源容器冲突；agentd 令牌从容器内读取并写入连接档案。
+#[tauri::command]
+pub async fn environment_migrate_new(
+    app: AppHandle,
+    source_container_id: String,
+    source_kind: RuntimeKind,
+    target_kind: RuntimeKind,
+    node: String,
+    name: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<MigrateNewResult, String> {
+    let source_backend = state
+        .registry
+        .get(source_kind)
+        .ok_or_else(|| format!("没有注册 {source_kind} 后端"))?;
+    let inspected = source_backend
+        .inspect_container(&source_container_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let spec = inspected.spec;
+    if !spec.ports.iter().any(|port| port.container == 7601) {
+        return Err("源容器没有映射 agentd 7601，无法自动迁移".into());
+    }
+
+    let mut used = std::collections::HashSet::new();
+    let mut agentd_host = None;
+    let mut ports = Vec::new();
+    for port in &spec.ports {
+        let host = free_host_port(&mut used)?;
+        if port.container == 7601 {
+            agentd_host = Some(host);
+        }
+        ports.push(PortMapping {
+            host,
+            container: port.container,
+            protocol: port.protocol.clone(),
+        });
+    }
+    let agentd_host = agentd_host.ok_or_else(|| "没有 agentd 端口映射".to_string())?;
+
+    let name = name
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| format!("mixum-{}", node.chars().take(8).collect::<String>()));
+    let target_backend = state
+        .registry
+        .get(target_kind)
+        .ok_or_else(|| format!("没有注册 {target_kind} 后端"))?;
+    let container = target_backend
+        .create_container(CreateSpec {
+            name,
+            image: spec.image,
+            ports,
+            mounts: spec.mounts,
+            env: spec.env,
+            command: Vec::new(),
+            cap_add: Vec::new(),
+        })
+        .await
+        .map_err(|error| error.to_string())?;
+    target_backend
+        .start_container(&container.id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let token = wait_agent_token(&*target_backend, &container.id).await?;
+    let addr = format!("127.0.0.1:{agentd_host}");
+    let mut connections = load_connection_map(&app)?;
+    connections.insert(
+        container.id.clone(),
+        EnvironmentConnection {
+            addr: addr.clone(),
+            token: token.clone(),
+            fingerprint: None,
+        },
+    );
+    save_connection_map(&app, &connections)?;
+
+    let source = snapshot_client(&app, &source_container_id).await?;
+    let target = MapClient::connect(&addr, &token, None)
+        .await
+        .map_err(|error| error.to_string())?;
+    let target_node = transfer_node(&source, &target, &node, "mixumart").await?;
+    Ok(MigrateNewResult {
+        target_container_id: container.id,
+        target_node,
+        agentd_addr: addr,
+    })
+}
+
+/// 把本机 `.mart` 上传到目标环境并导入为快照节点。
+#[tauri::command]
+pub async fn environment_snapshot_import(
+    app: AppHandle,
+    container_id: String,
+    path: String,
+    origin: Option<String>,
+) -> Result<String, String> {
+    let data = tokio::fs::read(&path)
+        .await
+        .map_err(|error| format!("读取迁移文件: {error}"))?;
+    let name = Path::new(&path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "迁移文件名无效".to_string())?
+        .to_owned();
+    let client = snapshot_client(&app, &container_id).await?;
+    client
+        .put_file(&name, &data)
+        .await
+        .map_err(|error| error.to_string())?;
+    let reply = client
+        .snapshot_import(&name, origin.as_deref().unwrap_or("mixumart"))
+        .await
+        .map_err(|error| error.to_string())?;
+    reply
+        .get("node")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| "snap.import 未返回 node".to_string())
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -606,6 +1028,16 @@ pub async fn environment_run_command(
             .await
             .map_err(|_| format!("命令执行超时，任务 {task_id} 仍在运行"))?
             .map_err(|error| format!("事件通道关闭：{error}"))?;
+        if event.op == "privilege.request" {
+            let _ = app.emit(
+                "privilege-request",
+                serde_json::json!({
+                    "containerId": container_id,
+                    "request": event.payload,
+                }),
+            );
+            continue;
+        }
         if event.op != "task.event" {
             continue;
         }
@@ -1126,4 +1558,321 @@ pub async fn remote_clipboard(app: AppHandle, surface: u32) -> Result<String, St
         return Err(format!("surface {surface} 没有打开的窗口"));
     };
     client.clipboard().await.map_err(|error| error.to_string())
+}
+
+
+#[tauri::command]
+pub async fn environment_privilege_decide(
+    app: AppHandle,
+    container_id: String,
+    id: String,
+    approve: bool,
+    reason: String,
+) -> Result<(), String> {
+    if approve {
+        authenticate_host_privilege()?;
+    }
+    let connection = connection_for(&app, &container_id)?;
+    let client = MapClient::connect(
+        &connection.addr,
+        &connection.token,
+        connection.fingerprint.as_deref(),
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    client
+        .privilege_decision(&id, approve, &reason)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// Ask the OS for a human credential before approving an agent's sudo request.
+/// macOS uses the native administrator dialog; Linux falls back to polkit.
+fn authenticate_host_privilege() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let status = std::process::Command::new("/usr/bin/osascript")
+            .args(["-e", "do shell script \"true\" with administrator privileges"])
+            .status()
+            .map_err(|error| format!("host authentication unavailable: {error}"))?;
+        if !status.success() {
+            return Err("host authentication cancelled or failed".into());
+        }
+        return Ok(());
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let status = std::process::Command::new("pkexec")
+            .arg("true")
+            .status()
+            .map_err(|error| format!("host authentication unavailable: {error}"))?;
+        if !status.success() {
+            return Err("host authentication cancelled or failed".into());
+        }
+        return Ok(());
+    }
+    #[allow(unreachable_code)]
+    Err("host authentication is not implemented on this platform; use `mixum privilege approve`".into())
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApprovalView {
+    pub kind: String,
+    pub id: String,
+    pub title: String,
+    pub selector: Option<String>,
+    pub domains: Vec<String>,
+    pub urls: Vec<String>,
+    pub agent_stance: Option<String>,
+    pub agent_reason: Option<String>,
+    pub created_at_ms: u128,
+    pub approved: bool,
+    pub action: String,
+}
+
+fn approvals_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let base = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("无法定位应用数据目录：{error}"))?;
+    Ok(base.join("mixum-cli").join("approvals"))
+}
+
+#[tauri::command]
+pub fn list_approvals(app: AppHandle) -> Result<Vec<ApprovalView>, String> {
+    let dir = approvals_dir(&app)?;
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(dir).map_err(|error| error.to_string())? {
+        let path = entry.map_err(|error| error.to_string())?.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        let Ok(data) = std::fs::read(&path) else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_slice::<Value>(&data) else {
+            continue;
+        };
+        if value.get("consumed").and_then(Value::as_bool) == Some(true) {
+            continue;
+        }
+        let id = value
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        if id.is_empty() {
+            continue;
+        }
+        if let Some(domains) = value.get("domains").and_then(Value::as_array) {
+            out.push(ApprovalView {
+                kind: "browser".into(),
+                id: id.clone(),
+                title: value
+                    .get("selector")
+                    .and_then(Value::as_str)
+                    .unwrap_or("browser")
+                    .to_owned(),
+                selector: value
+                    .get("selector")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned),
+                domains: domains
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(ToOwned::to_owned)
+                    .collect(),
+                urls: value
+                    .get("urls")
+                    .and_then(Value::as_array)
+                    .map(|values| {
+                        values
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .map(ToOwned::to_owned)
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                agent_stance: None,
+                agent_reason: value
+                    .get("reason")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned),
+                created_at_ms: value
+                    .get("createdAtMs")
+                    .and_then(Value::as_u64)
+                    .unwrap_or_default() as u128,
+                approved: value.get("approved").and_then(Value::as_bool).unwrap_or(false),
+                action: format!("mixum browser approve {id}"),
+            });
+        } else {
+            out.push(ApprovalView {
+                kind: "root".into(),
+                id: id.clone(),
+                title: value
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .unwrap_or("root container")
+                    .to_owned(),
+                selector: None,
+                domains: Vec::new(),
+                urls: Vec::new(),
+                agent_stance: value
+                    .get("agentStance")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned),
+                agent_reason: value
+                    .get("agentReason")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned),
+                created_at_ms: value
+                    .get("createdAtMs")
+                    .and_then(Value::as_u64)
+                    .unwrap_or_default() as u128,
+                approved: value.get("approved").and_then(Value::as_bool).unwrap_or(false),
+                action: format!("mixum root approve {id}"),
+            });
+        }
+    }
+    out.sort_by_key(|item| item.created_at_ms);
+    Ok(out)
+}
+
+fn valid_approval_id(id: &str, prefix: &str) -> bool {
+    id.starts_with(prefix)
+        && id
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+}
+
+#[tauri::command]
+pub fn approve_root_approval(app: AppHandle, id: String) -> Result<(), String> {
+    if !valid_approval_id(&id, "root-") {
+        return Err("not a root approval".into());
+    }
+    authenticate_host_privilege()?;
+    let path = approvals_dir(&app)?.join(format!("{id}.json"));
+    let data = std::fs::read(&path).map_err(|error| error.to_string())?;
+    let mut value: Value = serde_json::from_slice(&data).map_err(|error| error.to_string())?;
+    value["approved"] = Value::Bool(true);
+    std::fs::write(path, serde_json::to_vec_pretty(&value).map_err(|error| error.to_string())?)
+        .map_err(|error| error.to_string())?;
+    append_approval_audit(&app, "root_approved", &id, serde_json::json!({}));
+    Ok(())
+}
+
+#[tauri::command]
+pub fn deny_approval(app: AppHandle, id: String) -> Result<(), String> {
+    if !valid_approval_id(&id, "root-") && !valid_approval_id(&id, "browser-") {
+        return Err("invalid approval id".into());
+    }
+    let path = approvals_dir(&app)?.join(format!("{id}.json"));
+    std::fs::remove_file(path).map_err(|error| error.to_string())?;
+    append_approval_audit(&app, "approval_denied", &id, serde_json::json!({}));
+    Ok(())
+}
+
+#[tauri::command]
+pub fn approve_browser_approval(app: AppHandle, id: String) -> Result<(), String> {
+    if !valid_approval_id(&id, "browser-") {
+        return Err("not a browser approval".into());
+    }
+    authenticate_host_privilege()?;
+    let cli = std::env::var("MIXUM_CLI").unwrap_or_else(|_| "mixum".into());
+    let output = std::process::Command::new(&cli)
+        .args(["browser", "approve", &id])
+        .env("MIXUM_HOST_AUTHENTICATED", "1")
+        .output()
+        .map_err(|error| format!("run {cli} browser approve: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "browser approve failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let _ = app; // AppHandle kept for future audit wiring.
+    Ok(())
+}
+
+/// Pending sudo requests across environments with a saved MAP connection.
+/// Approval stays in `environment_privilege_decide` (OS authentication again).
+#[tauri::command]
+pub async fn list_pending_privileges(app: AppHandle) -> Result<Vec<Value>, String> {
+    let map = load_connection_map(&app)?;
+    let mut out = Vec::new();
+    for (container_id, connection) in map {
+        let client = match MapClient::connect(
+            &connection.addr,
+            &connection.token,
+            connection.fingerprint.as_deref(),
+        )
+        .await
+        {
+            Ok(client) => client,
+            Err(_) => continue,
+        };
+        let Ok(Ok(requests)) =
+            tokio::time::timeout(Duration::from_secs(2), client.privilege_list()).await
+        else {
+            continue;
+        };
+        for mut request in requests {
+            if let Some(object) = request.as_object_mut() {
+                object.insert("containerId".into(), Value::String(container_id.clone()));
+            }
+            out.push(request);
+        }
+    }
+    Ok(out)
+}
+
+fn append_approval_audit(app: &AppHandle, action: &str, id: &str, detail: Value) {
+    let Ok(base) = app.path().app_data_dir() else {
+        return;
+    };
+    let dir = base.join("mixum-cli").join("audit");
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let line = serde_json::json!({
+        "action": action,
+        "id": id,
+        "detail": detail,
+        "ts": std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or_default(),
+    });
+    let path = dir.join("approvals.log");
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        use std::io::Write;
+        let _ = writeln!(file, "{line}");
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
+}
+
+#[cfg(test)]
+mod approval_id_tests {
+    use super::valid_approval_id;
+
+    #[test]
+    fn rejects_path_traversal_and_bad_prefix() {
+        assert!(valid_approval_id("root-01JABC", "root-"));
+        assert!(valid_approval_id("browser-01JABC", "browser-"));
+        assert!(!valid_approval_id("root-../escape", "root-"));
+        assert!(!valid_approval_id("browser-/tmp/x", "browser-"));
+        assert!(!valid_approval_id("other-01JABC", "root-"));
+    }
 }

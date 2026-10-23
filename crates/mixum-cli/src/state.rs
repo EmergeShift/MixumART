@@ -19,6 +19,15 @@ pub struct EnvRecord {
     pub method: String,
     pub runtime: String,
     pub image: String,
+    /// 提交母体环境使用的 base spec（`name:tag`）；普通环境为空。
+    #[serde(default)]
+    pub base: Option<String>,
+    /// Explicitly approved root container.
+    #[serde(default)]
+    pub root: bool,
+    /// Explicitly opted into the extra capabilities needed by CRIU.
+    #[serde(default)]
+    pub memory_snapshots: bool,
     pub port: u16,
     pub created_at_ms: u128,
     #[serde(default)]
@@ -169,6 +178,15 @@ pub fn resolve_data_dir(explicit: Option<&Path>) -> Result<PathBuf> {
     Ok(base.join("dev.mixum.agentenv").join("mixum-cli"))
 }
 
+pub fn mount_volume(source: &str, target: &str) -> mixum_env_core::Mount {
+    mixum_env_core::Mount {
+        kind: "volume".into(),
+        source: source.into(),
+        target: target.into(),
+        read_only: false,
+    }
+}
+
 pub fn now_ms() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -192,6 +210,9 @@ mod tests {
             method: "subagent".into(),
             runtime: "docker".into(),
             image: "mixumos:test".into(),
+            base: None,
+            root: false,
+            memory_snapshots: false,
             port: 17601,
             created_at_ms: 1,
             fingerprint: None,

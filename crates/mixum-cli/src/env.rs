@@ -30,6 +30,10 @@ pub struct EnvView {
     pub title: String,
     pub runtime: RuntimeKind,
     pub image: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base: Option<String>,
+    pub root: bool,
+    pub memory_snapshots: bool,
     pub state: String,
     pub method: Option<String>,
     pub managed: bool,
@@ -37,6 +41,20 @@ pub struct EnvView {
     pub map_addr: Option<String>,
     pub fingerprint: Option<String>,
     pub created_at_ms: Option<u128>,
+}
+
+fn memory_snapshot_caps() -> Vec<String> {
+    [
+        "SYS_ADMIN",
+        "SYS_PTRACE",
+        "CHECKPOINT_RESTORE",
+        "SYS_RESOURCE",
+        "NET_ADMIN",
+        "SYS_TIME",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect()
 }
 
 pub fn registry() -> BackendRegistry {
@@ -152,6 +170,9 @@ pub fn view(kind: RuntimeKind, container: &Container, record: Option<&EnvRecord>
             .unwrap_or_else(|| container.name.clone()),
         runtime: kind,
         image: container.image.clone(),
+        base: record.and_then(|record| record.base.clone()),
+        root: record.is_some_and(|record| record.root),
+        memory_snapshots: record.is_some_and(|record| record.memory_snapshots),
         state: state_label(container.state).to_string(),
         method: record.map(|record| record.method.clone()),
         managed: record.is_some(),
@@ -169,6 +190,9 @@ fn record_view(record: &EnvRecord) -> EnvView {
         title: record.title.clone(),
         runtime: parse_kind(&record.runtime),
         image: record.image.clone(),
+        base: record.base.clone(),
+        root: record.root,
+        memory_snapshots: record.memory_snapshots,
         state: "missing".to_string(),
         method: Some(record.method.clone()),
         managed: true,
@@ -415,6 +439,61 @@ async fn choose_image(
     }
 }
 
+fn ensure_volume(kind: mixum_env_core::RuntimeKind, name: &str) -> Result<()> {
+    let (program, args) = match kind {
+        mixum_env_core::RuntimeKind::AppleContainer => {
+            ("container", vec!["volume", "create", name])
+        }
+        mixum_env_core::RuntimeKind::Docker => ("docker", vec!["volume", "create", name]),
+        mixum_env_core::RuntimeKind::Wsl2 => {
+            return Err(CliError::usage(
+                "base volumes are not implemented for WSL2 yet",
+            ))
+        }
+    };
+    let output = std::process::Command::new(program)
+        .args(args)
+        .output()
+        .map_err(|error| CliError::runtime(format!("create volume: {error}")))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if !stderr.contains("already exists") {
+            return Err(CliError::runtime(format!(
+                "create volume failed: {}",
+                stderr.trim()
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Root containers are explicit human decisions. The agent-facing MCP tool does
+/// not expose `--root`; this prompt cannot be answered by the agent's task shell.
+fn confirm_root_container(title: &str) -> Result<()> {
+    use std::io::{IsTerminal, Write};
+    if !std::io::stdin().is_terminal() {
+        return Err(CliError::usage(
+            "root container requires an interactive human terminal",
+        ));
+    }
+    eprintln!("WARNING: create a ROOT container for {title:?}");
+    eprintln!("- root is inside the container, not the host; it can still modify its system,");
+    eprintln!(
+        "  read mounted secrets, disable audit/agentd, and expand the blast radius of a bug."
+    );
+    eprintln!("- root containers are not the default; prefer mixum + sudo approval.");
+    eprint!("Type ROOT to continue: ");
+    std::io::stderr().flush().ok();
+    let mut answer = String::new();
+    std::io::stdin()
+        .read_line(&mut answer)
+        .map_err(|error| CliError::io(format!("read confirmation: {error}")))?;
+    if answer.trim() != "ROOT" {
+        return Err(CliError::usage("root container creation cancelled"));
+    }
+    Ok(())
+}
+
 pub async fn create(data_dir: &Path, args: CreateArgs, json: bool) -> Result<()> {
     let title = args.title.trim();
     if title.is_empty() {
@@ -423,6 +502,19 @@ pub async fn create(data_dir: &Path, args: CreateArgs, json: bool) -> Result<()>
     if title.chars().count() > 120 {
         return Err(CliError::usage("--title is limited to 120 characters"));
     }
+    if args.root && args.root_request.is_some() {
+        return Err(CliError::usage(
+            "--root and --root-request are mutually exclusive",
+        ));
+    }
+    let root_request = match args.root_request.as_deref() {
+        Some(id) => Some(crate::approval::approved(data_dir, id)?),
+        None => None,
+    };
+    if root_request.is_none() && args.root {
+        confirm_root_container(title)?;
+    }
+    let root = args.root || root_request.is_some();
     let state_lock = StateLock::acquire(data_dir)?;
     let store = StateStore::new(data_dir);
     let state = store.load()?;
@@ -433,8 +525,21 @@ pub async fn create(data_dir: &Path, args: CreateArgs, json: bool) -> Result<()>
         .map(|runtime| runtime.kind())
         .or(config.default_runtime);
     let (kind, backend) = select_backend(&registry, requested_runtime).await?;
-    let requested_image = args.image.as_deref().or(config.default_image.as_deref());
-    let image = choose_image(&backend, args.profile, requested_image).await?;
+    if args.base.is_some() && (args.image.is_some() || config.default_image.is_some()) {
+        return Err(CliError::usage(
+            "--base cannot be combined with --image or a configured default image",
+        ));
+    }
+    let image = match root_request.as_ref() {
+        Some(request) if args.image.is_none() => request.image.clone(),
+        _ => match args.base.as_deref() {
+            Some(base) => crate::base::resolve_image(data_dir, base)?,
+            None => {
+                let requested_image = args.image.as_deref().or(config.default_image.as_deref());
+                choose_image(&backend, args.profile, requested_image).await?
+            }
+        },
+    };
     let containers = backend.list_containers().await.map_err(|error| {
         CliError::runtime(format!("cannot list {} containers: {error}", kind.id()))
     })?;
@@ -471,13 +576,44 @@ pub async fn create(data_dir: &Path, args: CreateArgs, json: bool) -> Result<()>
     let mut env = BTreeMap::new();
     env.insert("MIXUM_METHOD".to_string(), args.method.as_str().to_string());
     env.insert("MIXUM_TITLE".to_string(), title.to_string());
+    if let Some(base) = args.base.as_deref() {
+        let version = crate::base::resolve_version(data_dir, base)?;
+        env.insert("MIXUM_BASE".to_string(), base.to_owned());
+        env.insert("MIXUM_BASE_DIGEST".to_string(), version.digest);
+    }
+    if args.memory_snapshots {
+        env.insert("MIXUM_MEMORY_SNAPSHOTS".to_string(), "1".to_string());
+    }
+    if root {
+        env.insert("MIXUM_TASK_USER".to_string(), "root".to_string());
+    }
+    let mut mounts = Vec::new();
+    if args.base.is_some() && kind != mixum_env_core::RuntimeKind::Wsl2 {
+        let work_volume = format!("{name}-work");
+        let home_volume = format!("{name}-home");
+        ensure_volume(kind, &work_volume)?;
+        ensure_volume(kind, &home_volume)?;
+        mounts.push(crate::state::mount_volume(
+            &work_volume,
+            "/var/lib/mixum/work",
+        ));
+        mounts.push(crate::state::mount_volume(
+            &home_volume,
+            "/var/lib/mixum/home",
+        ));
+    }
     let spec = CreateSpec {
         name: name.clone(),
         image: image.clone(),
         ports: vec![PortMapping::tcp(port, ports::MAP_PORT)],
-        mounts: Vec::new(),
+        mounts,
         env,
         command: Vec::new(),
+        cap_add: if args.memory_snapshots {
+            memory_snapshot_caps()
+        } else {
+            Vec::new()
+        },
     };
     let started = !args.no_start;
     let mut container = backend
@@ -491,10 +627,16 @@ pub async fn create(data_dir: &Path, args: CreateArgs, json: bool) -> Result<()>
         method: args.method.as_str().to_string(),
         runtime: kind.id().to_string(),
         image: image.clone(),
+        base: args.base.clone(),
+        root,
+        memory_snapshots: args.memory_snapshots,
         port,
         created_at_ms: crate::state::now_ms(),
         fingerprint: None,
     };
+    if let Some(id) = args.root_request.as_deref() {
+        crate::approval::consume(data_dir, id)?;
+    }
     let mut state = store.load()?;
     state.upsert(record.clone());
     store.save(&state)?;
@@ -521,6 +663,21 @@ pub async fn create(data_dir: &Path, args: CreateArgs, json: bool) -> Result<()>
                 container.id
             ))
         })?;
+    // Volumes start root-owned; the task user must own its work/home.
+    if args.base.is_some() && kind != mixum_env_core::RuntimeKind::Wsl2 {
+        let _ = backend
+            .exec_capture(
+                &container.id,
+                &[
+                    "chown",
+                    "-R",
+                    "mixum:mixum",
+                    "/var/lib/mixum/work",
+                    "/var/lib/mixum/home",
+                ],
+            )
+            .await;
+    }
     if let Ok(current) = backend.list_containers().await {
         if let Some(current) = current.into_iter().find(|item| item.id == container.id) {
             container = current;
@@ -569,6 +726,140 @@ pub async fn create(data_dir: &Path, args: CreateArgs, json: bool) -> Result<()>
     } else {
         println!("created {} ({}) port={port}", name, container.id);
         println!("MAP wait disabled; run `mixum env windows {name}` once agentd is ready");
+    }
+    Ok(())
+}
+
+pub async fn rebase(data_dir: &Path, selector: &str, base: &str, json: bool) -> Result<()> {
+    let registry = registry();
+    let resolved = find_with(&registry, data_dir, selector).await?;
+    let old_record = resolved
+        .record
+        .clone()
+        .ok_or_else(|| CliError::usage("rebase requires a managed environment"))?;
+    if old_record.base.is_none() {
+        return Err(CliError::usage(
+            "rebase is only supported for environments created from --base",
+        ));
+    }
+    let backend = registry
+        .get(resolved.kind)
+        .ok_or_else(|| CliError::runtime("runtime disappeared"))?;
+    let inspected = backend
+        .inspect_container(&resolved.container.id)
+        .await
+        .map_err(|error| CliError::runtime(format!("inspect environment: {error}")))?;
+    if inspected.spec.mounts.is_empty() {
+        return Err(CliError::usage(
+            "environment has no persistent work volume; refusing a lossy rebase",
+        ));
+    }
+    let image = crate::base::resolve_image(data_dir, base)?;
+    let state_lock = StateLock::acquire(data_dir)?;
+    let store = StateStore::new(data_dir);
+    let all_used = ports::used_host_ports(
+        &all_containers(&registry)
+            .await?
+            .iter()
+            .map(|(_, container)| container.ports.clone())
+            .collect::<Vec<_>>(),
+    );
+    let port = ports::allocate(0, &all_used)?;
+    let suffix: u16 = rand::random();
+    let new_name = format!("{}-rb-{suffix:04x}", old_record.name);
+    let mut env = inspected.spec.env.clone();
+    env.insert("MIXUM_BASE".into(), base.to_owned());
+    env.insert(
+        "MIXUM_BASE_DIGEST".into(),
+        crate::base::resolve_version(data_dir, base)?.digest,
+    );
+    let spec = CreateSpec {
+        name: new_name.clone(),
+        image: image.clone(),
+        ports: vec![PortMapping::tcp(port, ports::MAP_PORT)],
+        mounts: inspected.spec.mounts.clone(),
+        env,
+        command: inspected.spec.command.clone(),
+        cap_add: if old_record.memory_snapshots {
+            memory_snapshot_caps()
+        } else {
+            Vec::new()
+        },
+    };
+    // A volume can only be attached to one running Apple Container VM. Stop the
+    // old container first; it remains the rollback target if anything fails.
+    backend
+        .stop_container(&resolved.container.id)
+        .await
+        .map_err(|error| CliError::runtime(format!("stop old environment: {error}")))?;
+    let container = match backend.create_container(spec).await {
+        Ok(container) => container,
+        Err(error) => {
+            let _ = backend.start_container(&resolved.container.id).await;
+            return Err(CliError::runtime(format!(
+                "create rebased environment: {error}"
+            )));
+        }
+    };
+    if let Err(error) = backend.start_container(&container.id).await {
+        let _ = backend.remove_container(&container.id).await;
+        let _ = backend.start_container(&resolved.container.id).await;
+        return Err(CliError::runtime(format!(
+            "start rebased environment: {error}"
+        )));
+    }
+    let container = backend
+        .list_containers()
+        .await
+        .ok()
+        .and_then(|containers| containers.into_iter().find(|item| item.id == container.id))
+        .unwrap_or(container);
+    let _ = backend
+        .exec_capture(
+            &container.id,
+            &[
+                "chown",
+                "-R",
+                "mixum:mixum",
+                "/var/lib/mixum/work",
+                "/var/lib/mixum/home",
+            ],
+        )
+        .await;
+    let map =
+        map_ops::wait_ready(&registry, resolved.kind, &container.id, &new_name, port, 30).await?;
+    let mut new_record = old_record.clone();
+    new_record.id = container.id.clone();
+    new_record.name = new_name.clone();
+    new_record.image = image.clone();
+    new_record.base = Some(base.to_owned());
+    new_record.port = port;
+    new_record.fingerprint = Some(map.fingerprint.clone());
+    new_record.created_at_ms = crate::state::now_ms();
+    let mut state = store.load()?;
+    state.upsert(new_record.clone());
+    // Keep the old record/container as a stopped rollback target.
+    if let Some(existing) = state
+        .envs
+        .iter_mut()
+        .find(|record| record.id == old_record.id)
+    {
+        existing.title = format!("{} (old)", old_record.title);
+    }
+    store.save(&state)?;
+    drop(state_lock);
+    if json {
+        output::print_json(&serde_json::json!({
+            "environment": view(resolved.kind, &container, Some(&new_record)),
+            "old": old_record.id,
+            "mapReady": true,
+            "fingerprint": map.fingerprint,
+            "windows": map.windows,
+        }));
+    } else {
+        println!("rebased {} -> {} on {base}", old_record.name, new_name);
+        println!("old container kept stopped: {}", old_record.id);
+        println!("map: 127.0.0.1:{port}");
     }
     Ok(())
 }

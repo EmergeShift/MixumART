@@ -1,0 +1,17 @@
+[package]
+name = "mixum-browser"
+description = "Container-side Chromium controller for Mixum browser leases"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "mixum-browser"
+path = "src/main.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tokio-tungstenite = { workspace = true }
+futures-util = { workspace = true }

@@ -11,6 +11,7 @@ members = [
   "crates/mixum-env-map",
   "apps/desktop/src-tauri",
   "crates/mixum-cli",
+  "crates/mixum-browser",
 ]
 
 [workspace.package]

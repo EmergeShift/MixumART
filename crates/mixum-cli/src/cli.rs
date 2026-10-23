@@ -35,6 +35,21 @@ pub enum Command {
         #[command(subcommand)]
         command: EnvCommand,
     },
+    /// Root-container consent requests.
+    Root {
+        #[command(subcommand)]
+        command: RootCommand,
+    },
+    /// Chrome cookie/tab bridge.
+    Browser {
+        #[command(subcommand)]
+        command: BrowserCommand,
+    },
+    /// Manage shared base environments (母体环境).
+    Base {
+        #[command(subcommand)]
+        command: BaseCommand,
+    },
     /// Check and inspect host ports.
     Port {
         #[command(subcommand)]
@@ -44,6 +59,11 @@ pub enum Command {
     Config {
         #[command(subcommand)]
         command: ConfigCommand,
+    },
+    /// Review host privilege requests from agents.
+    Privilege {
+        #[command(subcommand)]
+        command: PrivilegeCommand,
     },
     /// Run the stdio MCP server for agents.
     Mcp,
@@ -68,6 +88,12 @@ pub enum EnvCommand {
     },
     /// Create a MixumOS environment.
     Create(CreateArgs),
+    /// Recreate an env on a new base while keeping its named work/home volumes.
+    Rebase {
+        selector: String,
+        #[arg(long)]
+        base: String,
+    },
     /// Show one environment.
     Show { selector: String },
     /// Start an environment.
@@ -116,17 +142,105 @@ pub enum EnvCommand {
         #[command(subcommand)]
         command: SnapshotCommand,
     },
+    /// One-shot window screenshot (PNG).
+    Screenshot {
+        selector: String,
+        #[arg(long)]
+        window: u32,
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// Inject a pointer click into a window.
+    Click {
+        selector: String,
+        #[arg(long)]
+        window: u32,
+        #[arg(long)]
+        x: f64,
+        #[arg(long)]
+        y: f64,
+        #[arg(long, default_value = "left")]
+        button: String,
+    },
+    /// Move the pointer inside a window.
+    Move {
+        selector: String,
+        #[arg(long)]
+        window: u32,
+        #[arg(long)]
+        x: f64,
+        #[arg(long)]
+        y: f64,
+    },
+    /// Commit composed text into a window (IME-safe).
+    Type {
+        selector: String,
+        #[arg(long)]
+        window: u32,
+        text: String,
+    },
+    /// Send one keysym (e.g. Return, ctrl+a) to a window.
+    Key {
+        selector: String,
+        #[arg(long)]
+        window: u32,
+        keysym: String,
+        #[arg(long, value_delimiter = ',')]
+        mods: Vec<String>,
+    },
+    /// Scroll a window at a point.
+    Scroll {
+        selector: String,
+        #[arg(long)]
+        window: u32,
+        #[arg(long)]
+        x: f64,
+        #[arg(long)]
+        y: f64,
+        #[arg(long, default_value = "down")]
+        direction: String,
+    },
+    /// Claim a window for agent/user focus.
+    Focus {
+        selector: String,
+        #[arg(long)]
+        window: u32,
+    },
 }
 
 #[derive(Debug, Subcommand)]
 pub enum SnapshotCommand {
     /// List snapshots.
     List { selector: String },
-    /// Create a disk snapshot.
+    /// Create a snapshot (disk / memory / hybrid).
     Create {
         selector: String,
         #[arg(long)]
         label: Option<String>,
+        #[arg(long, default_value = "disk")]
+        kind: String,
+    },
+    /// Fork a snapshot into a new branch.
+    Fork {
+        selector: String,
+        node: String,
+        #[arg(long)]
+        branch: String,
+    },
+    /// Export a snapshot as a `.mart` bundle to the host.
+    Export {
+        selector: String,
+        node: String,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Import a `.mart` bundle into an environment.
+    Import {
+        selector: String,
+        #[arg(long)]
+        file: PathBuf,
+        #[arg(long, default_value = "cli")]
+        origin: String,
     },
     /// Restore a snapshot in place.
     Restore {
@@ -135,6 +249,95 @@ pub enum SnapshotCommand {
         /// Confirm the destructive restore.
         #[arg(long)]
         yes: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum BrowserCommand {
+    /// Install the Chrome native messaging host.
+    Install,
+    /// Export an approved cookie/tab lease (JSON).
+    Export {
+        #[arg(long = "domain", required = true)]
+        domains: Vec<String>,
+        #[arg(long = "url")]
+        urls: Vec<String>,
+    },
+    /// Send an approved domain/URL lease to a container browser.
+    Share {
+        selector: String,
+        #[arg(long = "domain", required = true)]
+        domains: Vec<String>,
+        #[arg(long = "url")]
+        urls: Vec<String>,
+    },
+    /// Agent-side: ask a human to approve domains/URLs for one container.
+    Request {
+        selector: String,
+        #[arg(long = "domain", required = true)]
+        domains: Vec<String>,
+        #[arg(long = "url")]
+        urls: Vec<String>,
+        #[arg(long, default_value = "")]
+        reason: String,
+    },
+    /// Human-side: approve a request and perform the share.
+    Approve { id: String },
+    /// Show native-host/socket status and the exact next step.
+    Status,
+    /// Package the unpacked extension as a Chrome Web Store upload zip.
+    Package {
+        #[arg(long)]
+        out: Option<String>,
+    },
+    /// Write a Chrome enterprise-policy fragment for force-installing the extension.
+    Policy {
+        #[arg(long)]
+        out: Option<String>,
+        #[arg(long, value_enum, default_value = "json")]
+        format: PolicyFormat,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum BaseCommand {
+    /// Create a root builder container for a base environment.
+    Create {
+        name: String,
+        #[arg(long)]
+        image: Option<String>,
+        #[arg(long, value_enum)]
+        runtime: Option<RuntimeArg>,
+    },
+    /// Open a root shell in the base builder (human only).
+    Shell { name: String },
+    /// Commit the builder rootfs into an immutable image version.
+    Commit {
+        name: String,
+        #[arg(long)]
+        tag: Option<String>,
+    },
+    /// List base environments.
+    List,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum PrivilegeCommand {
+    /// Watch pending sudo requests for one environment.
+    Watch { selector: String },
+    /// Approve one request after host-password authentication.
+    Approve {
+        selector: String,
+        id: String,
+        #[arg(long, default_value = "")]
+        reason: String,
+    },
+    /// Deny one request.
+    Deny {
+        selector: String,
+        id: String,
+        #[arg(long, default_value = "")]
+        reason: String,
     },
 }
 
@@ -152,6 +355,9 @@ pub struct CreateArgs {
     /// Image reference. Omit for mixumos to use the only local mixumos image.
     #[arg(long)]
     pub image: Option<String>,
+    /// Base environment spec (`name` or `name:tag`).
+    #[arg(long)]
+    pub base: Option<String>,
     /// Container name. Generated when omitted.
     #[arg(long)]
     pub name: Option<String>,
@@ -167,6 +373,39 @@ pub struct CreateArgs {
     /// Create but do not start the container.
     #[arg(long)]
     pub no_start: bool,
+    /// Create a root container. Human-only: requires typing ROOT after the risk notice.
+    #[arg(long)]
+    pub root: bool,
+    /// Create a root container using a human-approved request id.
+    #[arg(long)]
+    pub root_request: Option<String>,
+    /// Opt in to CRIU memory snapshots: adds SYS_ADMIN/PTRACE/CHECKPOINT_RESTORE/
+    /// SYS_RESOURCE/NET_ADMIN/SYS_TIME and makes /proc/sys writable at startup.
+    #[arg(long)]
+    pub memory_snapshots: bool,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum RootCommand {
+    /// Agent-side: create a consent request with stance and reason.
+    Request {
+        #[arg(long)]
+        title: String,
+        #[arg(long)]
+        image: String,
+        #[arg(long, value_enum)]
+        stance: RootStance,
+        #[arg(long, default_value = "")]
+        reason: String,
+    },
+    /// Human-side: approve a request after host-password authentication.
+    Approve { id: String },
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum RootStance {
+    Agree,
+    Disagree,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -225,4 +464,10 @@ pub enum PortCommand {
     Check { port: u16 },
     /// List host ports currently claimed by runtime containers.
     List,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum PolicyFormat {
+    Json,
+    Plist,
 }
