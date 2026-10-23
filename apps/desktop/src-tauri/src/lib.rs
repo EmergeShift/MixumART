@@ -17,7 +17,6 @@ use std::{
 
 use mixum_env_core::{BackendRegistry, RuntimeKind};
 use mixum_env_surface::InputEvent;
-#[cfg(target_os = "windows")]
 use tauri::Manager;
 
 /// 全局状态：后端注册表 + 每个 surface 窗口的输入/关闭通道。
@@ -74,6 +73,20 @@ pub fn run() {
             #[cfg(target_os = "windows")]
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.set_decorations(false);
+            }
+
+            // Mart bundles the exact CLI/host/extension. Register the native
+            // messaging host on first launch; the extension itself still needs
+            // Chrome Web Store or manual Load unpacked (Chrome restriction).
+            if let Ok(resources) = app.path().resource_dir() {
+                let cli = resources.join("bin").join("mixum");
+                let extension = resources.join("extensions").join("mixum-browser");
+                if cli.is_file() {
+                    let _ = std::process::Command::new(&cli)
+                        .args(["browser", "install"])
+                        .env("MIXUM_EXTENSION_DIR", &extension)
+                        .status();
+                }
             }
 
             // 开发用：MIXUM_ART_AUTOTEST=<addr> + MIXUM_MAP_TOKEN（可选
