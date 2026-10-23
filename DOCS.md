@@ -5,6 +5,16 @@ lives at `docs/<name>.md` and the Chinese counterpart at
 `docs/<name>.zh-CN.md`. Until then the Chinese page is the only text and is
 linked below.
 
+## Coverage (2026-10-24)
+
+- English text exists for 10 of 15 pages; 4 of those also have a Chinese
+  `.zh-CN.md` counterpart (`architecture`, `cli`, `daemon`, `display`).
+- Chinese-first pages still needing an English default: `contributing`,
+  `module-map`, `runtime-contract`, `support-matrix`, `ui`.
+- English-only pages still needing a Chinese counterpart: `base-env`,
+  `browser-bridge`, `browser-early-access`, `criu-build`, `privilege`,
+  `snapshot-limits`.
+
 ## Pages
 
 | Page | Status | English | 中文 |
