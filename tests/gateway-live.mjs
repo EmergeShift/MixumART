@@ -10,16 +10,17 @@ process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url)).replace(/\\/g, "/");
 const PORT = 17701;
 const GW = "mixum-gw-live";
 const NODE = "mixum-node-live";
 const NODE_NAME = "a";
-const IMAGE = "mixumos-e2e-rust:latest";
+const IMAGE = process.env.MIXUM_E2E_IMAGE ?? "mixumos-e2e-rust:latest";
 const BIN =
   process.env.MIXUM_GATEWAY_BIN ?? join(ROOT, "build", "mixum-gateway-x64");
+const BIN_NAME = basename(BIN);
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 function sh(cmd, args, opts = {}) {
@@ -46,7 +47,7 @@ try {
   const binDir = dirname(BIN);
   mustDocker([
     "run", "-d", "--rm", "--name", GW, "-p", `${PORT}:17701`, "-v",
-    `${binDir}:/opt:ro`, "alpine:3.21", "/opt/mixum-gateway-x64",
+    `${binDir}:/opt:ro`, "alpine:3.21", `/opt/${BIN_NAME}`,
     "--listen", "wss://0.0.0.0:17701", "--data-dir", "/tmp/gw",
   ]);
   let admin, fp;
