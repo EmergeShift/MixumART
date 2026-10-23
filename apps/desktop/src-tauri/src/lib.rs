@@ -143,6 +143,8 @@ pub fn run() {
             agent_install::agent_environments,
             agent_install::agent_status,
             agent_install::agent_install,
+            agent_install::agent_remote_status,
+            agent_install::agent_remote_install,
             commands::runtime_disk_usage,
             commands::runtime_logs,
             commands::runtime_prune,
