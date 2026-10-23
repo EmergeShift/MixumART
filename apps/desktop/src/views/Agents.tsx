@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { listen } from '@tauri-apps/api/event'
 
 import {
   agentCatalog,
@@ -22,9 +23,11 @@ import {
   setAgentCredential,
   type AgentEnvironmentInfo,
   type AgentInfo,
+  type AgentInstallEvent,
   type AgentProfile,
   type AgentStatus,
 } from '../api'
+import type { CommandResult } from '../api'
 import type { ConnectionInfo } from '../types'
 
 const MODES = [
@@ -100,6 +103,8 @@ export function Agents() {
   const [remoteNodes, setRemoteNodes] = useState<string[]>([])
   const [remoteBusy, setRemoteBusy] = useState(false)
   const [remoteConnected, setRemoteConnected] = useState(false)
+  const [agentInstallState, setAgentInstallState] = useState<string | null>(null)
+  const installIdRef = useRef<string | null>(null)
 
   const load = async () => {
     setError(null)
@@ -119,6 +124,8 @@ export function Agents() {
   }
 
   const remoteAddrRef = useRef(remoteAddr)
+  const remoteKeyRef = useRef(`${remoteAddr}|${remoteNode}`)
+  const agentEnvRef = useRef(agentEnvId)
   const prevRemoteAddr = useRef(remoteAddr)
 
   useEffect(() => {
@@ -127,11 +134,14 @@ export function Agents() {
     prevRemoteAddr.current = remoteAddr
     // 换 gateway 必须清掉旧 bearer token/指纹/节点与安装结果,避免把 A 的凭据
     // 发到 B,也避免旧地址的异步响应回写到新地址。
+    remoteKeyRef.current = `${remoteAddr}|`
     setRemoteToken('')
     setRemoteFp('')
     setRemoteNode('')
     setRemoteNodes([])
     setRemoteConnected(false)
+    setRemoteBusy(false)
+    setAgentProbing(false)
     setAgentRows(null)
     setAgentLines(null)
     setAgentError(null)
@@ -149,6 +159,7 @@ export function Agents() {
     node: string,
     fingerprint: string,
   ) => {
+    const key = `${addr.trim()}|${node}`
     setAgentProbing(true)
     setAgentError(null)
     try {
@@ -158,14 +169,14 @@ export function Agents() {
         node,
         fingerprint.trim() || undefined,
       )
-      if (remoteAddrRef.current === addr) setAgentRows(rows)
+      if (remoteKeyRef.current === key) setAgentRows(rows)
     } catch (err) {
-      if (remoteAddrRef.current === addr) {
+      if (remoteKeyRef.current === key) {
         setAgentError(errorText(err))
         setAgentRows(null)
       }
     } finally {
-      if (remoteAddrRef.current === addr) setAgentProbing(false)
+      if (remoteKeyRef.current === key) setAgentProbing(false)
     }
   }
 
@@ -177,6 +188,7 @@ export function Agents() {
       setAgentError('请填写远程 gateway 地址和访问令牌')
       return
     }
+    let key = `${addr}|${remoteNode}`
     setRemoteBusy(true)
     setAgentError(null)
     try {
@@ -184,6 +196,8 @@ export function Agents() {
       if (remoteAddrRef.current !== addr) return
       setRemoteNodes(nodes)
       const next = nodes.includes(remoteNode) ? remoteNode : (nodes[0] ?? '')
+      key = `${addr}|${next}`
+      remoteKeyRef.current = key
       setRemoteNode(next)
       setRemoteConnected(true)
       localStorage.setItem('mixum.map.addr', addr)
@@ -197,12 +211,12 @@ export function Agents() {
         setAgentError('gateway 上没有在线节点')
       }
     } catch (err) {
-      if (remoteAddrRef.current === addr) {
+      if (remoteKeyRef.current === key) {
         setAgentError(errorText(err))
         setRemoteConnected(false)
       }
     } finally {
-      if (remoteAddrRef.current === addr) setRemoteBusy(false)
+      if (remoteKeyRef.current === key) setRemoteBusy(false)
     }
   }
 
@@ -217,17 +231,35 @@ export function Agents() {
     }
     const target = env ?? agentEnvs.find((item) => item.id === agentEnvId)
     if (!target) return
+    const envId = target.id
     setAgentProbing(true)
     setAgentError(null)
     try {
       await ensureAgentConnection(target)
-      setAgentRows(await agentStatus(target.id))
+      const rows = await agentStatus(envId)
+      if (agentEnvRef.current === envId) setAgentRows(rows)
     } catch (err) {
-      setAgentError(errorText(err))
-      setAgentRows(null)
+      if (agentEnvRef.current === envId) {
+        setAgentError(errorText(err))
+        setAgentRows(null)
+      }
     } finally {
-      setAgentProbing(false)
+      if (agentEnvRef.current === envId) setAgentProbing(false)
     }
+  }
+
+  const applyInstallResult = (result: CommandResult) => {
+    setAgentInstallState(result.state)
+    setAgentLines((previous) => {
+      const merged = [...(previous ?? [])]
+      for (const line of result.lines) {
+        if (!merged.includes(line)) merged.push(line)
+      }
+      const stateLine = `[${result.state}]`
+      if (!merged.includes(stateLine)) merged.push(stateLine)
+      return merged
+    })
+    if (result.error) setAgentError(result.error)
   }
 
   const installAgent = async (name: string) => {
@@ -246,10 +278,14 @@ export function Agents() {
         return
       }
       const label = `${remoteAddr} · ${remoteNode}`
+      const installId = crypto.randomUUID()
+      const installKey = `${remoteAddr.trim()}|${remoteNode}`
+      installIdRef.current = installId
       setAgentInstalling(name)
       setAgentInstallName(label)
+      setAgentInstallState(null)
       setAgentError(null)
-      setAgentLines([`[安装] ${name} → ${label}`, '正在安装，完成后会显示日志并刷新状态…'])
+      setAgentLines([`[安装] ${name} → ${label}`, '日志会实时显示；完成后自动刷新状态。'])
       try {
         const result = await agentRemoteInstall(
           remoteAddr.trim(),
@@ -258,19 +294,28 @@ export function Agents() {
           name,
           remoteFp.trim() || undefined,
         )
-        setAgentLines((previous) => [...(previous ?? []), ...result.lines, `[${result.state}]`])
-        if (remoteAddrRef.current !== remoteAddr.trim()) return
+        if (
+          installIdRef.current !== installId ||
+          remoteKeyRef.current !== installKey
+        ) {
+          return
+        }
+        applyInstallResult(result)
         if (result.state !== 'completed') {
-          setAgentError(
-            result.error?.trim() || `安装未完成（${result.state}）`,
-          )
+          setAgentError(result.error?.trim() || `安装未完成（${result.state}）`)
         } else {
           await refreshRemoteStatus(remoteAddr, remoteToken, remoteNode, remoteFp)
         }
       } catch (err) {
-        setAgentError(errorText(err))
+        if (installIdRef.current === installId) {
+          setAgentLines((previous) => [...(previous ?? []), '[failed]'])
+          setAgentError(errorText(err))
+        }
       } finally {
-        setAgentInstalling(null)
+        if (installIdRef.current === installId) {
+          installIdRef.current = null
+          setAgentInstalling(null)
+        }
       }
       return
     }
@@ -286,23 +331,39 @@ export function Agents() {
     ) {
       return
     }
+    const installId = crypto.randomUUID()
+    const envId = target.id
+    installIdRef.current = installId
     setAgentInstalling(name)
     setAgentInstallName(target.name)
+    setAgentInstallState(null)
     setAgentError(null)
-    setAgentLines([`[安装] ${name} → ${target.name}`, `环境: ${target.addr}`, '正在安装，完成后会显示日志并刷新状态…'])
+    setAgentLines([`[安装] ${name} → ${target.name}`, `环境: ${target.addr}`, '日志会实时显示；完成后自动刷新状态。'])
     try {
       await ensureAgentConnection(target)
       const result = await agentInstall(target.id, name)
-      setAgentLines((previous) => [...(previous ?? []), ...result.lines, `[${result.state}]`])
+      if (
+        installIdRef.current !== installId ||
+        agentEnvRef.current !== envId
+      ) {
+        return
+      }
+      applyInstallResult(result)
       if (result.state !== 'completed') {
         setAgentError(result.error?.trim() || `安装未完成（${result.state}）`)
       } else {
         await refreshAgentStatus(target)
       }
     } catch (err) {
-      setAgentError(errorText(err))
+      if (installIdRef.current === installId) {
+        setAgentLines((previous) => [...(previous ?? []), '[failed]'])
+        setAgentError(errorText(err))
+      }
     } finally {
-      setAgentInstalling(null)
+      if (installIdRef.current === installId) {
+        installIdRef.current = null
+        setAgentInstalling(null)
+      }
     }
   }
 
@@ -362,6 +423,27 @@ export function Agents() {
         if (saved) setRemoteToken((current) => current || saved)
       })
       .catch(() => undefined)
+  }, [])
+
+  useEffect(() => {
+    let dispose: (() => void) | undefined
+    listen<AgentInstallEvent>('agent-install', (event) => {
+      const payload = event.payload
+      if (!payload.installId || payload.installId !== installIdRef.current) return
+      if (payload.kind === 'log' && payload.line) {
+        setAgentLines((previous) => [...(previous ?? []), payload.line as string])
+        return
+      }
+      if (payload.kind === 'state') {
+        setAgentInstallState(payload.state ?? null)
+        if (payload.message) setAgentError(payload.message)
+      }
+    })
+      .then((unlisten) => {
+        dispose = unlisten
+      })
+      .catch(() => undefined)
+    return () => dispose?.()
   }, [])
 
   const save = async () => {
@@ -644,7 +726,7 @@ export function Agents() {
               </table>
             </div>
             <p className="mode-note">
-              安装会联网下载，可能需要几分钟；完成后自动刷新状态。任务在环境内执行，
+              安装会联网下载，日志实时显示，完成后自动刷新状态。任务在环境内执行，
               受快照、隔离与权限审批约束。
             </p>
             {promptFallback && (
@@ -671,7 +753,7 @@ export function Agents() {
               <section className="connect-panel terminal-panel" aria-label="Agent 安装输出">
                 <div className="section-head">
                   <div>
-                    <h3>{agentInstallName || '环境'} · 安装输出</h3>
+                    <h3>{agentInstallName || '环境'} · 安装输出{agentInstallState ? ` · ${agentInstallState}` : ''}</h3>
                     <p>关闭不会终止已提交的安装任务。</p>
                   </div>
                   <button className="ghost" onClick={() => setAgentLines(null)}>
