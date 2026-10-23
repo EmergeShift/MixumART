@@ -21,6 +21,7 @@ pub fn install(json: bool) -> Result<()> {
             host.display()
         )));
     }
+    let extension_dir = extension_dir()?;
     let manifest_dir = native_manifest_dir()?;
     std::fs::create_dir_all(&manifest_dir)
         .map_err(|error| CliError::io(format!("create native host dir: {error}")))?;
@@ -34,7 +35,6 @@ pub fn install(json: bool) -> Result<()> {
     });
     std::fs::write(&manifest, serde_json::to_vec_pretty(&body).unwrap())
         .map_err(|error| CliError::io(format!("write native host manifest: {error}")))?;
-    let extension_dir = extension_dir()?;
     if json {
         output::print_json(&json!({
             "nativeHost": manifest,
@@ -202,6 +202,18 @@ fn extension_dir() -> Result<PathBuf> {
                 .unwrap_or_else(|| Path::new("."))
                 .join("../share/mixum/extensions/mixum-browser")
         }),
+        // Portable CLI bundle: bin/mixum + share/mixum/extensions/... or
+        // bin/mixum + extensions/... (release tarball layout).
+        std::env::current_exe().ok().map(|exe| {
+            exe.parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join("extensions/mixum-browser")
+        }),
+        std::env::current_exe().ok().map(|exe| {
+            exe.parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join("../extensions/mixum-browser")
+        }),
         std::env::current_exe().ok().map(|exe| {
             exe.parent()
                 .unwrap_or_else(|| Path::new("."))
@@ -245,6 +257,9 @@ fn socket_path() -> PathBuf {
 }
 
 fn native_manifest_dir() -> Result<PathBuf> {
+    if let Some(dir) = std::env::var_os("MIXUM_CHROME_NATIVE_HOST_DIR") {
+        return Ok(PathBuf::from(dir));
+    }
     #[cfg(target_os = "macos")]
     {
         let home =
