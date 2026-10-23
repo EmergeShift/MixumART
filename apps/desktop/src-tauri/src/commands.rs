@@ -1110,7 +1110,18 @@ pub async fn environment_run_command(
     container_id: String,
     command: String,
 ) -> Result<CommandResult, String> {
-    let connection = connection_for(&app, &container_id)?;
+    run_environment_script(&app, &container_id, &command, Duration::from_secs(600)).await
+}
+
+/// 在连接档案对应的环境里提交一次 shell 任务并等待终态。
+/// 普通命令与 Agent 一键安装共用这条路径（事件、权限审批转发一致）。
+pub(crate) async fn run_environment_script(
+    app: &AppHandle,
+    container_id: &str,
+    script: &str,
+    timeout: Duration,
+) -> Result<CommandResult, String> {
+    let connection = connection_for(app, container_id)?;
     let client = MapClient::connect(
         &connection.addr,
         &connection.token,
@@ -1124,10 +1135,10 @@ pub async fn environment_run_command(
         .await
         .map_err(|error| error.to_string())?;
     let task_id = client
-        .submit_shell_task(&command)
+        .submit_shell_task(script)
         .await
         .map_err(|error| error.to_string())?;
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(600);
+    let deadline = tokio::time::Instant::now() + timeout;
     let mut lines = Vec::new();
     loop {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());

@@ -5,6 +5,7 @@
 //! - 命令实现 → `commands.rs`
 //! - 界面 → `apps/desktop/src`
 
+mod agent_install;
 mod commands;
 #[cfg(target_os = "macos")]
 mod macos;
@@ -137,6 +138,11 @@ pub fn run() {
             commands::load_agent_profiles,
             commands::save_agent_profile,
             commands::remove_agent_profile,
+            agent_install::agent_catalog,
+            agent_install::agent_prompt,
+            agent_install::agent_environments,
+            agent_install::agent_status,
+            agent_install::agent_install,
             commands::runtime_disk_usage,
             commands::runtime_logs,
             commands::runtime_prune,

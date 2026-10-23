@@ -1,6 +1,12 @@
 import { useEffect, useState } from 'react'
 
 import {
+  agentCatalog,
+  agentEnvironments,
+  agentInstall,
+  agentPrompt,
+  agentStatus,
+  connectEnvironment,
   deleteAgentCredential,
   errorText,
   hasAgentCredential,
@@ -10,7 +16,10 @@ import {
   removeAgentProfile,
   saveAgentProfile,
   setAgentCredential,
+  type AgentEnvironmentInfo,
+  type AgentInfo,
   type AgentProfile,
+  type AgentStatus,
 } from '../api'
 import type { ConnectionInfo } from '../types'
 
@@ -67,6 +76,17 @@ export function Agents() {
   const [launching, setLaunching] = useState<string | null>(null)
   const [launchLines, setLaunchLines] = useState<string[] | null>(null)
   const [launchName, setLaunchName] = useState('')
+  const [agentEnvs, setAgentEnvs] = useState<AgentEnvironmentInfo[]>([])
+  const [agentEnvId, setAgentEnvId] = useState('')
+  const [agentCatalogList, setAgentCatalogList] = useState<AgentInfo[]>([])
+  const [agentRows, setAgentRows] = useState<AgentStatus[] | null>(null)
+  const [agentProbing, setAgentProbing] = useState(false)
+  const [agentInstalling, setAgentInstalling] = useState<string | null>(null)
+  const [agentLines, setAgentLines] = useState<string[] | null>(null)
+  const [agentInstallName, setAgentInstallName] = useState('')
+  const [agentError, setAgentError] = useState<string | null>(null)
+  const [copiedAgent, setCopiedAgent] = useState<string | null>(null)
+  const [promptFallback, setPromptFallback] = useState<{ name: string; text: string } | null>(null)
 
   const load = async () => {
     setError(null)
@@ -78,11 +98,110 @@ export function Agents() {
     }
   }
 
+  const ensureAgentConnection = async (env: AgentEnvironmentInfo) => {
+    if (connections[env.id]) return connections[env.id]
+    const connection = await connectEnvironment(env.kind, env.id, env.addr)
+    setConnections((previous) => ({ ...previous, [env.id]: connection }))
+    return connection
+  }
+
+  const refreshAgentStatus = async (env?: AgentEnvironmentInfo) => {
+    const target = env ?? agentEnvs.find((item) => item.id === agentEnvId)
+    if (!target) return
+    setAgentProbing(true)
+    setAgentError(null)
+    try {
+      await ensureAgentConnection(target)
+      setAgentRows(await agentStatus(target.id))
+    } catch (err) {
+      setAgentError(errorText(err))
+      setAgentRows(null)
+    } finally {
+      setAgentProbing(false)
+    }
+  }
+
+  const installAgent = async (name: string) => {
+    const target = agentEnvs.find((item) => item.id === agentEnvId)
+    if (!target) {
+      setAgentError('请先选择一个运行中的环境')
+      return
+    }
+    if (
+      !window.confirm(
+        `在「${target.name}」内安装 ${name}？\n\n安装会联网下载，可能需要几分钟；完成后提示词写入 ~/.mixum/agents/${name}/PROMPT.md。`,
+      )
+    ) {
+      return
+    }
+    setAgentInstalling(name)
+    setAgentInstallName(target.name)
+    setAgentError(null)
+    setAgentLines([`[安装] ${name} → ${target.name}`, `环境: ${target.addr}`, '正在安装，完成后会显示日志并刷新状态…'])
+    try {
+      await ensureAgentConnection(target)
+      const result = await agentInstall(target.id, name)
+      setAgentLines((previous) => [...(previous ?? []), ...result.lines, `[${result.state}]`])
+      if (result.error) {
+        setAgentError(result.error)
+      } else {
+        await refreshAgentStatus(target)
+      }
+    } catch (err) {
+      setAgentError(errorText(err))
+    } finally {
+      setAgentInstalling(null)
+    }
+  }
+
+  const copyAgentPrompt = async (name: string) => {
+    try {
+      const text = await agentPrompt(name)
+      let copied = false
+      try {
+        await navigator.clipboard.writeText(text)
+        copied = true
+      } catch {
+        const area = document.createElement('textarea')
+        area.value = text
+        document.body.appendChild(area)
+        area.select()
+        copied = document.execCommand('copy')
+        area.remove()
+      }
+      if (!copied) {
+        setPromptFallback({ name, text })
+        return
+      }
+      setPromptFallback(null)
+      setCopiedAgent(name)
+      window.setTimeout(
+        () => setCopiedAgent((current) => (current === name ? null : current)),
+        2000,
+      )
+    } catch (err) {
+      setAgentError(errorText(err))
+    }
+  }
+
   useEffect(() => {
     void load()
     void loadEnvironmentConnections()
       .then(setConnections)
       .catch((err: unknown) => setError(errorText(err)))
+    void agentCatalog()
+      .then(setAgentCatalogList)
+      .catch((err: unknown) => setAgentError(errorText(err)))
+    void agentEnvironments()
+      .then((environments) => {
+        setAgentEnvs(environments)
+        const first = environments[0]
+        if (first) {
+          setAgentEnvId((current) => current || first.id)
+          void refreshAgentStatus(first)
+        }
+      })
+      .catch((err: unknown) => setAgentError(errorText(err)))
   }, [])
 
   const save = async () => {
@@ -195,6 +314,133 @@ export function Agents() {
             </article>
           ))}
         </div>
+      </section>
+
+      <section>
+        <div className="section-head">
+          <div>
+            <h2>环境内一键安装</h2>
+            <p>
+              在运行中的 mixumOS 环境里安装主流 Agent；安装脚本在环境内执行，提示词写到{' '}
+              <span className="mono">{'~/.mixum/agents/<name>/PROMPT.md'}</span>。
+              也可以只复制提示词，挂到任意外部 Agent 上。
+            </p>
+          </div>
+        </div>
+        {agentError && <div className="error">{agentError}</div>}
+        {agentEnvs.length === 0 ? (
+          <p className="mode-note">
+            没有运行中的 mixumOS 环境。先到「环境」页启动一个带 agentd 的环境，再回来安装。
+          </p>
+        ) : (
+          <>
+            <div className="chips" style={{ alignItems: 'flex-end' }}>
+              <div className="field">
+                <label htmlFor="agent-env">目标环境</label>
+                <select
+                  id="agent-env"
+                  value={agentEnvId}
+                  onChange={(event) => {
+                    const next = agentEnvs.find((item) => item.id === event.target.value)
+                    setAgentEnvId(event.target.value)
+                    setAgentRows(null)
+                    if (next) void refreshAgentStatus(next)
+                  }}
+                  disabled={agentProbing || !!agentInstalling}
+                >
+                  {agentEnvs.map((env) => (
+                    <option key={env.id} value={env.id}>
+                      {env.name} · {env.addr}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <button
+                className="ghost"
+                onClick={() => void refreshAgentStatus()}
+                disabled={agentProbing || !!agentInstalling || !agentEnvId}
+              >
+                {agentProbing ? '探测中…' : '刷新安装状态'}
+              </button>
+            </div>
+            <div className="table-scroll">
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>Agent</th>
+                    <th>说明</th>
+                    <th>状态</th>
+                    <th />
+                  </tr>
+                </thead>
+                <tbody>
+                  {(agentRows ??
+                    agentCatalogList.map((agent) => ({ ...agent, installed: false }))
+                  ).map((row) => (
+                    <tr key={row.name}>
+                      <td className="mono">{row.name}</td>
+                      <td>{row.summary}</td>
+                      <td>{agentRows ? (row.installed ? '已安装' : '未安装') : '未知'}</td>
+                      <td className="row-actions">
+                        <button
+                          className="ghost"
+                          onClick={() => void copyAgentPrompt(row.name)}
+                        >
+                          {copiedAgent === row.name ? '已复制' : '复制提示词'}
+                        </button>
+                        <button
+                          className="ghost"
+                          onClick={() => void installAgent(row.name)}
+                          disabled={!!agentInstalling || row.installed}
+                        >
+                          {agentInstalling === row.name ? '安装中…' : '安装'}
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <p className="mode-note">
+              安装会联网下载，可能需要几分钟；完成后自动刷新状态。任务在环境内执行，
+              受快照、隔离与权限审批约束。
+            </p>
+            {promptFallback && (
+              <section className="connect-panel" aria-label="Agent 提示词">
+                <div className="section-head">
+                  <div>
+                    <h3>{promptFallback.name} · 提示词</h3>
+                    <p>系统拒绝自动写入剪贴板，请全选手动复制。</p>
+                  </div>
+                  <button className="ghost" onClick={() => setPromptFallback(null)}>
+                    关闭
+                  </button>
+                </div>
+                <textarea
+                  className="mono"
+                  readOnly
+                  rows={8}
+                  style={{ width: '100%', resize: 'vertical' }}
+                  value={promptFallback.text}
+                />
+              </section>
+            )}
+            {agentLines && (
+              <section className="connect-panel terminal-panel" aria-label="Agent 安装输出">
+                <div className="section-head">
+                  <div>
+                    <h3>{agentInstallName || '环境'} · 安装输出</h3>
+                    <p>关闭不会终止已提交的安装任务。</p>
+                  </div>
+                  <button className="ghost" onClick={() => setAgentLines(null)}>
+                    关闭
+                  </button>
+                </div>
+                <pre className="terminal-output">{agentLines.join('\n')}</pre>
+              </section>
+            )}
+          </>
+        )}
       </section>
 
       <section>
