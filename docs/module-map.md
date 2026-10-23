@@ -7,7 +7,7 @@
 ## 1. 目录结构
 
 ```
-mixum-Agent-Env/
+MixumART/
 ├── Cargo.toml                      # Rust workspace：成员、共享依赖版本
 ├── crates/
 │   ├── mixum-env-core/             # 领域类型 + 后端契约（唯一的跨组共享 Rust 代码）

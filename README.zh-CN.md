@@ -13,7 +13,7 @@
   <p><strong>简体中文</strong> · <a href="README.md">English</a></p>
 </div>
 
-> **状态：v0.1.0，pre-1.0。** macOS + Apple Container 路径已端到端验证。Docker 与 WSL 2 后端已实现；真实硬件覆盖情况在[平台矩阵](#平台支持)中如实标注。1.0 之前 API 仍可能调整。
+> **状态：v0.1.0，alpha。** 这是一个早期、未完成的构建。macOS + Apple Container 是我们每天在用的路径；Docker 与 WSL 2 已实现，但验证程度不同。API 仍会变，打包也刻意做得很轻——见 [Alpha 说明](ALPHA.zh-CN.md)。
 
 ---
 
@@ -225,6 +225,10 @@ daemon 一行一个 JSON 请求、一行一个 JSON 响应，错误码与 CLI �
 | `mixum version` | 版本与构建信息 |
 
 完整契约、selector 与 JSON 形状见 [docs/cli.md](docs/cli.md)。
+
+## Alpha 说明
+
+MixumART 是 alpha。macOS 应用没有签名（还没买 Apple Developer Program），Windows 会弹 SmartScreen，浏览器桥在商店上架前只能用开发者模式。具体步骤和原因在 [ALPHA.zh-CN.md](ALPHA.zh-CN.md)；CLI、Docker 镜像和 npm SDK 不受影响。
 
 ## 平台支持
 

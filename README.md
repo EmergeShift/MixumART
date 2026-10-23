@@ -13,7 +13,7 @@
   <p><a href="README.zh-CN.md">简体中文</a> · <strong>English</strong></p>
 </div>
 
-> **Status: v0.1.0, pre-1.0.** The macOS + Apple Container path is verified end to end. Docker and WSL 2 backends are implemented; their real-hardware coverage is called out honestly in the [platform matrix](#platform-support). APIs may still move before 1.0.
+> **Status: v0.1.0, alpha.** This is an early, unfinished build. The macOS + Apple Container path is the one we use daily; Docker and WSL 2 are implemented but not equally exercised. APIs will move. Packaging is deliberately rough — see the [alpha notes](ALPHA.md).
 
 ---
 
@@ -225,6 +225,13 @@ Every command supports `--json`; errors are machine-readable and exit codes are 
 | `mixum version` | Version and build information |
 
 Full contract, selectors and JSON shapes: [docs/cli.md](docs/cli.md).
+
+## Alpha notes
+
+MixumART is alpha. The macOS app is unsigned (no Apple Developer Program yet),
+Windows shows SmartScreen, and the browser bridge is developer-mode only until a
+store listing exists. [ALPHA.md](ALPHA.md) has the exact steps and the reason;
+none of this affects the CLI, Docker images, or the npm SDK.
 
 ## Platform support
 

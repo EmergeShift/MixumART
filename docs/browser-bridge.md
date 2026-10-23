@@ -25,14 +25,21 @@ mixum browser install
 ```
 
 This writes the native messaging manifest. The extension itself is **not**
-silently installed by this command. Production distribution is one of:
+silently installed by this command.
+
+For the alpha, load it unpacked:
+
+1. Open `chrome://extensions`.
+2. Enable **Developer mode**.
+3. **Load unpacked** → select `extensions/mixum-browser`.
+4. Chrome will warn about developer-mode extensions on startup; that is expected.
+
+Developer mode is the supported **alpha** path, not the long-term consumer path.
+Once the store listing exists, switch to it or deploy by policy:
 
 1. Chrome Web Store listing (one click for users);
 2. enterprise policy `ExtensionInstallForcelist` / `ExtensionSettings` (managed
    devices, no user action).
-
-Loading an unpacked extension is a development-only path. Do not tell end users to
-enable developer mode; publish the extension or deploy it by policy.
 
 Build the store upload artifact:
 

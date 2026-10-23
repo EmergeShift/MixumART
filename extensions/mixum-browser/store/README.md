@@ -1,5 +1,12 @@
 # Web Store submission
 
+> **Alpha:** the extension is not in the Chrome Web Store yet. Until the listing
+> exists, install it unpacked: `chrome://extensions` → **Developer mode** →
+> **Load unpacked** → `extensions/mixum-browser`. The rest of this file is the
+> submission checklist for when we do publish it.
+
+
+
 Build the upload zip:
 
 ```bash
