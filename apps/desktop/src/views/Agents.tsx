@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { listen } from '@tauri-apps/api/event'
 
 import {
   agentCatalog,
@@ -22,6 +23,7 @@ import {
   setAgentCredential,
   type AgentEnvironmentInfo,
   type AgentInfo,
+  type AgentInstallEvent,
   type AgentProfile,
   type AgentStatus,
 } from '../api'
@@ -230,6 +232,8 @@ export function Agents() {
     const target = env ?? agentEnvs.find((item) => item.id === agentEnvId)
     if (!target) return
     const envId = target.id
+    // 首次自动探测时 agentEnvId 还没写入 state；同步 ref，finally 才能复位。
+    agentEnvRef.current = envId
     setAgentProbing(true)
     setAgentError(null)
     try {
@@ -291,6 +295,7 @@ export function Agents() {
           remoteNode,
           name,
           remoteFp.trim() || undefined,
+          installId,
         )
         if (
           installIdRef.current !== installId ||
@@ -339,7 +344,7 @@ export function Agents() {
     setAgentLines([`[安装] ${name} → ${target.name}`, `环境: ${target.addr}`, '日志会实时显示；完成后自动刷新状态。'])
     try {
       await ensureAgentConnection(target)
-      const result = await agentInstall(target.id, name)
+      const result = await agentInstall(target.id, name, installId)
       if (
         installIdRef.current !== installId ||
         agentEnvRef.current !== envId
@@ -421,6 +426,27 @@ export function Agents() {
         if (saved) setRemoteToken((current) => current || saved)
       })
       .catch(() => undefined)
+  }, [])
+
+  useEffect(() => {
+    let dispose: (() => void) | undefined
+    listen<AgentInstallEvent>('agent-install', (event) => {
+      const payload = event.payload
+      if (!payload.installId || payload.installId !== installIdRef.current) return
+      if (payload.kind === 'log' && payload.line) {
+        setAgentLines((previous) => [...(previous ?? []), payload.line as string])
+        return
+      }
+      if (payload.kind === 'state') {
+        setAgentInstallState(payload.state ?? null)
+        if (payload.message) setAgentError(payload.message)
+      }
+    })
+      .then((unlisten) => {
+        dispose = unlisten
+      })
+      .catch(() => undefined)
+    return () => dispose?.()
   }, [])
 
 
