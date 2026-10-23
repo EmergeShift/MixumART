@@ -1,40 +1,43 @@
-# 模块地图：每块代码该放在哪
+> English translation of the Chinese document. Original: [module-map.zh-CN.md](module-map.zh-CN.md). Technical review pending.
 
-这份文档回答一个问题：**我要改的东西，应该落在哪个目录？**
+# Module map: where each piece of code belongs
 
-改动前先在这里找到对应的行；找不到时，先在 `docs/` 补一行，再写代码。
+This page answers one question: **where should the thing I want to change live?**
 
-## 1. 目录结构
+Find the matching row here before changing code; if there is no row, add one to
+`docs/` first, then write the code.
+
+## 1. Directory layout
 
 ```
 MixumART/
-├── Cargo.toml                      # Rust workspace：成员、共享依赖版本
+├── Cargo.toml                      # Rust workspace: members, shared dependency versions
 ├── crates/
-│   ├── mixum-env-core/             # 领域类型 + 后端契约（唯一的跨组共享 Rust 代码）
+│   ├── mixum-env-core/             # domain types + backend contract (the only shared Rust code)
 │   │   └── src/{container,error,process,runtime}.rs
-│   ├── mixum-env-runtime-docker/   # Docker 后端
-│   ├── mixum-env-runtime-apple/    # Apple Container 后端（macOS）
-│   └── mixum-env-runtime-wsl2/     # WSL 2 后端（Windows，并行组）
+│   ├── mixum-env-runtime-docker/   # Docker backend
+│   ├── mixum-env-runtime-apple/    # Apple Container backend (macOS)
+│   └── mixum-env-runtime-wsl2/     # WSL 2 backend (Windows, parallel group)
 ├── apps/
 │   └── desktop/
-│       ├── src-tauri/              # Tauri 壳：命令、状态、窗口、权限
-│       │   ├── src/lib.rs          # 装配后端 + 注册命令 + PATH 修补
-│       │   ├── src/commands.rs     # 所有 #[tauri::command]
-│       │   ├── capabilities/       # Tauri v2 能力（默认只开 core:default）
+│       ├── src-tauri/              # Tauri shell: commands, state, windows, permissions
+│       │   ├── src/lib.rs          # assemble backends + register commands + PATH fix
+│       │   ├── src/commands.rs     # all #[tauri::command]
+│       │   ├── capabilities/       # Tauri v2 capabilities (only core:default by default)
 │       │   └── tauri.conf.json
-│       ├── src/                    # React 界面
-│       │   ├── App.tsx             # 侧栏 + 顶栏 + 视图切换
-│       │   ├── api.ts              # 唯一的 invoke 出口
-│       │   ├── types.ts            # core 类型的 TS 镜像
-│       │   ├── status.ts           # 状态文案/色调映射
-│       │   ├── views/              # 页面级组件
-│       │   └── components/         # 可复用小组件
+│       ├── src/                    # React UI
+│       │   ├── App.tsx             # sidebar + top bar + view switching
+│       │   ├── api.ts              # the single invoke exit
+│       │   ├── types.ts            # TS mirror of core types
+│       │   ├── status.ts           # status copy/colour mapping
+│       │   ├── views/              # page-level components
+│       │   └── components/         # reusable small components
 │       └── package.json
 ├── docs/
 └── README.md
 ```
 
-## 2. 依赖方向（只允许单向）
+## 2. Dependency direction (one-way only)
 
 ```
 apps/desktop/src  ──invoke──▶  apps/desktop/src-tauri
@@ -46,67 +49,73 @@ apps/desktop/src  ──invoke──▶  apps/desktop/src-tauri
         runtime-docker          runtime-apple        runtime-wsl2
 ```
 
-硬规则：
+Hard rules:
 
-- `mixum-env-core` **不依赖**任何 runtime crate，也不依赖 Tauri；
-- runtime crate 之间**不互相依赖**；
-- Tauri 层不直接 `Command::new`，所有外部调用经后端 crate；
-- 前端不直接写命令名字符串，统一走 `src/api.ts`。
+- `mixum-env-core` **does not depend on** any runtime crate, nor on Tauri.
+- runtime crates **do not depend on each other**.
+- The Tauri layer does not call `Command::new` directly; all external calls go
+  through the backend crates.
+- The frontend never writes command-name strings; it goes through `src/api.ts`.
 
-## 3. 模块归属表
+## 3. Ownership table
 
-| 路径 | 负责什么 | 谁可以改 | 不该出现 |
-|------|----------|----------|----------|
-| `crates/mixum-env-core` | 领域类型（`Container`/`CreateSpec`/`PortMapping`）、`RuntimeBackend` 契约、`RuntimeStatus`、`EnvError`、带超时的命令调用 | 全体；**契约变更需两组 review** | CLI 参数、`cfg(target_os)` 分支、Tauri 类型、界面文案 |
-| `crates/mixum-env-runtime-docker` | `docker` CLI 探测、列举、输出解析；（M1）写操作 | 本组 | React/Tauri 依赖、其它 runtime 的代码 |
-| `crates/mixum-env-runtime-apple` | `container` CLI 探测、列举、输出解析；（M2）写操作 | 本组 | 同上 |
-| `crates/mixum-env-runtime-wsl2` | `wsl.exe` 交互、发行版管理 | **WSL 2 组** | 同上；不要改 core 去迁就实现 |
-| `apps/desktop/src-tauri/src/commands.rs` | 命令：取状态、转错误码、返回给前端 | 本组 | 业务逻辑、平台细节 |
-| `crates/mixum-env-surface` | surface/frame/input wire 类型与编解码 | 显示组 | 平台/CLI/Tauri 类型 |
-| `crates/mixum-env-compositor` | 容器内 Wayland 合成器、buffer/damage/seat | 显示组 | 宿主 UI、Tauri 依赖 |
-| `crates/mixum-env-display` | 宿主 TCP 调试客户端、窗口合成、输入回传 | 显示组 | Tauri 私有状态 |
-| `crates/mixum-env-map` | MAP WSS/TOFU + display.list/attach/input | 显示组 | 平台/CLI 细节 |
-| `apps/desktop/src-tauri/src/lib.rs` | 后端装配、命令注册、启动期环境修补 | 本组 | 业务逻辑 |
-| `apps/desktop/src/views/` | 页面（环境、容器、后续镜像/设置） | 前端 | 命令名、后端私有字段 |
-| `apps/desktop/src/components/` | 无状态小组件（徽章等） | 前端 | 数据请求 |
-| `apps/desktop/src/{api,types,status}.ts` | 契约镜像与展示映射 | 前端 + core 同步 | 业务分支 |
-| `docs/` | 归属、契约、构建说明 | 全体 | — |
+| Path | Responsible for | Who can change it | Must not appear |
+|---|---|---|---|
+| `crates/mixum-env-core` | domain types (`Container`/`CreateSpec`/`PortMapping`), `RuntimeBackend` contract, `RuntimeStatus`, `EnvError`, timed command calls | everyone; **contract changes need review from both groups** | CLI args, `cfg(target_os)` branches, Tauri types, UI copy |
+| `crates/mixum-env-runtime-docker` | `docker` CLI probing, listing, output parsing; (M1) write operations | this group | React/Tauri deps, other runtime code |
+| `crates/mixum-env-runtime-apple` | `container` CLI probing, listing, output parsing; (M2) write operations | this group | same as above |
+| `crates/mixum-env-runtime-wsl2` | `wsl.exe` interaction, distro management | **WSL 2 group** | same as above; do not change core to accommodate an implementation |
+| `apps/desktop/src-tauri/src/commands.rs` | commands: fetch state, map errors, return to frontend | this group | business logic, platform details |
+| `crates/mixum-env-surface` | surface/frame/input wire types and codecs | display group | platform/CLI/Tauri types |
+| `crates/mixum-env-compositor` | in-container Wayland compositor, buffer/damage/seat | display group | host UI, Tauri deps |
+| `crates/mixum-env-display` | host TCP debug client, window composition, input return | display group | Tauri private state |
+| `crates/mixum-env-map` | MAP WSS/TOFU + display.list/attach/input | display group | platform/CLI details |
+| `apps/desktop/src-tauri/src/lib.rs` | backend assembly, command registration, startup environment fix | this group | business logic |
+| `apps/desktop/src/views/` | pages (environments, containers, later images/settings) | frontend | command names, backend private fields |
+| `apps/desktop/src/components/` | stateless small components (badges etc.) | frontend | data requests |
+| `apps/desktop/src/{api,types,status}.ts` | contract mirror and display mapping | frontend + core in sync | business branches |
+| `docs/` | ownership, contracts, build notes | everyone | — |
 
-> 「谁可以改」不是权限，是**冲突成本**：改别人负责的目录请在 PR 里说明原因，
-> 并在合并前找对应负责人过一眼。
+> "Who can change it" is not permission; it is **conflict cost**. If you change a
+> directory owned by another group, explain why in the PR and ask the owner to take
+> a look before merging.
 
-## 4. 常见改动落点
+## 4. Where common changes go
 
-| 我要做的事 | 改哪里 |
-|------------|--------|
-| 新增一个 runtime（如 Podman） | `core/runtime.rs` 加 `RuntimeKind` 变体 → 新建 `crates/mixum-env-runtime-podman` → `lib.rs` 的 `build_registry` 加分支 → `docs/` 补一行 |
-| 给容器列表加字段（如 CPU/内存） | `core/container.rs` 的 `Container` → 各后端解析各自实现 → `src/types.ts` → 表格列 |
-| 新增容器操作（启动/停止/删除） | 先在 `docs/runtime-contract.md` 定语义 → 后端 crate 实现 trait 方法 → `commands.rs` → `api.ts` → UI |
-| 新增 Tauri 命令 | `commands.rs` → `lib.rs` 的 `generate_handler!` → `api.ts` 包一层 |
-| 新增页面 | `src/views/` → `App.tsx` 的 Tab → `docs/ui.md` 补视图表 |
-| 改状态文案 | 只展示 → `src/status.ts`；改协议字段 → `core/runtime.rs`（走契约流程） |
-| 新增错误种类 | `core/error.rs` + `docs/runtime-contract.md` 的错误映射表 |
-| 处理平台差异 | 对应 runtime crate 内部，用 `cfg`；**不要**放进 core |
-| 升级依赖 | Rust：根 `Cargo.toml` 的 `[workspace.dependencies]`；前端：`apps/desktop/package.json` |
-| 加构建/发布脚本 | 新建 `scripts/`（目前没有） |
+| What I want to do | Where to change |
+|---|---|
+| Add a runtime (e.g. Podman) | add a `RuntimeKind` variant in `core/runtime.rs` → create `crates/mixum-env-runtime-podman` → add a branch in `build_registry` in `lib.rs` → add a row to `docs/` |
+| Add a field to the container list (e.g. CPU/memory) | `Container` in `core/container.rs` → each backend parses its own → `src/types.ts` → table column |
+| Add a container operation (start/stop/delete) | define semantics in `docs/runtime-contract.md` first → implement the trait method in backend crates → `commands.rs` → `api.ts` → UI |
+| Add a Tauri command | `commands.rs` → `generate_handler!` in `lib.rs` → wrap in `api.ts` |
+| Add a page | `src/views/` → Tab in `App.tsx` → add a view row to `docs/ui.md` |
+| Change status copy | display only → `src/status.ts`; protocol field → `core/runtime.rs` (contract process) |
+| Add an error kind | `core/error.rs` + the error mapping table in `docs/runtime-contract.md` |
+| Handle a platform difference | inside the corresponding runtime crate, with `cfg`; **not** in core |
+| Upgrade a dependency | Rust: root `Cargo.toml` `[workspace.dependencies]`; frontend: `apps/desktop/package.json` |
+| Add build/release scripts | create `scripts/` (none yet) |
 
-## 5. 并行协作规则（WSL 2 组）
+## 5. Parallel collaboration rules (WSL 2 group)
 
-- WSL 2 组只改 `crates/mixum-env-runtime-wsl2/**`，以及自己新增的文档；
-- 该 crate 已经注册进 GUI，在 Windows 上会显示「接入中」，所以**不需要**本组配合就能联调；
-- 如果契约不够用（缺字段、缺错误、缺 trait 方法）：
-  1. 先改 `docs/runtime-contract.md` 说明动机；
-  2. PR 标题带 `[contract]`；
-  3. 本组与 WSL 2 组各一人 review 后再合；
-- 共享文件（根 `Cargo.toml`、`lib.rs`、`types.ts`）的改动保持小步，冲突时由本组统一合并；
-- 分支名建议：`feat/wsl2-import`、`fix/docker-parse`；一个 PR 只覆盖自己模块。
+- The WSL 2 group only changes `crates/mixum-env-runtime-wsl2/**` and its own docs.
+- That crate is already registered in the GUI and shows "connecting" on Windows, so
+  integration testing does **not** need this group.
+- If the contract is insufficient (missing field/error/trait method):
+  1. Update `docs/runtime-contract.md` with the motivation first.
+  2. Put `[contract]` in the PR title.
+  3. Get one reviewer from this group and one from the WSL 2 group before merging.
+- Keep changes to shared files (root `Cargo.toml`, `lib.rs`, `types.ts`) small; this
+  group merges conflicts.
+- Suggested branch names: `feat/wsl2-import`, `fix/docker-parse`; one PR covers only
+  its own module.
 
-## 6. 契约变更清单
+## 6. Contract change checklist
 
-改 `mixum-env-core` 的公开 API 时，逐项确认：
+When changing the public API of `mixum-env-core`, confirm each item:
 
-- [ ] `docs/runtime-contract.md` 已更新
-- [ ] 三个后端都能编译（Windows 也不能落下）
-- [ ] `src/types.ts` 已同步
-- [ ] 序列化有单测覆盖（字段名是契约的一部分）
-- [ ] 旧后端暂不支持时，用 `Option` + `serde(default)`，不要直接删字段
+- [ ] `docs/runtime-contract.md` updated
+- [ ] all three backends compile (including Windows)
+- [ ] `src/types.ts` synced
+- [ ] serialization has unit-test coverage (field names are part of the contract)
+- [ ] when an old backend does not support it yet, use `Option` + `serde(default)`;
+      do not delete fields

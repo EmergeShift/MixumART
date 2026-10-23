@@ -7,10 +7,10 @@ linked below.
 
 ## Coverage (2026-10-24)
 
-- English text exists for 12 of 15 pages; 6 of those also have a Chinese
-  `.zh-CN.md` counterpart (`architecture`, `cli`, `contributing`, `daemon`, `display`, `ui`).
-- Chinese-first pages still needing an English default: `module-map`,
-  `runtime-contract`, `support-matrix`.
+- English text exists for 13 of 15 pages; 7 of those also have a Chinese
+  `.zh-CN.md` counterpart (`architecture`, `cli`, `contributing`, `daemon`, `display`, `module-map`, `ui`).
+- Chinese-first pages still needing an English default: `runtime-contract`,
+  `support-matrix`.
 - English-only pages still needing a Chinese counterpart: `base-env`,
   `browser-bridge`, `browser-early-access`, `criu-build`, `privilege`,
   `snapshot-limits`.
@@ -28,7 +28,7 @@ linked below.
 | [CRIU build](docs/criu-build.md) | current | [English](docs/criu-build.md) | pending |
 | [daemon](docs/daemon.md) | partial | [English](docs/daemon.md) | [中文](docs/daemon.zh-CN.md) |
 | [display](docs/display.md) | current (B0/B1/B2) | [English](docs/display.md) | [中文](docs/display.zh-CN.md) |
-| [module map](docs/module-map.md) | current | pending | [中文](docs/module-map.md) |
+| [module map](docs/module-map.md) | current | [English](docs/module-map.md) | [中文](docs/module-map.zh-CN.md) |
 | [privilege](docs/privilege.md) | current | [English](docs/privilege.md) | pending |
 | [runtime contract](docs/runtime-contract.md) | current | pending | [中文](docs/runtime-contract.md) |
 | [snapshot limits](docs/snapshot-limits.md) | verified | [English](docs/snapshot-limits.md) | pending |
