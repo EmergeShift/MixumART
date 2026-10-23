@@ -72,7 +72,9 @@ production memory snapshots before that check passes.
 
 ## Security tradeoff
 
-Those capabilities are container-wide. Normal agent tasks still run as `mixum`
+`mixum env create --memory-snapshots` adds those capabilities and exports
+`MIXUM_MEMORY_SNAPSHOTS=1`; agentd remounts `/proc/sys` at startup. The
+capabilities are container-wide. Normal agent tasks still run as `mixum`
 and cannot use them, but a compromised root agentd gets a much larger attack
 surface. Memory snapshots should therefore be an explicit opt-in per
 environment, not a default. A VM runner remains the cleaner isolation boundary.
