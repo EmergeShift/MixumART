@@ -11,8 +11,7 @@ linked below.
   `.zh-CN.md` counterpart (`architecture`, `base-env`, `browser-early-access`,
   `cli`, `contributing`, `criu-build`, `daemon`, `display`, `module-map`,
   `privilege`, `runtime-contract`, `support-matrix`, `ui`).
-- English-only pages still needing a Chinese counterpart: `browser-bridge`,
-  `snapshot-limits`.
+- English-only pages still needing a Chinese counterpart: `browser-bridge`.
 
 ## Pages
 
@@ -30,7 +29,7 @@ linked below.
 | [module map](docs/module-map.md) | current | [English](docs/module-map.md) | [中文](docs/module-map.zh-CN.md) |
 | [privilege](docs/privilege.md) | current | [English](docs/privilege.md) | [中文](docs/privilege.zh-CN.md) |
 | [runtime contract](docs/runtime-contract.md) | current | [English](docs/runtime-contract.md) | [中文](docs/runtime-contract.zh-CN.md) |
-| [snapshot limits](docs/snapshot-limits.md) | verified | [English](docs/snapshot-limits.md) | pending |
+| [snapshot limits](docs/snapshot-limits.md) | verified | [English](docs/snapshot-limits.md) | [中文](docs/snapshot-limits.zh-CN.md) |
 | [support matrix](docs/support-matrix.md) | current | [English](docs/support-matrix.md) | [中文](docs/support-matrix.zh-CN.md) |
 | [UI](docs/ui.md) | current | [English](docs/ui.md) | [中文](docs/ui.zh-CN.md) |
 
