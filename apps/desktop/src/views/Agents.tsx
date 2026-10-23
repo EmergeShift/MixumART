@@ -252,6 +252,15 @@ export function Agents() {
     }
   }
 
+  const installErrorText = (result: CommandResult) =>
+    result.error?.trim() ||
+    [...result.lines]
+      .reverse()
+      .find((line) => line.startsWith('错误：'))
+      ?.replace('错误：', '')
+      .trim() ||
+    ''
+
   const applyInstallResult = (result: CommandResult) => {
     setAgentInstallState(result.state)
     setAgentLines((previous) => {
@@ -307,7 +316,7 @@ export function Agents() {
         }
         applyInstallResult(result)
         if (result.state !== 'completed') {
-          setAgentError(result.error?.trim() || `安装未完成（${result.state}）`)
+          setAgentError(installErrorText(result) || `安装未完成（${result.state}）`)
         } else {
           await refreshRemoteStatus(remoteAddr, remoteToken, remoteNode, remoteFp)
         }
@@ -355,7 +364,7 @@ export function Agents() {
       }
       applyInstallResult(result)
       if (result.state !== 'completed') {
-        setAgentError(result.error?.trim() || `安装未完成（${result.state}）`)
+        setAgentError(installErrorText(result) || `安装未完成（${result.state}）`)
       } else {
         await refreshAgentStatus(target)
       }

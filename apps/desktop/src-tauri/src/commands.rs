@@ -1137,6 +1137,13 @@ pub(crate) async fn run_environment_script(
     .await
 }
 
+fn last_error_line(lines: &[String]) -> Option<String> {
+    lines
+        .iter()
+        .rev()
+        .find_map(|line| line.strip_prefix("错误：").map(|text| text.trim().to_owned()))
+}
+
 /// 直连环境或经 gateway 路由的远程节点共用：提交 shell 任务并等待终态。
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_map_script(
@@ -1209,7 +1216,8 @@ pub(crate) async fn run_map_script(
                         let error = payload
                             .get("error")
                             .and_then(Value::as_str)
-                            .map(ToOwned::to_owned);
+                            .map(ToOwned::to_owned)
+                            .or_else(|| last_error_line(&lines));
                         emit_install("state", None, Some(state), error.as_deref());
                         return Ok(CommandResult {
                             task_id,
