@@ -276,7 +276,7 @@ cargo build -p mixum-cli --release
 ```
 
 它用 sibling `mixum --json` 执行同一套规则，socket 权限 0600；协议见
-[docs/daemon.md](daemon.md)。
+[docs/daemon.zh-CN.md](daemon.zh-CN.md)。
 
 ## 构建
 

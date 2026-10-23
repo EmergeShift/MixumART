@@ -1,46 +1,47 @@
+> English translation of the Chinese document. Original: [daemon.zh-CN.md](daemon.zh-CN.md). Technical review pending.
+
 # mixum-artd
 
-> **状态：部分实现。** `mixum-artd` 已存在，但公开命令面尚未暴露。
 > **Status: partial.** `mixum-artd` exists, but its public command surface is not exposed yet.
-`mixum-artd` 是宿主侧 Unix socket API。它不替代 `mixum` CLI，而是给浏览器、
-MCP、IDE 或未来的 `mixum-artd` 客户端提供长期控制面。
+> `mixum-artd` is the host-side Unix socket API. It does not replace the `mixum` CLI;
+> it gives browsers, MCP, IDEs or future `mixum-artd` clients a long-lived control plane.
 
 ```text
 mixum-artd --socket PATH --data-dir DIR
 ```
 
-默认：
+Defaults:
 
 ```text
 data:   ~/Library/Application Support/dev.mixum.agentenv/mixum-cli
 socket: <data>/artd.sock
 ```
 
-socket 权限为 `0600`，数据目录为 `0700`；只允许当前系统用户访问。
+The socket is `0600`, the data directory `0700`; only the current OS user can connect.
 
-## 协议
+## Protocol
 
-一行一个 JSON 请求，一行一个 JSON 响应；不支持批量。
+One JSON request per line, one JSON response per line; batching is not supported.
 
 ```json
 {"id":1,"method":"env.create","params":{"title":"fix login","profile":"mixumos","runtime":"apple","image":"127.0.0.1:15000/mixumos:0.1.4"}}
 ```
 
-成功：
+Success:
 
 ```json
 {"id":1,"ok":true,"result":{...}}
 ```
 
-失败：
+Failure:
 
 ```json
 {"id":1,"ok":false,"error":{"code":4,"message":"..."}}
 ```
 
-`error.code` 与 CLI 退出码一致。
+`error.code` matches the CLI exit code.
 
-## 方法
+## Methods
 
 | method | params |
 | --- | --- |
@@ -62,15 +63,16 @@ socket 权限为 `0600`，数据目录为 `0700`；只允许当前系统用户�
 | `config.set` | `{key, value}` |
 | `config.unset` | `{key}` |
 
-实现方式：daemon 用 sibling `mixum --json ...` 执行同一套规则，不复制端口、
-状态或 MAP 逻辑。这样 CLI 和 daemon 的行为不会漂移。
+Implementation: the daemon runs the sibling `mixum --json ...` binary, so the same
+rules apply; it does not copy port, state or MAP logic. CLI and daemon behavior
+therefore cannot drift.
 
-## 启动
+## Running
 
 ```bash
 cargo build -p mixum-cli --release
 ./target/release/mixum-artd
 ```
 
-当前版本是前台进程；由 launchd/systemd 或 Agent 管理器托管。browser/serve
-入口会在 daemon API 稳定后接入。
+The current version is a foreground process, managed by launchd/systemd or an agent
+supervisor. The browser/serve entry points will connect once the daemon API is stable.

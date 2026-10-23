@@ -204,7 +204,7 @@ MCP 暴露的工具：`mixum_env_list`、`mixum_env_create`、`mixum_env_show`�
 # 默认 socket：<data-dir>/artd.sock，权限 0600
 ```
 
-daemon 一行一个 JSON 请求、一行一个 JSON 响应，错误码与 CLI 一致。它调用同目录的 `mixum --json`，因此端口分配、状态与 MAP 规则只有一份实现。见 [docs/daemon.md](docs/daemon.md)。
+daemon 一行一个 JSON 请求、一行一个 JSON 响应，错误码与 CLI 一致。它调用同目录的 `mixum --json`，因此端口分配、状态与 MAP 规则只有一份实现。见 [docs/daemon.zh-CN.md](docs/daemon.zh-CN.md)。
 
 ## CLI 速览
 
@@ -256,7 +256,7 @@ MixumART 是 alpha。macOS 应用没有签名（还没买 Apple Developer Progra
 - **Tauri 最小权限。** 桌面端只开需要的 capability；平台逻辑留在 Rust，不放进 webview。
 - **当前构建不含遥测。** MixumART 不回传数据，没有账号，也没有更新信标。未来若加入可选统计，会在生态级 [TRUST 承诺](https://github.com/EmergeShift/Mixum-Agent-Protocol/blob/main/TRUST.md)中说明，且默认关闭。
 
-运行时契约与错误映射见 [docs/runtime-contract.md](docs/runtime-contract.md)；显示威胁模型见 [docs/display.md](docs/display.md)。
+运行时契约与错误映射见 [docs/runtime-contract.md](docs/runtime-contract.md)；显示威胁模型见 [docs/display.zh-CN.md](docs/display.zh-CN.md)。
 
 ## 我们可能错在哪
 
@@ -307,8 +307,8 @@ MixumART/
 |---|---|
 | [架构](docs/architecture.zh-CN.md) | 定位、与 mixumOS 的分工、进程模型、路线图 |
 | [CLI](docs/cli.zh-CN.md) | 命令契约、端口、selector、JSON、退出码 |
-| [Daemon](docs/daemon.md) | `mixum-artd` 协议与方法 |
-| [显示](docs/display.md) | B 路线合成器、surface/damage、输入、Metal、XWayland |
+| [Daemon](docs/daemon.zh-CN.md) | `mixum-artd` 协议与方法 |
+| [显示](docs/display.zh-CN.md) | B 路线合成器、surface/damage、输入、Metal、XWayland |
 | [运行时契约](docs/runtime-contract.md) | 后端语义、错误、序列化 |
 | [界面](docs/ui.md) | 视图结构、设计 token、文案 |
 | [贡献](docs/contributing.md) | 环境、命令、跨平台规则、已知坑 |

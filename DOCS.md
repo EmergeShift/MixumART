@@ -10,18 +10,18 @@ linked below.
 | Page | Status | English | 中文 |
 |---|---|---|---|
 | [architecture](docs/architecture.md) | current | [English](docs/architecture.md) | [中文](docs/architecture.zh-CN.md) |
-| [base-env](docs/base-env.md) | current | pending | [中文](docs/base-env.md) |
-| [browser-bridge](docs/browser-bridge.md) | current | pending | [中文](docs/browser-bridge.md) |
+| [base-env](docs/base-env.md) | current | [English](docs/base-env.md) | pending |
+| [browser-bridge](docs/browser-bridge.md) | current | [English](docs/browser-bridge.md) | pending |
 | [browser early access](docs/browser-early-access.md) | early access | [English](docs/browser-early-access.md) | pending |
 | [CLI](docs/cli.md) | current | [English](docs/cli.md) | [中文](docs/cli.zh-CN.md) |
 | [contributing](docs/contributing.md) | current | pending | [中文](docs/contributing.md) |
-| [CRIU build](docs/criu-build.md) | current | pending | [中文](docs/criu-build.md) |
-| [daemon](docs/daemon.md) | partial | pending | [中文](docs/daemon.md) |
-| [display](docs/display.md) | current (B0/B1/B2) | pending | [中文](docs/display.md) |
+| [CRIU build](docs/criu-build.md) | current | [English](docs/criu-build.md) | pending |
+| [daemon](docs/daemon.md) | partial | [English](docs/daemon.md) | [中文](docs/daemon.zh-CN.md) |
+| [display](docs/display.md) | current (B0/B1/B2) | [English](docs/display.md) | [中文](docs/display.zh-CN.md) |
 | [module map](docs/module-map.md) | current | pending | [中文](docs/module-map.md) |
-| [privilege](docs/privilege.md) | current | pending | [中文](docs/privilege.md) |
+| [privilege](docs/privilege.md) | current | [English](docs/privilege.md) | pending |
 | [runtime contract](docs/runtime-contract.md) | current | pending | [中文](docs/runtime-contract.md) |
-| [snapshot limits](docs/snapshot-limits.md) | verified | pending | [中文](docs/snapshot-limits.md) |
+| [snapshot limits](docs/snapshot-limits.md) | verified | [English](docs/snapshot-limits.md) | pending |
 | [support matrix](docs/support-matrix.md) | current | pending | [中文](docs/support-matrix.md) |
 | [UI](docs/ui.md) | current | pending | [中文](docs/ui.md) |
 
