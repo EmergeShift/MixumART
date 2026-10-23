@@ -237,6 +237,72 @@ export const saveAgentProfile = (profile: AgentProfile) =>
 export const removeAgentProfile = (id: string) =>
   isDemo() ? demoDelay(undefined) : invoke<void>('remove_agent_profile', { id })
 
+export type AgentInfo = {
+  name: string
+  summary: string
+}
+
+export type AgentStatus = AgentInfo & {
+  installed: boolean
+}
+
+export type AgentEnvironmentInfo = {
+  id: string
+  name: string
+  kind: RuntimeKind
+  addr: string
+}
+
+const DEMO_AGENTS: AgentInfo[] = [
+  { name: 'claude-code', summary: 'Anthropic Claude Code（npm 官方包）' },
+  { name: 'codex', summary: 'OpenAI Codex CLI（npm 官方包）' },
+  { name: 'gemini-cli', summary: 'Google Gemini CLI（npm 官方包）' },
+  { name: 'opencode', summary: 'OpenCode（官方安装脚本）' },
+]
+
+const demoAgentEnvironments = (): AgentEnvironmentInfo[] =>
+  demoContainers
+    .filter((container) => container.image.toLowerCase().includes('mixumos') && container.state === 'running')
+    .map((container) => {
+      const port = container.ports.find((item) => item.container === 7601) ?? container.ports[0]
+      return {
+        id: container.id,
+        name: container.name,
+        kind: 'apple_container' as const,
+        addr: port ? `127.0.0.1:${port.host}` : '127.0.0.1:7601',
+      }
+    })
+
+export const agentCatalog = () =>
+  isDemo() ? demoDelay(DEMO_AGENTS) : invoke<AgentInfo[]>('agent_catalog')
+
+export const agentPrompt = (name: string) =>
+  isDemo()
+    ? demoDelay(
+        `你正在 mixumOS 容器内工作（由 mixumOS 管理，agent 名称：${name}）。\n任务：{{instruction}}`,
+      )
+    : invoke<string>('agent_prompt', { name })
+
+export const agentEnvironments = () =>
+  isDemo()
+    ? demoDelay(demoAgentEnvironments())
+    : invoke<AgentEnvironmentInfo[]>('agent_environments')
+
+export const agentStatus = (containerId: string) =>
+  isDemo()
+    ? demoDelay(DEMO_AGENTS.map((agent) => ({ ...agent, installed: false })))
+    : invoke<AgentStatus[]>('agent_status', { containerId })
+
+export const agentInstall = (containerId: string, name: string) =>
+  isDemo()
+    ? demoDelay<CommandResult>({
+        taskId: 'demo',
+        state: 'completed',
+        lines: [`[演示] 已安装 ${name}，提示词写入 ~/.mixum/agents/${name}/PROMPT.md`],
+        error: null,
+      })
+    : invoke<CommandResult>('agent_install', { containerId, name })
+
 export const runtimeImages = (kind: RuntimeKind) =>
   isDemo()
     ? demoDelay(['mixumos:0.1.4'])
