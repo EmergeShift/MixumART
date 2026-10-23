@@ -8,7 +8,10 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex, OnceLock,
+};
 
 use mixum_env_core::{
     BackendStatus, Container, CreateSpec, InspectedContainer, MartRef, MigrationManifest,
@@ -1866,15 +1869,45 @@ pub fn approve_browser_approval(app: AppHandle, id: String) -> Result<(), String
 
 /// Pending sudo requests across environments with a saved MAP connection.
 /// Approval stays in `environment_privilege_decide` (OS authentication again).
-#[tauri::command]
-pub async fn list_pending_privileges(
-    app: AppHandle,
-    state: State<'_, AppState>,
-) -> Result<Vec<Value>, String> {
-    let mut map = load_connection_map(&app)?;
-    // Managed environments are listed from the runtime, but their connection
-    // tokens are only saved after the user opens Manage. Pending sudo requests
-    // must still surface in Mart without that extra click.
+
+const PENDING_DISCOVERY_TTL: std::time::Duration = std::time::Duration::from_secs(30);
+
+struct PendingDiscovery {
+    at: std::time::Instant,
+    connections: HashMap<String, EnvironmentConnection>,
+}
+
+fn pending_discovery() -> &'static Mutex<Option<PendingDiscovery>> {
+    static CACHE: OnceLock<Mutex<Option<PendingDiscovery>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(None))
+}
+
+fn discovery_running() -> &'static AtomicBool {
+    static RUNNING: AtomicBool = AtomicBool::new(false);
+    &RUNNING
+}
+
+fn cached_discovered_connections() -> HashMap<String, EnvironmentConnection> {
+    let cache = pending_discovery().lock().unwrap();
+    match cache.as_ref() {
+        Some(cache) if cache.at.elapsed() < PENDING_DISCOVERY_TTL => cache.connections.clone(),
+        _ => HashMap::new(),
+    }
+}
+
+fn pending_discovery_is_stale() -> bool {
+    pending_discovery()
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|cache| cache.at.elapsed() >= PENDING_DISCOVERY_TTL)
+        .unwrap_or(true)
+}
+
+async fn discover_managed_connections(
+    state: &State<'_, AppState>,
+) -> HashMap<String, EnvironmentConnection> {
+    let mut discovered = HashMap::new();
     for kind in RuntimeKind::ALL {
         let Some(backend) = state.registry.get(kind) else {
             continue;
@@ -1883,9 +1916,7 @@ pub async fn list_pending_privileges(
             continue;
         };
         for container in containers {
-            if map.contains_key(&container.id)
-                || container.state != mixum_env_core::ContainerState::Running
-            {
+            if container.state != mixum_env_core::ContainerState::Running {
                 continue;
             }
             let Some(port) = container
@@ -1898,7 +1929,7 @@ pub async fn list_pending_privileges(
             let Ok(token) = backend.admin_token(&container.id).await else {
                 continue;
             };
-            map.insert(
+            discovered.insert(
                 container.id.clone(),
                 EnvironmentConnection {
                     addr: format!("127.0.0.1:{}", port.host),
@@ -1908,6 +1939,37 @@ pub async fn list_pending_privileges(
             );
         }
     }
+    discovered
+}
+
+#[tauri::command]
+pub async fn list_pending_privileges(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Vec<Value>, String> {
+    let mut map = load_connection_map(&app)?;
+    map.extend(cached_discovered_connections());
+
+    // Runtime discovery involves `container exec` for admin tokens. Do it at
+    // most once per TTL, never concurrently, and serve the cached identities
+    // while a scan is in flight. Saved connections are always checked.
+    if pending_discovery_is_stale()
+        && !discovery_running().swap(true, Ordering::AcqRel)
+    {
+        let discovered = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            discover_managed_connections(&state),
+        )
+        .await
+        .unwrap_or_default();
+        *pending_discovery().lock().unwrap() = Some(PendingDiscovery {
+            at: std::time::Instant::now(),
+            connections: discovered.clone(),
+        });
+        discovery_running().store(false, Ordering::Release);
+        map.extend(discovered);
+    }
+
     let mut out = Vec::new();
     for (container_id, connection) in map {
         let client = match MapClient::connect(

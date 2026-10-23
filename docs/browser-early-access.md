@@ -42,19 +42,21 @@ MIXUM_CHROME_NATIVE_HOST_DIR="$HOME/Library/Application Support/Chromium/NativeM
 
 ## Option B — MixumART
 
-Install MixumART. It bundles the same CLI and host. On first browser-sharing use,
-MixumART runs the bundled `mixum browser install`; **do not install the CLI
-separately**.
+Install MixumART. It bundles the same CLI and host. MixumART runs the bundled
+`mixum browser install` at startup; **do not install the CLI separately**.
 
-Then load the extension manually as above. MixumART prints the bundled extension
-path in its browser-sharing screen.
+Then load the extension manually as above. The bundled extension is fixed at:
+
+```text
+<MixumART.app>/Contents/Resources/extensions/mixum-browser
+```
 
 ## What is automatic and what is not
 
 | Step | CLI | MixumART | Notes |
 |---|---|---|---|
 | install `mixum-browser-host` | ✅ bundled | ✅ bundled | no separate download |
-| write native-messaging manifest | ✅ `browser install` | ✅ first use | user-level file, no admin |
+| write native-messaging manifest | ✅ `browser install` | ✅ startup | user-level file, no admin |
 | load Chrome extension | ❌ manual | ❌ manual | Chrome restriction |
 | share cookies/tabs | ✅ `browser export/share` | ✅ | after approval |
 | Web Store install | — | — | after Google review |

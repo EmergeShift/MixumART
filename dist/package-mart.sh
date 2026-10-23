@@ -3,6 +3,7 @@
 # The CLI is a hard dependency: Mart users must not install it separately.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
 DIST="$ROOT/dist"
 RES="$ROOT/apps/desktop/src-tauri/resources"
 TMP="$(mktemp -d)"
@@ -28,14 +29,19 @@ npx tauri build "$@"
 # Tauri bundles the app before arbitrary resource copy; inject the mandatory
 # CLI/host/extension, then re-sign ad-hoc and rebuild the DMG.
 TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/target}"
-APP="$TARGET_DIR/release/bundle/macos/mixum Agent Runtime.app"
-cp -a "$RES/bin" "$APP/Contents/Resources/bin"
-cp -a "$RES/extensions" "$APP/Contents/Resources/extensions"
+APP="$(find "$TARGET_DIR" -path '*/bundle/macos/*.app' -type d -print -quit)"
+[ -n "$APP" ] || { echo 'Tauri app bundle not found' >&2; exit 1; }
+mkdir -p "$APP/Contents/Resources/bin" "$APP/Contents/Resources/extensions"
+rm -rf "$APP/Contents/Resources/bin" "$APP/Contents/Resources/extensions"
+cp -a "$RES/bin/." "$APP/Contents/Resources/bin/"
+cp -a "$RES/extensions/." "$APP/Contents/Resources/extensions/"
 cp "$RES/BROWSER-README.md" "$APP/Contents/Resources/BROWSER-README.md"
 codesign --force --deep --sign - "$APP" 2>/dev/null || true
-DMG="$TARGET_DIR/release/bundle/dmg/mixum Agent Runtime_0.1.0_aarch64.dmg"
 if command -v hdiutil >/dev/null 2>&1; then
-  rm -f "$DMG"
-  hdiutil create -volname "mixum Agent Runtime" -srcfolder "$APP" -ov -format UDZO "$DMG" >/dev/null
+  DMG_DIR="$(cd "$(dirname "$APP")/../dmg" && pwd)"
+  mkdir -p "$DMG_DIR"
+  find "$DMG_DIR" -maxdepth 1 -name '*.dmg' -delete
+  DMG="${DMG_DIR}/$(basename "$APP" .app).dmg"
+  hdiutil create -volname "$(basename "$APP" .app)" -srcfolder "$APP" -ov -format UDZO "$DMG" >/dev/null
 fi
 echo "bundled CLI in $APP/Contents/Resources/bin"
