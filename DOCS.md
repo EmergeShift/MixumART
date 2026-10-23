@@ -7,10 +7,10 @@ linked below.
 
 ## Coverage (2026-10-24)
 
-- English text exists for 10 of 15 pages; 4 of those also have a Chinese
-  `.zh-CN.md` counterpart (`architecture`, `cli`, `daemon`, `display`).
-- Chinese-first pages still needing an English default: `contributing`,
-  `module-map`, `runtime-contract`, `support-matrix`, `ui`.
+- English text exists for 11 of 15 pages; 5 of those also have a Chinese
+  `.zh-CN.md` counterpart (`architecture`, `cli`, `contributing`, `daemon`, `display`).
+- Chinese-first pages still needing an English default: `module-map`,
+  `runtime-contract`, `support-matrix`, `ui`.
 - English-only pages still needing a Chinese counterpart: `base-env`,
   `browser-bridge`, `browser-early-access`, `criu-build`, `privilege`,
   `snapshot-limits`.
