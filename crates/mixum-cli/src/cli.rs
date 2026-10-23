@@ -383,9 +383,6 @@ pub struct CreateArgs {
     /// SYS_RESOURCE/NET_ADMIN/SYS_TIME and makes /proc/sys writable at startup.
     #[arg(long)]
     pub memory_snapshots: bool,
-    /// Test-only: disable Landlock for tasks in this environment.
-    #[arg(long, hide = true)]
-    pub disable_landlock: bool,
 }
 
 #[derive(Debug, Subcommand)]
