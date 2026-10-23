@@ -13,7 +13,7 @@ linked below.
 | [base-env](docs/base-env.md) | current | pending | [中文](docs/base-env.md) |
 | [browser-bridge](docs/browser-bridge.md) | current | pending | [中文](docs/browser-bridge.md) |
 | [browser early access](docs/browser-early-access.md) | early access | [English](docs/browser-early-access.md) | pending |
-| [CLI](docs/cli.md) | current | pending | [中文](docs/cli.md) |
+| [CLI](docs/cli.md) | current | [English](docs/cli.md) | [中文](docs/cli.zh-CN.md) |
 | [contributing](docs/contributing.md) | current | pending | [中文](docs/contributing.md) |
 | [CRIU build](docs/criu-build.md) | current | pending | [中文](docs/criu-build.md) |
 | [daemon](docs/daemon.md) | partial | pending | [中文](docs/daemon.md) |

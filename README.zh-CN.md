@@ -227,7 +227,7 @@ daemon 一行一个 JSON 请求、一行一个 JSON 响应，错误码与 CLI �
 | `mixum mcp` | stdio MCP server |
 | `mixum version` | 版本与构建信息 |
 
-完整契约、selector 与 JSON 形状见 [docs/cli.md](docs/cli.md)。
+完整契约、selector 与 JSON 形状见 [docs/cli.zh-CN.md](docs/cli.zh-CN.md)。
 
 ## Alpha 说明
 
@@ -306,7 +306,7 @@ MixumART/
 | 文档 | 内容 |
 |---|---|
 | [架构](docs/architecture.zh-CN.md) | 定位、与 mixumOS 的分工、进程模型、路线图 |
-| [CLI](docs/cli.md) | 命令契约、端口、selector、JSON、退出码 |
+| [CLI](docs/cli.zh-CN.md) | 命令契约、端口、selector、JSON、退出码 |
 | [Daemon](docs/daemon.md) | `mixum-artd` 协议与方法 |
 | [显示](docs/display.md) | B 路线合成器、surface/damage、输入、Metal、XWayland |
 | [运行时契约](docs/runtime-contract.md) | 后端语义、错误、序列化 |

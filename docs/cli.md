@@ -1,7 +1,8 @@
+> English translation of the Chinese document. Original: [cli.zh-CN.md](cli.zh-CN.md). Technical review pending.
+
 # mixum CLI
 
-`mixum` 是 MixumART 的本地控制面 CLI。它直接通过 Docker / Apple Container /
-WSL 2 后端管理 MixumOS 环境，不依赖 Tauri 窗口，也不使用 `mart` 这个命令名。
+`mixum` is the local control-plane CLI for MixumART. It manages MixumOS environments directly through the Docker / Apple Container / WSL 2 backends, does not depend on a Tauri window, and does not use the `mart` command name.
 
 ```text
 mixum          用户/Agent CLI
@@ -10,7 +11,7 @@ mixumd         容器内 agentd，保持原名
 mixcomp        容器内 compositor，保持原名
 ```
 
-## 稳定命令面
+## Stable command surface
 
 ```text
 mixum doctor
@@ -38,108 +39,104 @@ mixum mcp
 mixum version
 ```
 
-所有命令支持全局 `--json`。没有实现的功能不会出现在命令表里，也不会返回
-“TODO/Unsupported” 占位。
+All commands support the global `--json`. Unimplemented features do not appear in the command table and do not return a “TODO/Unsupported” placeholder.
 
-## 数据目录
+## Data directory
 
-优先级：
+Priority:
 
 1. `--data-dir`
 2. `MIXUM_DATA_DIR`
-3. `$XDG_DATA_HOME` / `~/Library/Application Support` 下的
-   `dev.mixum.agentenv/mixum-cli`
+3. `dev.mixum.agentenv/mixum-cli` under `$XDG_DATA_HOME` / `~/Library/Application Support`
 
-文件：
+Files:
 
 ```text
 state.json      环境标题、method、runtime、端口、指纹；权限 0600
 state.lock      create 的互斥锁
 ```
 
-`state.json` 损坏时 CLI 直接报错，不会静默重建；这是为了避免丢掉环境归属信息。
+If `state.json` is corrupted, the CLI reports an error directly instead of silently rebuilding it; this is to avoid losing environment ownership information.
 
-## 环境列表
+## Environment list
 
-`mixum env list` 默认只显示已托管或镜像名包含 `mixumos` 的环境，避免把构建/普通
-容器混进 Agent 环境列表。`--all` 才会列出 runtime 里的全部容器。
+By default, `mixum env list` shows only environments that are managed or whose image name contains `mixumos`, to avoid mixing build/normal containers into the Agent environment list. Only `--all` lists all containers in the runtime.
 
-## Runtime 选择
+## Runtime selection
 
-`doctor` / `runtime list` 会显示三个后端。
+`doctor` / `runtime list` displays the three backends.
 
-- `mixum env create` 未指定 `--runtime` 时：
-  - macOS 优先 Apple Container；
-  - Windows 优先 WSL 2；
-  - 其他平台优先 Docker；
-  - 如果首选不可用，使用下一个 ready 的后端。
-- 指定 `--runtime` 时，该后端必须 ready，否则返回错误。
-- 多个后端同时 ready 时，创建输出会明确记录实际后端。
+- When `mixum env create` does not specify `--runtime`:
+  - macOS prefers Apple Container;
+  - Windows prefers WSL 2;
+  - other platforms prefer Docker;
+  - if the preferred backend is unavailable, use the next ready backend.
+- When `--runtime` is specified, that backend must be ready; otherwise an error is returned.
+- When multiple backends are ready at the same time, the creation output explicitly records the actual backend.
 
-## Profile 与镜像
+## Profile and image
 
 ### `--profile mixumos`
 
-要求镜像引用包含 `mixumos`，并且镜像本地存在。镜像必须带：
+Requires the image reference to contain `mixumos` and the image to exist locally. The image must include:
 
 - `/entrypoint.sh`
-- `mixumd`（agentd）
+- `mixumd` (agentd)
 - `mixcomp`
 - `7601/tcp`
 
-省略 `--image` 时：
+When `--image` is omitted:
 
-- 只有一个本地 mixumos 镜像 → 使用它；
-- 多个 → 报错并列出候选，要求显式 `--image`；
-- 没有 → 报错，提示先 pull/load。
+- only one local mixumos image → use it;
+- multiple → report an error, list the candidates, and require an explicit `--image`;
+- none → report an error and prompt to pull/load first.
 
 ### `--profile generic`
 
-必须显式 `--image`。不保证 MAP 或窗口，只创建容器；默认不等待 MAP。
-适合构建/工具容器。
+An explicit `--image` is required. MAP and windows are not guaranteed; only the container is created, and MAP is not awaited by default. Suitable for build/tool containers.
 
-## 端口
+## Ports
 
-- 容器内 MAP 端口固定为 `7601/tcp`。
-- 宿主机只发布到 `127.0.0.1`，不暴露局域网。
-- 默认从 `17600-17999` 选第一个可绑定且未被 mixum 环境占用的端口。
-- `--port N` 使用指定端口；端口被占用、被其他环境发布时返回冲突。
-- `--port 0` 等价于自动分配。
-- 创建期间持有 `state.lock`，避免两个并发 create 选到同一端口。
-- `mixum port check N` 只检查本机 `127.0.0.1` 绑定；`port list` 列出 runtime 已发布端口。
+- The MAP port inside the container is fixed at `7601/tcp`.
+- The host publishes only to `127.0.0.1` and does not expose it to the LAN.
+- By default, select the first port in `17600-17999` that can be bound and is not occupied by a mixum environment.
+- `--port N` uses the specified port; if the port is occupied or published by another environment, a conflict is returned.
+- `--port 0` is equivalent to automatic allocation.
+- `state.lock` is held during creation to prevent two concurrent create operations from selecting the same port.
+- `mixum port check N` only checks binding on the local `127.0.0.1`; `port list` lists ports already published by the runtime.
 
 ## Selector
 
-`SELECTOR` 可以是：
+`SELECTOR` can be:
 
-- 完整容器 id
-- 容器名
-- `state.json` 中的 title
-- id/name 的前缀（至少 4 个字符）
+- full container id
+- container name
+- title in `state.json`
+- prefix of id/name (at least 4 characters)
 
-歧义时返回错误并列出候选；不会猜测。
+On ambiguity, an error is returned with candidates listed; it does not guess.
 
-## 错误与退出码
+## Errors and exit codes
 
-| code | 含义 |
+| code | Meaning |
 | --- | --- |
-| 0 | 成功 |
-| 1 | IO / 状态文件错误 |
-| 2 | 参数错误 |
-| 3 | 找不到环境/镜像 |
-| 4 | 冲突（端口、重名、运行中删除、歧义） |
-| 5 | runtime 不可用或命令失败 |
-| 6 | MAP/agentd 失败 |
+| 0 | success |
+| 1 | IO / state file error |
+| 2 | argument error |
+| 3 | environment/image not found |
+| 4 | conflict (port, duplicate name, removal while running, ambiguity) |
+| 5 | runtime unavailable or command failed |
+| 6 | MAP/agentd failure |
 
-`--json` 模式失败时 stdout 输出：
+On failure in `--json` mode, stdout outputs:
 
 ```json
 {"error":{"code":4,"message":"..."}}
 ```
 
-成功输出是命令特定的 JSON；token 永远不会出现在输出中。
+Successful output is command-specific JSON; tokens never appear in the output.
 
-## JSON 示例
+## JSON examples
 
 ### create
 
@@ -176,13 +173,13 @@ state.lock      create 的互斥锁
 }
 ```
 
-## 安全
+## Security
 
-- admin-token 通过本地 runtime `exec` 从容器读取，按需使用，不写入 CLI state；
-- CLI 不输出 token；`env logs` 会把 `map1.…` 脱敏；
-- MAP 使用 TOFU + 指纹固定；首次指纹写入 `mixum-env-map` 的 known-hosts；
-- 终端使用宿主 `exec -it`，是本地特权路径；CLI 只允许交互式 TTY；
-- 这仍是 admin-token 方案，证书/公钥认证尚未实现；不要把 token 写进镜像或快照。
+- admin-token is read from the container through the local runtime `exec`, used on demand, and not written to CLI state;
+- the CLI does not output tokens; `env logs` redacts `map1.…`;
+- MAP uses TOFU + fingerprint pinning; the first fingerprint is written to known-hosts for `mixum-env-map`;
+- the terminal uses the host `exec -it` and is a local privileged path; the CLI allows only an interactive TTY;
+- this is still the admin-token approach; certificate/public-key authentication is not yet implemented; do not write tokens into images or snapshots.
 
 ## Config
 
@@ -192,12 +189,11 @@ mixum config set default-image 127.0.0.1:15000/mixumos:0.1.4
 mixum config show --json
 ```
 
-可配置 `default-runtime`（docker/wsl2/apple）和 `default-image`。`env create`
-在未传 `--runtime` / `--image` 时使用这些默认；文件权限 0600。
+`default-runtime` (docker/wsl2/apple) and `default-image` are configurable. `env create` uses these defaults when `--runtime` / `--image` are not passed; file permissions are 0600.
 
 ## MCP
 
-`mixum mcp` 启动 stdio MCP server，使用同一份 CLI 实现，工具不会返回 token。
+`mixum mcp` starts a stdio MCP server using the same CLI implementation; tools do not return tokens.
 
 ```text
 mixum_env_list
@@ -225,7 +221,7 @@ mixum_port_check
 Screenshot returns MCP image content. Restore requires `confirm: "RESTORE"`.
 Terminal and arbitrary shell remain CLI-only; human approval commands
 (`mixum privilege approve/deny`) are intentionally not exposed to the agent.
-配套 skill 在 `skills/mixum-art/SKILL.md`。
+The companion skill is at `skills/mixum-art/SKILL.md`.
 
 ## Base environments
 
@@ -268,22 +264,20 @@ wrapper only submits one argv and never gets a root shell. See
 
 ## Daemon
 
-宿主侧 Unix socket API 是 `mixum-artd`，与 CLI 同 crate：
+The host-side Unix socket API is `mixum-artd`, in the same crate as the CLI:
 
 ```bash
 cargo build -p mixum-cli --release
 ./target/release/mixum-artd
 ```
 
-它用 sibling `mixum --json` 执行同一套规则，socket 权限 0600；协议见
-[docs/daemon.md](daemon.md)。
+It uses the sibling `mixum --json` to enforce the same rules; socket permissions are 0600. For the protocol, see [docs/daemon.md](daemon.md).
 
-## 构建
+## Build
 
 ```bash
 cargo build -p mixum-cli --release
 ./target/release/mixum --help
 ```
 
-当前版本提供 `mixum mcp`（stdio）和 `mixum desktop`。`mixum serve` 浏览器 UI
-尚未实现，不会先放空壳命令。
+The current version provides `mixum mcp` (stdio) and `mixum desktop`. The `mixum serve` browser UI is not yet implemented and does not ship as an empty shell command first.
