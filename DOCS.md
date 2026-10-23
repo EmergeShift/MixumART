@@ -9,16 +9,15 @@ linked below.
 
 - English text exists for 15 of 15 pages; 9 of those also have a Chinese
   `.zh-CN.md` counterpart (`architecture`, `cli`, `contributing`, `daemon`, `display`, `module-map`, `runtime-contract`, `support-matrix`, `ui`).
-- English-only pages still needing a Chinese counterpart: `base-env`,
-  `browser-bridge`, `browser-early-access`, `criu-build`, `privilege`,
-  `snapshot-limits`.
+- English-only pages still needing a Chinese counterpart: `browser-bridge`,
+  `browser-early-access`, `criu-build`, `snapshot-limits`.
 
 ## Pages
 
 | Page | Status | English | 中文 |
 |---|---|---|---|
 | [architecture](docs/architecture.md) | current | [English](docs/architecture.md) | [中文](docs/architecture.zh-CN.md) |
-| [base-env](docs/base-env.md) | current | [English](docs/base-env.md) | pending |
+| [base-env](docs/base-env.md) | current | [English](docs/base-env.md) | [中文](docs/base-env.zh-CN.md) |
 | [browser-bridge](docs/browser-bridge.md) | current | [English](docs/browser-bridge.md) | pending |
 | [browser early access](docs/browser-early-access.md) | early access | [English](docs/browser-early-access.md) | pending |
 | [CLI](docs/cli.md) | current | [English](docs/cli.md) | [中文](docs/cli.zh-CN.md) |
@@ -27,7 +26,7 @@ linked below.
 | [daemon](docs/daemon.md) | partial | [English](docs/daemon.md) | [中文](docs/daemon.zh-CN.md) |
 | [display](docs/display.md) | current (B0/B1/B2) | [English](docs/display.md) | [中文](docs/display.zh-CN.md) |
 | [module map](docs/module-map.md) | current | [English](docs/module-map.md) | [中文](docs/module-map.zh-CN.md) |
-| [privilege](docs/privilege.md) | current | [English](docs/privilege.md) | pending |
+| [privilege](docs/privilege.md) | current | [English](docs/privilege.md) | [中文](docs/privilege.zh-CN.md) |
 | [runtime contract](docs/runtime-contract.md) | current | [English](docs/runtime-contract.md) | [中文](docs/runtime-contract.zh-CN.md) |
 | [snapshot limits](docs/snapshot-limits.md) | verified | [English](docs/snapshot-limits.md) | pending |
 | [support matrix](docs/support-matrix.md) | current | [English](docs/support-matrix.md) | [中文](docs/support-matrix.zh-CN.md) |
