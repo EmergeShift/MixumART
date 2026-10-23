@@ -49,6 +49,9 @@ task back in the container. Two important details were required:
 - memory-snapshot environments keep the sandbox cgroup directory, and restore
   thaws it before CRIU moves the task back in.
 
+A GUI environment (agent task + foot + mixcomp) also completed memory snapshot
+and restore; the compositor and foot came back after restore.
+
 So the real requirements are:
 
 1. custom kernel with `CONFIG_CHECKPOINT_RESTORE` (and PID/user namespaces);
