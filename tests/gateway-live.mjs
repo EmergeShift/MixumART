@@ -96,6 +96,7 @@ try {
   // 节点容器:出站注册到 gateway(wss 自签,relay 走 insecure_tls_client)。
   mustDocker([
     "run", "-d", "--rm", "--name", NODE,
+    "--add-host=host.docker.internal:host-gateway",
     "-e", `MIXUM_GATEWAY_URL=wss://host.docker.internal:${PORT}`,
     "-e", `MIXUM_GATEWAY_NAME=${NODE_NAME}`,
     "-e", `MIXUM_GATEWAY_TOKEN=${issued.token}`,

@@ -381,7 +381,7 @@ export function Surfaces({ backends, onOpenEnvironments }: Props) {
                   setNode(next)
                   localStorage.setItem('mixum.map.node', next)
                   setManualSurfaces(null)
-                  if (!token.trim()) return
+                  if (!token.trim() && !deviceToken.trim()) return
                   setLoading(true)
                   setError(null)
                   void listSurfaces(
