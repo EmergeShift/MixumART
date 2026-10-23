@@ -7,11 +7,8 @@ linked below.
 
 ## Coverage (2026-10-24)
 
-- English text exists for 15 of 15 pages; 14 of those also have a Chinese
-  `.zh-CN.md` counterpart (`architecture`, `base-env`, `browser-bridge`,
-  `browser-early-access`, `cli`, `contributing`, `criu-build`, `daemon`,
-  `display`, `module-map`, `privilege`, `runtime-contract`, `support-matrix`,
-  `ui`).
+- English text exists for 15 of 15 pages; all 15 also have a Chinese
+  `.zh-CN.md` counterpart.
 - 
 ## Pages
 
