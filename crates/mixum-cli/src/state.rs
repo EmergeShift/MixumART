@@ -212,6 +212,7 @@ mod tests {
             image: "mixumos:test".into(),
             base: None,
             root: false,
+            memory_snapshots: false,
             port: 17601,
             created_at_ms: 1,
             fingerprint: None,
