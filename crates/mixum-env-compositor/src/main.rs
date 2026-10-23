@@ -47,10 +47,10 @@ mod linux {
     use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
     use smithay::reexports::wayland_server::Resource;
     use smithay::{
-        backend::input::{ButtonState, KeyState},
+        backend::input::{Axis, AxisSource, ButtonState, KeyState},
         input::{
             keyboard::{FilterResult, Keycode},
-            pointer::{ButtonEvent, MotionEvent},
+            pointer::{AxisFrame, ButtonEvent, MotionEvent},
             Seat, SeatHandler, SeatState,
         },
         output::{Mode, Output, PhysicalProperties, Scale, Subpixel},
@@ -113,7 +113,13 @@ mod linux {
 
     /// B compositor 作为 agentd 的 comp 客户端：JSON 控制 + 0x04 PNG 帧。
     struct MapTransport {
-        writer: Arc<Mutex<UnixStream>>,
+        /// 写 agentd 的通道。帧走有界队列、满了就丢；控制消息（window.open/close）
+        /// 走无界队列，不能丢。
+        ///
+        /// 之前是直接在主循环里 `write_all`：agentd 一慢，合成器就卡在 socket 上，
+        /// 输入事件一起处理不了，宿主侧表现为 `display.input` 超时、窗口“卡死”。
+        control: Sender<Vec<u8>>,
+        frames: mpsc::SyncSender<Vec<u8>>,
     }
 
     impl MapTransport {
@@ -121,7 +127,25 @@ mod linux {
             let stream = UnixStream::connect(path)?;
             eprintln!("map connected to {path}");
             let mut reader = stream.try_clone()?;
-            let writer = Arc::new(Mutex::new(stream));
+            let mut writer = stream;
+            let (control_tx, control_rx) = mpsc::channel::<Vec<u8>>();
+            let (frame_tx, frame_rx) = mpsc::sync_channel::<Vec<u8>>(8);
+            std::thread::spawn(move || loop {
+                let message = match control_rx.try_recv() {
+                    Ok(message) => message,
+                    Err(mpsc::TryRecvError::Empty) => {
+                        match frame_rx.recv_timeout(std::time::Duration::from_millis(4)) {
+                            Ok(message) => message,
+                            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                        }
+                    }
+                    Err(mpsc::TryRecvError::Disconnected) => break,
+                };
+                if writer.write_all(&message).is_err() {
+                    break;
+                }
+            });
             let (event_tx, event_rx) = mpsc::channel();
             std::thread::spawn(move || loop {
                 let mut header = [0u8; 5];
@@ -157,16 +181,23 @@ mod linux {
                     _ => {}
                 }
             });
-            Ok((Self { writer }, event_rx))
+            Ok((
+                Self {
+                    control: control_tx,
+                    frames: frame_tx,
+                },
+                event_rx,
+            ))
         }
 
         fn send_json(&self, value: &serde_json::Value) {
             let payload = serde_json::to_vec(value).unwrap_or_default();
-            if let Ok(mut stream) = self.writer.lock() {
-                let _ = stream.write_all(&(payload.len() as u32).to_le_bytes());
-                let _ = stream.write_all(&[0x01]);
-                let _ = stream.write_all(&payload);
-            }
+            let mut message = Vec::with_capacity(5 + payload.len());
+            message.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+            message.push(0x01);
+            message.extend_from_slice(&payload);
+            // 控制消息不丢：无界队列，只会占内存，不会阻塞合成器。
+            let _ = self.control.send(message);
         }
 
         fn window(&self, kind: &str, entry: &SurfaceEntry) {
@@ -207,14 +238,16 @@ mod linux {
                 payload[43..47].copy_from_slice(&2u32.to_le_bytes());
                 payload[47..].copy_from_slice(&frame.data);
             }
-            if let Ok(mut stream) = self.writer.lock() {
-                let _ = stream.write_all(&(payload.len() as u32).to_le_bytes());
-                let _ = stream.write_all(&[0x04]);
-                let _ = stream.write_all(&payload);
-            }
+            let mut message = Vec::with_capacity(5 + payload.len());
+            message.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+            message.push(0x04);
+            message.extend_from_slice(&payload);
+            // 帧可以丢：队列满说明 agentd / 宿主跟不上，丢掉旧帧远好过卡住主循环。
+            let _ = self.frames.try_send(message);
         }
     }
 
+    /// agentd 转发来的控制消息：`{"type":"input","kind":...,"id":...}`。
     fn input_from_control(value: &serde_json::Value) -> Option<MapEvent> {
         let id = value.get("id")?.as_u64()? as u32;
         let kind = value.get("kind")?.as_str()?;
@@ -235,6 +268,10 @@ mod linux {
                     .and_then(serde_json::Value::as_str)
                     .unwrap_or("left")
                     .to_string(),
+                action: action.to_string(),
+            },
+            "pointer_axis" => InputEvent::PointerAxis {
+                surface: id,
                 action: action.to_string(),
             },
             "key" => InputEvent::Key {
@@ -569,6 +606,7 @@ mod linux {
             let id = match &event {
                 InputEvent::PointerMotion { surface, .. }
                 | InputEvent::PointerButton { surface, .. }
+                | InputEvent::PointerAxis { surface, .. }
                 | InputEvent::Key { surface, .. }
                 | InputEvent::Text { surface, .. }
                 | InputEvent::Focus { surface } => *surface,
@@ -667,6 +705,26 @@ mod linux {
                                 },
                             );
                         }
+                    }
+                }
+                InputEvent::PointerAxis { action, .. } => {
+                    // wl_pointer.axis 只发给指针当前焦点的 surface；宿主可能没有
+                    // 先发过 motion（例如触控板直接滚动），按最后已知位置补一次，
+                    // 否则客户端收不到 axis、表现为“滚不动”。
+                    self.handle_input(InputEvent::PointerMotion {
+                        surface: id,
+                        x: self.pointer_pos.0,
+                        y: self.pointer_pos.1,
+                    });
+                    // Wayland：正值 = 向下滚。
+                    let steps = if action == "scroll_up" { -1.0 } else { 1.0 };
+                    if let Some(pointer) = self.seat.get_pointer() {
+                        let frame = AxisFrame::new(time)
+                            .source(AxisSource::Wheel)
+                            .value(Axis::Vertical, steps)
+                            .v120(Axis::Vertical, (steps * 120.0) as i32);
+                        pointer.axis(self, frame);
+                        pointer.frame(self);
                     }
                 }
                 InputEvent::Key { keysym, action, .. } => {
@@ -1640,6 +1698,10 @@ mod linux {
         std::thread::spawn(move || {
             for stream in listener.incoming().flatten() {
                 stream.set_nodelay(true).ok();
+                // 慢客户端不能把合成器卡死：写超时后由 broadcast 丢弃该连接。
+                stream
+                    .set_write_timeout(Some(std::time::Duration::from_millis(200)))
+                    .ok();
                 if let Ok(mut reader) = stream.try_clone() {
                     let tx = input_tx.clone();
                     std::thread::spawn(move || loop {
