@@ -584,9 +584,6 @@ pub async fn create(data_dir: &Path, args: CreateArgs, json: bool) -> Result<()>
     if args.memory_snapshots {
         env.insert("MIXUM_MEMORY_SNAPSHOTS".to_string(), "1".to_string());
     }
-    if args.disable_landlock {
-        env.insert("MIXUM_DISABLE_LANDLOCK".to_string(), "1".to_string());
-    }
     if root {
         env.insert("MIXUM_TASK_USER".to_string(), "root".to_string());
     }
