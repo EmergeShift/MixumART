@@ -303,6 +303,43 @@ export const agentInstall = (containerId: string, name: string) =>
       })
     : invoke<CommandResult>('agent_install', { containerId, name })
 
+export const agentRemoteStatus = (
+  addr: string,
+  token: string,
+  node: string,
+  fingerprint?: string,
+) =>
+  isDemo()
+    ? demoDelay(DEMO_AGENTS.map((agent) => ({ ...agent, installed: false })))
+    : invoke<AgentStatus[]>('agent_remote_status', {
+        addr,
+        token,
+        node,
+        fingerprint: fingerprint || null,
+      })
+
+export const agentRemoteInstall = (
+  addr: string,
+  token: string,
+  node: string,
+  name: string,
+  fingerprint?: string,
+) =>
+  isDemo()
+    ? demoDelay<CommandResult>({
+        taskId: 'demo',
+        state: 'completed',
+        lines: [`[演示] 已在远程节点 ${node} 安装 ${name}`],
+        error: null,
+      })
+    : invoke<CommandResult>('agent_remote_install', {
+        addr,
+        token,
+        node,
+        name,
+        fingerprint: fingerprint || null,
+      })
+
 export const runtimeImages = (kind: RuntimeKind) =>
   isDemo()
     ? demoDelay(['mixumos:0.1.4'])

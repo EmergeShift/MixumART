@@ -9,7 +9,7 @@ use mixum_env_core::{ContainerState, RuntimeKind};
 use serde::Serialize;
 use tauri::{AppHandle, State};
 
-use crate::commands::{run_environment_script, CommandResult};
+use crate::commands::{run_environment_script, run_map_script, CommandResult};
 use crate::AppState;
 
 pub struct AgentSpec {
@@ -220,18 +220,7 @@ pub async fn agent_environments(
     Ok(environments)
 }
 
-#[tauri::command]
-pub async fn agent_status(
-    app: AppHandle,
-    container_id: String,
-) -> Result<Vec<AgentStatus>, String> {
-    let result = run_environment_script(
-        &app,
-        &container_id,
-        &probe_script(),
-        Duration::from_secs(120),
-    )
-    .await?;
+fn statuses_from(result: CommandResult) -> Result<Vec<AgentStatus>, String> {
     if result.state != "completed" {
         return Err(result
             .error
@@ -251,6 +240,21 @@ pub async fn agent_status(
 }
 
 #[tauri::command]
+pub async fn agent_status(
+    app: AppHandle,
+    container_id: String,
+) -> Result<Vec<AgentStatus>, String> {
+    let result = run_environment_script(
+        &app,
+        &container_id,
+        &probe_script(),
+        Duration::from_secs(120),
+    )
+    .await?;
+    statuses_from(result)
+}
+
+#[tauri::command]
 pub async fn agent_install(
     app: AppHandle,
     container_id: String,
@@ -262,6 +266,51 @@ pub async fn agent_install(
         &container_id,
         &install_script(spec),
         Duration::from_secs(1800),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn agent_remote_status(
+    app: AppHandle,
+    addr: String,
+    token: String,
+    fingerprint: Option<String>,
+    node: String,
+) -> Result<Vec<AgentStatus>, String> {
+    let result = run_map_script(
+        &app,
+        &addr,
+        &token,
+        fingerprint.as_deref(),
+        Some(&node),
+        &probe_script(),
+        Duration::from_secs(120),
+        None,
+    )
+    .await?;
+    statuses_from(result)
+}
+
+#[tauri::command]
+pub async fn agent_remote_install(
+    app: AppHandle,
+    addr: String,
+    token: String,
+    fingerprint: Option<String>,
+    node: String,
+    name: String,
+) -> Result<CommandResult, String> {
+    let spec = find(&name).ok_or_else(|| format!("未知 agent: {name}"))?;
+    run_map_script(
+        &app,
+        &addr,
+        &token,
+        fingerprint.as_deref(),
+        Some(&node),
+        &install_script(spec),
+        Duration::from_secs(1800),
+        None,
     )
     .await
 }

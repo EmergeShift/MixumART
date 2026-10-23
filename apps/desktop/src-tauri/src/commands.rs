@@ -1122,13 +1122,35 @@ pub(crate) async fn run_environment_script(
     timeout: Duration,
 ) -> Result<CommandResult, String> {
     let connection = connection_for(app, container_id)?;
-    let client = MapClient::connect(
+    run_map_script(
+        app,
         &connection.addr,
         &connection.token,
         connection.fingerprint.as_deref(),
+        None,
+        script,
+        timeout,
+        Some(container_id),
     )
     .await
-    .map_err(|error| error.to_string())?;
+}
+
+/// 直连环境或经 gateway 路由的远程节点共用：提交 shell 任务并等待终态。
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn run_map_script(
+    app: &AppHandle,
+    addr: &str,
+    token: &str,
+    fingerprint: Option<&str>,
+    node: Option<&str>,
+    script: &str,
+    timeout: Duration,
+    container_id: Option<&str>,
+) -> Result<CommandResult, String> {
+    let client = MapClient::connect(addr, token, fingerprint)
+        .await
+        .map_err(|error| error.to_string())?;
+    client.set_node(node.map(ToOwned::to_owned));
     let mut events = client.events();
     client
         .subscribe_task_events()
@@ -1150,13 +1172,16 @@ pub(crate) async fn run_environment_script(
             .map_err(|_| format!("命令执行超时，任务 {task_id} 仍在运行"))?
             .map_err(|error| format!("事件通道关闭：{error}"))?;
         if event.op == "privilege.request" {
-            let _ = app.emit(
-                "privilege-request",
-                serde_json::json!({
-                    "containerId": container_id,
-                    "request": event.payload,
-                }),
-            );
+            // 本地环境转发给审批 UI；远程节点的审批暂不在这里代理。
+            if let Some(container_id) = container_id {
+                let _ = app.emit(
+                    "privilege-request",
+                    serde_json::json!({
+                        "containerId": container_id,
+                        "request": event.payload,
+                    }),
+                );
+            }
             continue;
         }
         if event.op != "task.event" {
