@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useState } from 'react'
+import { listen } from '@tauri-apps/api/event'
 
 import logo from './assets/logo.png'
-import { errorText, hostInfo, runtimeStatus } from './api'
+import { errorText, hostInfo, listApprovals, listPendingPrivileges, runtimeStatus, type ApprovalView, type PendingPrivilege } from './api'
 import { isDemo } from './demo'
 import { statusLabel, statusTone } from './status'
 import { ThemeToggle, WindowControls } from './components/Chrome'
+import { PrivilegeDialog, type PrivilegeEvent } from './components/PrivilegeDialog'
+import { ApprovalCenter } from './components/ApprovalCenter'
 import { Icon, type IconName } from './components/Icons'
 import { Agents } from './views/Agents'
 import { Cockpit } from './views/Cockpit'
@@ -46,6 +49,10 @@ export default function App() {
   const [backends, setBackends] = useState<BackendStatus[] | null>(null)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [privilege, setPrivilege] = useState<PrivilegeEvent | null>(null)
+  const [approvals, setApprovals] = useState<ApprovalView[]>([])
+  const [sudoRequests, setSudoRequests] = useState<PendingPrivilege[]>([])
+  const [showApprovals, setShowApprovals] = useState(false)
   const [themeMode, setThemeMode] = useState<ThemeMode>(getStoredThemeMode)
   const [resolvedTheme, setResolvedTheme] = useState<ResolvedTheme>(() =>
     resolveTheme(getStoredThemeMode()),
@@ -87,6 +94,29 @@ export default function App() {
     return () => media.removeEventListener('change', sync)
   }, [themeMode])
 
+  useEffect(() => {
+    let dispose: (() => void) | undefined
+    listen<PrivilegeEvent>('privilege-request', (event) => setPrivilege(event.payload))
+      .then((unlisten) => { dispose = unlisten })
+      .catch(() => undefined)
+    return () => dispose?.()
+  }, [])
+
+  const refreshApprovals = useCallback(() => {
+    listApprovals()
+      .then(setApprovals)
+      .catch(() => undefined)
+    listPendingPrivileges()
+      .then(setSudoRequests)
+      .catch(() => undefined)
+  }, [])
+
+  useEffect(() => {
+    refreshApprovals()
+    const timer = setInterval(refreshApprovals, 5000)
+    return () => clearInterval(timer)
+  }, [refreshApprovals])
+
   const toggleTheme = useCallback(() => {
     setThemeMode((previous) => {
       const next: ThemeMode = resolveTheme(previous) === 'dark' ? 'light' : 'dark'
@@ -103,6 +133,11 @@ export default function App() {
 
   const chromeActions = (
     <div className="chrome-actions">
+      {approvals.length + sudoRequests.length > 0 && (
+        <button type="button" className="btn ghost" onClick={() => setShowApprovals(true)}>
+          审批 {approvals.length + sudoRequests.length}
+        </button>
+      )}
       {isDemo() && <span className="demo-badge">演示数据</span>}
       <span className="host-meta">{hostMeta}</span>
       <button
@@ -205,6 +240,17 @@ export default function App() {
           </div>
         </main>
       </div>
+      {privilege && (
+        <PrivilegeDialog event={privilege} onClose={() => setPrivilege(null)} />
+      )}
+      {showApprovals && (
+        <ApprovalCenter
+          approvals={approvals}
+          sudoRequests={sudoRequests}
+          onClose={() => setShowApprovals(false)}
+          onChanged={refreshApprovals}
+        />
+      )}
     </div>
   )
 }

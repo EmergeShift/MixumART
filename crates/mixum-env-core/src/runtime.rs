@@ -8,7 +8,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use crate::container::{Container, CreateSpec};
+use crate::container::{Container, CreateSpec, InspectedContainer};
 use crate::error::EnvError;
 
 /// 宿主机上可用的容器运行时。
@@ -113,8 +113,18 @@ pub trait RuntimeBackend: Send + Sync {
         Err(EnvError::unimplemented("create_container"))
     }
 
+    /// 读取容器定义（镜像、env、ports、mounts、command），用于迁移。
+    async fn inspect_container(&self, _id: &str) -> Result<InspectedContainer, EnvError> {
+        Err(EnvError::unimplemented("inspect_container"))
+    }
+
     async fn start_container(&self, _id: &str) -> Result<(), EnvError> {
         Err(EnvError::unimplemented("start_container"))
+    }
+
+    /// 在容器内执行命令并取 stdout（迁移时读 agentd 令牌、健康检查）。
+    async fn exec_capture(&self, _id: &str, _command: &[&str]) -> Result<String, EnvError> {
+        Err(EnvError::unimplemented("exec_capture"))
     }
 
     async fn stop_container(&self, _id: &str) -> Result<(), EnvError> {
