@@ -285,6 +285,15 @@ pub fn package(out: Option<&str>, json: bool) -> Result<()> {
         Some(path) => PathBuf::from(path),
         None => PathBuf::from("mixum-browser-extension.zip"),
     };
+    // zip runs with current_dir(extension), so resolve the output path against
+    // the CLI's working directory before invoking it.
+    let out = if out.is_absolute() {
+        out
+    } else {
+        std::env::current_dir()
+            .map_err(|error| CliError::io(format!("cwd: {error}")))?
+            .join(out)
+    };
     if out.exists() {
         return Err(CliError::conflict(format!(
             "refusing to overwrite {}",
@@ -298,6 +307,8 @@ pub fn package(out: Option<&str>, json: bool) -> Result<()> {
         .arg(".")
         .arg("-x")
         .arg("*.tpl")
+        .arg("-x")
+        .arg("*.zip")
         .current_dir(&extension)
         .output()
         .map_err(|error| CliError::runtime(format!("zip: {error}")))?;
