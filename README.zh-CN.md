@@ -82,9 +82,12 @@ flowchart TB
     W --> N
     N -->|"MAP over WSS<br/>TLS 1.3 + map1 令牌"| M["mixum-env-map"]
     M --> UI
-    N -->|"surface / damage / input"| C["mixum-env-compositor<br/>容器内"]
-    C --> UI
+    C["mixum-env-compositor<br/>容器内"] -->|"PNG 帧 + damage<br/>经 display.sock"| N
 ```
+
+两个合成器都是 Node 显示 broker（`/run/mixum/display.sock`）的客户端；
+只有 broker 通过 MAP over WSS 连到宿主的 `mixum-env-map`，容器内的合成器不会
+直接穿墙连宿主 UI。
 
 | 层 | Crate / 路径 | 职责 |
 |---|---|---|
@@ -100,7 +103,7 @@ flowchart TB
 
 mixumOS 有两种窗口捕获方式，MixumART 可以同时显示：
 
-- **A — mixcomp 捕获。** mixumOS 内的合成器逐窗口捕获，经 MAP 推 JPEG/H.264/PNG 帧。宿主每个 surface 一个窗口，标为 **A**。
+- **A — mixcomp 捕获。** mixumOS 内的合成器逐窗口捕获，默认经 MAP 推 PNG 脏区补丁，JPEG/H.264 作为回退。宿主每个 surface 一个窗口，标为 **A**。
 - **B — MixumART 合成器。** `mixum-env-compositor` 在容器内作为 Smithay headless 合成器运行，转发每个 surface 的 buffer + damage。宿主维护基础纹理，只上传脏区。这条路径文字像素级保真，并让宿主拿到 surface 树。
 
 窗口页同时列出 A/B，按 owner 路由输入，并支持按窗口回退到 A。macOS 上 B 路径由原生 **MTKView/Metal** 叠加层渲染；其他平台（或 `MIXUM_NATIVE_METAL=0`）回退到 WebView canvas，输入处理完全一致。

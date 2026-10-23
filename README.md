@@ -82,9 +82,13 @@ flowchart TB
     W --> N
     N -->|"MAP over WSS<br/>TLS 1.3 + map1 token"| M["mixum-env-map"]
     M --> UI
-    N -->|"surface / damage / input"| C["mixum-env-compositor<br/>inside the container"]
-    C --> UI
+    C["mixum-env-compositor<br/>inside the container"] -->|"PNG frames + damage<br/>over display.sock"| N
 ```
+
+Both compositors are clients of the Node's display broker
+(`/run/mixum/display.sock`). The broker is the only component that speaks MAP
+over WSS to `mixum-env-map`; nothing inside the container reaches the host UI
+directly.
 
 | Layer | Crate / path | Responsibility |
 |---|---|---|
@@ -100,7 +104,7 @@ flowchart TB
 
 mixumOS can capture windows in two ways, and MixumART can show both at once:
 
-- **A — mixcomp capture.** The compositor inside mixumOS captures each window and streams JPEG/H.264/PNG frames over MAP. The host shows one window per surface and labels the source **A**.
+- **A — mixcomp capture.** The compositor inside mixumOS captures each window and streams PNG damage patches by default, with JPEG/H.264 as fallbacks. The host shows one window per surface and labels the source **A**.
 - **B — MixumART compositor.** `mixum-env-compositor` runs inside the container as a Smithay headless compositor and forwards each surface's buffer + damage. The host maintains the base texture and uploads only dirty regions. This path keeps text pixel-perfect and gives the host a surface tree.
 
 The window page lists both, routes input to the correct owner, and lets you fall back to A per window. On macOS the B path is rendered by a native **MTKView/Metal** overlay; other platforms (or `MIXUM_NATIVE_METAL=0`) fall back to a WebView canvas with identical input handling.
