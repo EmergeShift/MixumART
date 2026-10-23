@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import {
   agentCatalog,
@@ -118,6 +118,29 @@ export function Agents() {
     return connection
   }
 
+  const remoteAddrRef = useRef(remoteAddr)
+  const prevRemoteAddr = useRef(remoteAddr)
+
+  useEffect(() => {
+    remoteAddrRef.current = remoteAddr
+    if (prevRemoteAddr.current === remoteAddr) return
+    prevRemoteAddr.current = remoteAddr
+    // 换 gateway 必须清掉旧 bearer token/指纹/节点与安装结果,避免把 A 的凭据
+    // 发到 B,也避免旧地址的异步响应回写到新地址。
+    setRemoteToken('')
+    setRemoteFp('')
+    setRemoteNode('')
+    setRemoteNodes([])
+    setRemoteConnected(false)
+    setAgentRows(null)
+    setAgentLines(null)
+    setAgentError(null)
+    setAgentInstalling(null)
+    setAgentInstallName('')
+    localStorage.removeItem('mixum.map.node')
+    localStorage.removeItem('mixum.map.fp')
+  }, [remoteAddr])
+
   const isRemote = agentEnvId === REMOTE_TARGET
 
   const refreshRemoteStatus = async (
@@ -129,14 +152,20 @@ export function Agents() {
     setAgentProbing(true)
     setAgentError(null)
     try {
-      setAgentRows(
-        await agentRemoteStatus(addr.trim(), token.trim(), node, fingerprint.trim() || undefined),
+      const rows = await agentRemoteStatus(
+        addr.trim(),
+        token.trim(),
+        node,
+        fingerprint.trim() || undefined,
       )
+      if (remoteAddrRef.current === addr) setAgentRows(rows)
     } catch (err) {
-      setAgentError(errorText(err))
-      setAgentRows(null)
+      if (remoteAddrRef.current === addr) {
+        setAgentError(errorText(err))
+        setAgentRows(null)
+      }
     } finally {
-      setAgentProbing(false)
+      if (remoteAddrRef.current === addr) setAgentProbing(false)
     }
   }
 
@@ -152,6 +181,7 @@ export function Agents() {
     setAgentError(null)
     try {
       const nodes = await gatewayNodes(addr, token, fingerprint || undefined)
+      if (remoteAddrRef.current !== addr) return
       setRemoteNodes(nodes)
       const next = nodes.includes(remoteNode) ? remoteNode : (nodes[0] ?? '')
       setRemoteNode(next)
@@ -167,10 +197,12 @@ export function Agents() {
         setAgentError('gateway 上没有在线节点')
       }
     } catch (err) {
-      setAgentError(errorText(err))
-      setRemoteConnected(false)
+      if (remoteAddrRef.current === addr) {
+        setAgentError(errorText(err))
+        setRemoteConnected(false)
+      }
     } finally {
-      setRemoteBusy(false)
+      if (remoteAddrRef.current === addr) setRemoteBusy(false)
     }
   }
 
@@ -227,8 +259,11 @@ export function Agents() {
           remoteFp.trim() || undefined,
         )
         setAgentLines((previous) => [...(previous ?? []), ...result.lines, `[${result.state}]`])
-        if (result.error) {
-          setAgentError(result.error)
+        if (remoteAddrRef.current !== remoteAddr.trim()) return
+        if (result.state !== 'completed') {
+          setAgentError(
+            result.error?.trim() || `安装未完成（${result.state}）`,
+          )
         } else {
           await refreshRemoteStatus(remoteAddr, remoteToken, remoteNode, remoteFp)
         }
@@ -259,8 +294,8 @@ export function Agents() {
       await ensureAgentConnection(target)
       const result = await agentInstall(target.id, name)
       setAgentLines((previous) => [...(previous ?? []), ...result.lines, `[${result.state}]`])
-      if (result.error) {
-        setAgentError(result.error)
+      if (result.state !== 'completed') {
+        setAgentError(result.error?.trim() || `安装未完成（${result.state}）`)
       } else {
         await refreshAgentStatus(target)
       }
@@ -487,7 +522,10 @@ export function Agents() {
                   id="agent-remote-addr"
                   className="mono"
                   value={remoteAddr}
-                  onChange={(event) => setRemoteAddr(event.target.value)}
+                  onChange={(event) => {
+                    remoteAddrRef.current = event.target.value
+                    setRemoteAddr(event.target.value)
+                  }}
                   placeholder="127.0.0.1:17701"
                   spellCheck={false}
                 />
