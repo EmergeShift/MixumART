@@ -23,6 +23,29 @@ const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 const INSTALL_HINT: &str = "brew install container，然后执行 container system start";
 const START_HINT: &str = "执行 container system start 启动容器服务";
 
+/// Apple Container 只在 macOS 26+ 存在。其它平台必须直接返回「不支持」：
+/// 同名 `container` 命令可能来自别的东西（例如 Windows 上 WSL 自带的
+/// `C:\Program Files\WSL\container.exe`），探测它会得到与 Apple 无关的报错，
+/// 界面上就会显示成「未运行」而不是「当前平台不可用」。
+const PLATFORM_REASON: &str = "仅在 macOS 26+ 可用";
+
+fn unsupported_status() -> RuntimeStatus {
+    RuntimeStatus::Unsupported {
+        reason: PLATFORM_REASON.to_string(),
+    }
+}
+
+fn ensure_supported() -> Result<(), EnvError> {
+    if cfg!(target_os = "macos") {
+        Ok(())
+    } else {
+        Err(EnvError::Unsupported {
+            runtime: RuntimeKind::AppleContainer,
+            reason: PLATFORM_REASON.to_string(),
+        })
+    }
+}
+
 /// 应用装配入口。
 pub fn backend() -> Arc<dyn RuntimeBackend> {
     Arc::new(AppleContainerBackend)
@@ -38,6 +61,9 @@ impl RuntimeBackend for AppleContainerBackend {
     }
 
     async fn probe(&self) -> RuntimeStatus {
+        if !cfg!(target_os = "macos") {
+            return unsupported_status();
+        }
         let args = ["system", "status", "--format", "json"];
         match process::run("container", &args, PROBE_TIMEOUT).await {
             Ok(out) if out.success => match serde_json::from_str::<SystemStatus>(&out.stdout) {
@@ -64,6 +90,7 @@ impl RuntimeBackend for AppleContainerBackend {
     }
 
     async fn list_containers(&self) -> Result<Vec<Container>, EnvError> {
+        ensure_supported()?;
         let args = ["list", "--all", "--format", "json"];
         let out = process::run("container", &args, LIST_TIMEOUT).await?;
         let stdout = out.into_stdout("container list --all")?;
@@ -71,6 +98,7 @@ impl RuntimeBackend for AppleContainerBackend {
     }
 
     async fn inspect_container(&self, id: &str) -> Result<InspectedContainer, EnvError> {
+        ensure_supported()?;
         let out = process::run("container", &["inspect", id], LIST_TIMEOUT).await?;
         if !out.success {
             return Err(EnvError::CommandFailed {
@@ -82,6 +110,7 @@ impl RuntimeBackend for AppleContainerBackend {
     }
 
     async fn create_container(&self, spec: CreateSpec) -> Result<Container, EnvError> {
+        ensure_supported()?;
         let mut args: Vec<String> = vec!["create".into(), "--name".into(), spec.name.clone()];
         for port in &spec.ports {
             args.push("--publish".into());
@@ -127,11 +156,13 @@ impl RuntimeBackend for AppleContainerBackend {
     }
 
     async fn start_container(&self, id: &str) -> Result<(), EnvError> {
+        ensure_supported()?;
         let out = process::run("container", &["start", id], WRITE_TIMEOUT).await?;
         out.into_stdout("container start").map(|_| ())
     }
 
     async fn exec_capture(&self, id: &str, command: &[&str]) -> Result<String, EnvError> {
+        ensure_supported()?;
         let mut args: Vec<&str> = vec!["exec", id];
         args.extend_from_slice(command);
         let out = process::run("container", &args, WRITE_TIMEOUT).await?;
@@ -139,16 +170,19 @@ impl RuntimeBackend for AppleContainerBackend {
     }
 
     async fn stop_container(&self, id: &str) -> Result<(), EnvError> {
+        ensure_supported()?;
         let out = process::run("container", &["stop", id], WRITE_TIMEOUT).await?;
         out.into_stdout("container stop").map(|_| ())
     }
 
     async fn remove_container(&self, id: &str) -> Result<(), EnvError> {
+        ensure_supported()?;
         let out = process::run("container", &["delete", id], WRITE_TIMEOUT).await?;
         out.into_stdout("container delete").map(|_| ())
     }
 
     async fn images(&self) -> Result<Vec<String>, EnvError> {
+        ensure_supported()?;
         let out = process::run("container", &["image", "list", "--quiet"], LIST_TIMEOUT).await?;
         let stdout = out.into_stdout("container image list")?;
         Ok(stdout
@@ -160,16 +194,19 @@ impl RuntimeBackend for AppleContainerBackend {
     }
 
     async fn disk_usage(&self) -> Result<String, EnvError> {
+        ensure_supported()?;
         let out = process::run("container", &["system", "df"], LIST_TIMEOUT).await?;
         out.into_stdout("container system df")
     }
 
     async fn pull_image(&self, reference: &str) -> Result<(), EnvError> {
+        ensure_supported()?;
         let out = process::run("container", &["image", "pull", reference], CREATE_TIMEOUT).await?;
         out.into_stdout("container image pull").map(|_| ())
     }
 
     async fn admin_token(&self, id: &str) -> Result<String, EnvError> {
+        ensure_supported()?;
         let out = process::run(
             "container",
             &["exec", id, "cat", "/var/lib/mixum/admin-token"],
@@ -184,6 +221,7 @@ impl RuntimeBackend for AppleContainerBackend {
     }
 
     async fn load_image(&self, path: &str) -> Result<(), EnvError> {
+        ensure_supported()?;
         let out = process::run(
             "container",
             &["image", "load", "--input", path],
@@ -194,6 +232,7 @@ impl RuntimeBackend for AppleContainerBackend {
     }
 
     async fn prune(&self) -> Result<String, EnvError> {
+        ensure_supported()?;
         let containers = process::run("container", &["prune"], WRITE_TIMEOUT).await?;
         let containers = containers.into_stdout("container prune")?;
         let images = process::run("container", &["image", "prune"], WRITE_TIMEOUT).await?;
@@ -202,6 +241,7 @@ impl RuntimeBackend for AppleContainerBackend {
     }
 
     async fn logs(&self, id: &str, tail: usize) -> Result<Vec<String>, EnvError> {
+        ensure_supported()?;
         let tail = tail.to_string();
         let out = process::run("container", &["logs", "-n", &tail, id], LIST_TIMEOUT).await?;
         let stdout = out.into_stdout("container logs")?;
@@ -519,6 +559,43 @@ mod tests {
             serde_json::from_str(r#"{"status":"running","client":{"version":"1.5.0"}}"#).unwrap();
         assert!(status.is_running());
         assert_eq!(status.client.unwrap().version.as_deref(), Some("1.5.0"));
+    }
+
+    /// 非 macOS 上不能去执行 `container`：同名命令可能来自别的东西，
+    /// 探测结果会被误报成「未运行」而不是「当前平台不可用」。
+    #[cfg(not(target_os = "macos"))]
+    #[tokio::test]
+    async fn probe_is_unsupported_off_macos() {
+        match backend().probe().await {
+            RuntimeStatus::Unsupported { reason } => assert!(reason.contains("macOS")),
+            other => panic!("非 macOS 应返回 Unsupported，实际是 {other:?}"),
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[tokio::test]
+    async fn operations_are_unsupported_off_macos() {
+        let backend = backend();
+        assert!(matches!(
+            backend.list_containers().await,
+            Err(EnvError::Unsupported { .. })
+        ));
+        assert!(matches!(
+            backend.start_container("mixum-x").await,
+            Err(EnvError::Unsupported { .. })
+        ));
+        assert!(matches!(
+            backend.logs("mixum-x", 10).await,
+            Err(EnvError::Unsupported { .. })
+        ));
+        assert!(matches!(
+            backend.inspect_container("mixum-x").await,
+            Err(EnvError::Unsupported { .. })
+        ));
+        assert!(matches!(
+            backend.exec_capture("mixum-x", &["true"]).await,
+            Err(EnvError::Unsupported { .. })
+        ));
     }
 
     /// 真实后端冒烟：需要本机 Apple Container 服务可用。
