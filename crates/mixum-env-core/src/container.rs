@@ -103,6 +103,10 @@ pub struct CreateSpec {
     pub env: BTreeMap<String, String>,
     #[serde(default)]
     pub command: Vec<String>,
+    /// Extra Linux capabilities for the container. Empty means runtime default.
+    /// Only explicit opt-in features (memory snapshots) should set this.
+    #[serde(default)]
+    pub cap_add: Vec<String>,
 }
 
 /// `inspect` 的完整结果：可重建的 spec + 镜像 digest（不塞进 image 引用，

@@ -33,6 +33,7 @@ pub struct EnvView {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub base: Option<String>,
     pub root: bool,
+    pub memory_snapshots: bool,
     pub state: String,
     pub method: Option<String>,
     pub managed: bool,
@@ -40,6 +41,20 @@ pub struct EnvView {
     pub map_addr: Option<String>,
     pub fingerprint: Option<String>,
     pub created_at_ms: Option<u128>,
+}
+
+fn memory_snapshot_caps() -> Vec<String> {
+    [
+        "SYS_ADMIN",
+        "SYS_PTRACE",
+        "CHECKPOINT_RESTORE",
+        "SYS_RESOURCE",
+        "NET_ADMIN",
+        "SYS_TIME",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect()
 }
 
 pub fn registry() -> BackendRegistry {
@@ -157,6 +172,7 @@ pub fn view(kind: RuntimeKind, container: &Container, record: Option<&EnvRecord>
         image: container.image.clone(),
         base: record.and_then(|record| record.base.clone()),
         root: record.is_some_and(|record| record.root),
+        memory_snapshots: record.is_some_and(|record| record.memory_snapshots),
         state: state_label(container.state).to_string(),
         method: record.map(|record| record.method.clone()),
         managed: record.is_some(),
@@ -176,6 +192,7 @@ fn record_view(record: &EnvRecord) -> EnvView {
         image: record.image.clone(),
         base: record.base.clone(),
         root: record.root,
+        memory_snapshots: record.memory_snapshots,
         state: "missing".to_string(),
         method: Some(record.method.clone()),
         managed: true,
@@ -564,6 +581,9 @@ pub async fn create(data_dir: &Path, args: CreateArgs, json: bool) -> Result<()>
         env.insert("MIXUM_BASE".to_string(), base.to_owned());
         env.insert("MIXUM_BASE_DIGEST".to_string(), version.digest);
     }
+    if args.memory_snapshots {
+        env.insert("MIXUM_MEMORY_SNAPSHOTS".to_string(), "1".to_string());
+    }
     if root {
         env.insert("MIXUM_TASK_USER".to_string(), "root".to_string());
     }
@@ -589,6 +609,11 @@ pub async fn create(data_dir: &Path, args: CreateArgs, json: bool) -> Result<()>
         mounts,
         env,
         command: Vec::new(),
+        cap_add: if args.memory_snapshots {
+            memory_snapshot_caps()
+        } else {
+            Vec::new()
+        },
     };
     let started = !args.no_start;
     let mut container = backend
@@ -604,6 +629,7 @@ pub async fn create(data_dir: &Path, args: CreateArgs, json: bool) -> Result<()>
         image: image.clone(),
         base: args.base.clone(),
         root,
+        memory_snapshots: args.memory_snapshots,
         port,
         created_at_ms: crate::state::now_ms(),
         fingerprint: None,
@@ -754,6 +780,11 @@ pub async fn rebase(data_dir: &Path, selector: &str, base: &str, json: bool) -> 
         mounts: inspected.spec.mounts.clone(),
         env,
         command: inspected.spec.command.clone(),
+        cap_add: if old_record.memory_snapshots {
+            memory_snapshot_caps()
+        } else {
+            Vec::new()
+        },
     };
     // A volume can only be attached to one running Apple Container VM. Stop the
     // old container first; it remains the rollback target if anything fails.

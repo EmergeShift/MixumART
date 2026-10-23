@@ -91,6 +91,7 @@ mod tests {
                 mounts: Vec::new(),
                 env: BTreeMap::new(),
                 command: Vec::new(),
+                cap_add: Vec::new(),
             },
             image_digest: Some("abc".into()),
             mart: MartRef {

@@ -379,6 +379,10 @@ pub struct CreateArgs {
     /// Create a root container using a human-approved request id.
     #[arg(long)]
     pub root_request: Option<String>,
+    /// Opt in to CRIU memory snapshots: adds SYS_ADMIN/PTRACE/CHECKPOINT_RESTORE/
+    /// SYS_RESOURCE/NET_ADMIN/SYS_TIME and makes /proc/sys writable at startup.
+    #[arg(long)]
+    pub memory_snapshots: bool,
 }
 
 #[derive(Debug, Subcommand)]

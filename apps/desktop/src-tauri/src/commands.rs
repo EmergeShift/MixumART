@@ -920,6 +920,7 @@ pub async fn environment_migrate_new(
             mounts: spec.mounts,
             env: spec.env,
             command: Vec::new(),
+            cap_add: Vec::new(),
         })
         .await
         .map_err(|error| error.to_string())?;
