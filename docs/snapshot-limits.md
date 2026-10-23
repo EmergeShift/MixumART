@@ -52,6 +52,10 @@ task back in the container. Two important details were required:
 A GUI environment (agent task + foot + mixcomp) also completed memory snapshot
 and restore; the compositor and foot came back after restore.
 
+Hybrid snapshots now pack the disk tree under the host freeze, then thaw before
+CRIU dumps memory. A real hybrid create/restore on the target image returned
+success and restored the `sleep` task.
+
 So the real requirements are:
 
 1. custom kernel with `CONFIG_CHECKPOINT_RESTORE` (and PID/user namespaces);
