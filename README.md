@@ -1,6 +1,12 @@
 # mixum Agent Runtime
 
+[![ci](https://github.com/EmergeShift/MixumART/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/EmergeShift/MixumART/actions/workflows/ci.yml)
+[![license](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+
 宿主机上的 mixumOS 入口。一个 Tauri 2 桌面应用：
+
+[贡献指南](CONTRIBUTING.md) · [安全策略](SECURITY.md) · [行为准则](CODE_OF_CONDUCT.md)
+
 
 - 把 mixumOS 接到本机已有的容器运行时上：**WSL 2 / Docker / Apple Container**；
 - 作为 mixumOS 容器的管理器（列表，后续接管创建与启停）；
