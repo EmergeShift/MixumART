@@ -90,6 +90,10 @@ impl RuntimeBackend for DockerBackend {
             args.push("-e".into());
             args.push(format!("{key}={value}"));
         }
+        for cap in &spec.cap_add {
+            args.push("--cap-add".into());
+            args.push(cap.clone());
+        }
         args.push(spec.image);
         args.extend(spec.command);
         let refs: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -413,6 +417,7 @@ fn parse_inspect(raw: &str) -> Result<InspectedContainer, EnvError> {
             })
             .collect(),
         command: entry.config.cmd.unwrap_or_default(),
+        cap_add: Vec::new(),
     };
     let image_digest = entry.image.starts_with("sha256:").then_some(entry.image);
     Ok(InspectedContainer { spec, image_digest })

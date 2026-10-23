@@ -25,6 +25,9 @@ pub struct EnvRecord {
     /// Explicitly approved root container.
     #[serde(default)]
     pub root: bool,
+    /// Explicitly opted into the extra capabilities needed by CRIU.
+    #[serde(default)]
+    pub memory_snapshots: bool,
     pub port: u16,
     pub created_at_ms: u128,
     #[serde(default)]

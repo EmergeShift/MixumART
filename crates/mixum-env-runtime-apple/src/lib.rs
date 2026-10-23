@@ -110,6 +110,10 @@ impl RuntimeBackend for AppleContainerBackend {
             args.push("--env".into());
             args.push(format!("{key}={value}"));
         }
+        for cap in &spec.cap_add {
+            args.push("--cap-add".into());
+            args.push(cap.clone());
+        }
         args.push(spec.image);
         args.extend(spec.command);
         let refs: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -395,6 +399,7 @@ fn parse_inspect(raw: &str) -> Result<InspectedContainer, EnvError> {
                 .chain(config.init_process.arguments)
                 .collect()
         },
+        cap_add: Vec::new(),
     };
     Ok(InspectedContainer { spec, image_digest })
 }

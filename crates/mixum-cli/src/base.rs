@@ -102,6 +102,7 @@ pub async fn create(
         mounts: vec![],
         env: BTreeMap::new(),
         command: vec!["sleep".into(), "infinity".into()],
+        cap_add: Vec::new(),
     };
     let container = backend
         .create_container(spec)
