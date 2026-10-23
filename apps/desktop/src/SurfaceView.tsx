@@ -10,6 +10,14 @@ type Props = {
   addr: string
 }
 
+/** 解码一帧的 base64 PNG。atob + 单次线性扫描比 JSON 数字数组快一个量级。 */
+function decodeFrame(data: string): Uint8Array<ArrayBuffer> {
+  const binary = atob(data)
+  const bytes = new Uint8Array(binary.length)
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i)
+  return bytes
+}
+
 export function SurfaceView({ surface, addr }: Props) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const chainRef = useRef<Promise<void>>(Promise.resolve())
@@ -54,7 +62,7 @@ export function SurfaceView({ surface, addr }: Props) {
             if (!ctx) return
             if (full) ctx.clearRect(0, 0, canvas.width, canvas.height)
             const bitmap = await createImageBitmap(
-              new Blob([new Uint8Array(frame.data)], { type: 'image/png' }),
+              new Blob([decodeFrame(frame.data)], { type: 'image/png' }),
             )
             ctx.drawImage(bitmap, frame.x, frame.y, frame.w, frame.h)
             bitmap.close()

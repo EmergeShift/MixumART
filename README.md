@@ -16,7 +16,10 @@ Agent 凭据都写入系统钥匙串。
 headless 合成器，把每个 surface 的 buffer+damage 经 TCP/MAP 发给宿主。
 macOS 上 Tauri surface 窗口默认使用 **MTKView + Metal** 原生叠加层渲染
 PNG 帧（非 macOS 或 `MIXUM_NATIVE_METAL=0` 时回退 WebView canvas）。
-输入、IME、剪贴板仍由 WebView 处理。
+输入、IME、剪贴板仍由 WebView 处理。合成与脏区计算的热点在
+`crates/mixum-env-compositor/src/pixels.rs`；帧送 WebView 时用 base64
+（Tauri 事件是 JSON，数字数组约 4 倍体积），Metal 只更新脏区纹理，
+原生叠加层生效时不再往 WebView 发帧。
 
 Tauri 的「窗口」页通过 MAP WSS（`mixum-env-map`）连接 agentd：
 输入地址/令牌/可选指纹，扫描 surface、为每个 surface 开独立窗口。

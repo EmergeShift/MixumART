@@ -142,6 +142,33 @@ frame 头：`surface, full_w, full_h, x, y, w, h`（7×u32）、
 `format u8`（0=仅光标、2=PNG）、`data_len u32`。首帧/尺寸变化为全量，
 之后只发脏区；静止不发帧。
 
+### 4.6 每帧开销（实现说明）
+
+一帧在容器内和宿主上各有一段固定成本，改动时按这个顺序看：
+
+| 阶段 | 位置 | 做法 |
+|------|------|------|
+| 取 buffer | `pixels::bgra_to_rgba` | `wl_shm` 的 BGRA/BGRX 按行换成 RGBA8888，`Xrgb8888` 直接记 `opaque` |
+| 合成 | `pixels::blit_rgba` | 先裁到画布；opaque 或整行 alpha=255 时整行 memcpy，只有真正半透明的行才逐像素 blend |
+| 脏区 | `pixels::diff_bbox` | 先逐行 `memcmp`，只有变化的行才找首末差异像素 |
+| 编码 | `pixels::encode_png` | 补丁用 `Fast` + `NoFilter`；全量帧用 `Fast` + `Sub`（全量只在 attach/改尺寸时出现） |
+
+宿主侧：
+
+- macOS 原生 Metal 叠加层接管渲染时**不再**向 WebView 发 `surface-frame`，
+  避免同一帧被解码两次；`MIXUM_NATIVE_METAL=0` 或非 macOS 才走 canvas。
+- 发往 WebView 的帧里 PNG 用 base64（`SurfaceFrameEvent`）。Tauri 事件是
+  JSON，`Vec<u8>` 会被序列化成数字数组——体积约 4 倍，JS 侧还要逐元素解析；
+  base64 只有 1.33 倍且解码是一次线性扫描。
+- Metal 纹理只 `replaceRegion` 脏区，不再整张重传。
+
+`pixels` 是纯缓冲区运算、不依赖 Wayland，因此可以在宿主机上跑测试与基准：
+
+```sh
+cargo test -p mixum-env-compositor
+cargo test -p mixum-env-compositor --release -- --ignored --nocapture   # 打印耗时
+```
+
 运行（Tauri 走 MAP，推荐）：
 
 ```sh
