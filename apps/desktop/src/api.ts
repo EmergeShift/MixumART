@@ -293,7 +293,15 @@ export const agentStatus = (containerId: string) =>
     ? demoDelay(DEMO_AGENTS.map((agent) => ({ ...agent, installed: false })))
     : invoke<AgentStatus[]>('agent_status', { containerId })
 
-export const agentInstall = (containerId: string, name: string) =>
+export type AgentInstallEvent = {
+  installId: string
+  kind: 'log' | 'state'
+  line?: string | null
+  state?: string | null
+  message?: string | null
+}
+
+export const agentInstall = (containerId: string, name: string, installId?: string) =>
   isDemo()
     ? demoDelay<CommandResult>({
         taskId: 'demo',
@@ -301,7 +309,11 @@ export const agentInstall = (containerId: string, name: string) =>
         lines: [`[演示] 已安装 ${name}，提示词写入 ~/.mixum/agents/${name}/PROMPT.md`],
         error: null,
       })
-    : invoke<CommandResult>('agent_install', { containerId, name })
+    : invoke<CommandResult>('agent_install', {
+        containerId,
+        name,
+        installId: installId ?? null,
+      })
 
 export const agentRemoteStatus = (
   addr: string,
@@ -324,6 +336,7 @@ export const agentRemoteInstall = (
   node: string,
   name: string,
   fingerprint?: string,
+  installId?: string,
 ) =>
   isDemo()
     ? demoDelay<CommandResult>({
@@ -338,6 +351,7 @@ export const agentRemoteInstall = (
         node,
         name,
         fingerprint: fingerprint || null,
+        installId: installId ?? null,
       })
 
 export const runtimeImages = (kind: RuntimeKind) =>

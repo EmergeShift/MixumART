@@ -1110,7 +1110,7 @@ pub async fn environment_run_command(
     container_id: String,
     command: String,
 ) -> Result<CommandResult, String> {
-    run_environment_script(&app, &container_id, &command, Duration::from_secs(600)).await
+    run_environment_script(&app, &container_id, &command, Duration::from_secs(600), None).await
 }
 
 /// 在连接档案对应的环境里提交一次 shell 任务并等待终态。
@@ -1120,6 +1120,7 @@ pub(crate) async fn run_environment_script(
     container_id: &str,
     script: &str,
     timeout: Duration,
+    install_id: Option<&str>,
 ) -> Result<CommandResult, String> {
     let connection = connection_for(app, container_id)?;
     run_map_script(
@@ -1131,6 +1132,7 @@ pub(crate) async fn run_environment_script(
         script,
         timeout,
         Some(container_id),
+        install_id,
     )
     .await
 }
@@ -1146,6 +1148,7 @@ pub(crate) async fn run_map_script(
     script: &str,
     timeout: Duration,
     container_id: Option<&str>,
+    install_id: Option<&str>,
 ) -> Result<CommandResult, String> {
     let client = MapClient::connect(addr, token, fingerprint)
         .await
@@ -1156,21 +1159,69 @@ pub(crate) async fn run_map_script(
         .subscribe_task_events()
         .await
         .map_err(|error| error.to_string())?;
+    // 极快的任务可能在节点事件泵就绪前完成；留出一个调度窗口。
+    tokio::time::sleep(Duration::from_millis(100)).await;
     let task_id = client
         .submit_shell_task(script)
         .await
         .map_err(|error| error.to_string())?;
     let deadline = tokio::time::Instant::now() + timeout;
     let mut lines = Vec::new();
+    let emit_install = |kind: &str, line: Option<&str>, state: Option<&str>, message: Option<&str>| {
+        if let Some(install_id) = install_id {
+            let _ = app.emit(
+                "agent-install",
+                serde_json::json!({
+                    "installId": install_id,
+                    "kind": kind,
+                    "line": line,
+                    "state": state,
+                    "message": message,
+                }),
+            );
+        }
+    };
     loop {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining.is_zero() {
             return Err(format!("命令执行超时，任务 {task_id} 仍在运行"));
         }
-        let event = tokio::time::timeout(remaining, events.recv())
-            .await
-            .map_err(|_| format!("命令执行超时，任务 {task_id} 仍在运行"))?
-            .map_err(|error| format!("事件通道关闭：{error}"))?;
+        let poll = remaining.min(Duration::from_millis(1000));
+        let event = match tokio::time::timeout(poll, events.recv()).await {
+            Ok(event) => event.map_err(|error| format!("事件通道关闭：{error}"))?,
+            Err(_) => {
+                // 1s 内没有事件：用 task.get 兜底，避免快速任务的 state 事件丢失。
+                if let Ok(payload) = client.task_get(&task_id).await {
+                    let state = payload
+                        .get("state")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    if state == "completed" {
+                        emit_install("state", None, Some("completed"), None);
+                        return Ok(CommandResult {
+                            task_id,
+                            state: "completed".into(),
+                            lines,
+                            error: None,
+                        });
+                    }
+                    if state == "failed" || state == "canceled" {
+                        let error = payload
+                            .get("error")
+                            .and_then(Value::as_str)
+                            .map(ToOwned::to_owned);
+                        emit_install("state", None, Some(state), error.as_deref());
+                        return Ok(CommandResult {
+                            task_id,
+                            state: state.to_owned(),
+                            lines,
+                            error,
+                        });
+                    }
+                }
+                continue;
+            }
+        };
         if event.op == "privilege.request" {
             // 本地环境转发给审批 UI；远程节点的审批暂不在这里代理。
             if let Some(container_id) = container_id {

@@ -249,6 +249,7 @@ pub async fn agent_status(
         &container_id,
         &probe_script(),
         Duration::from_secs(120),
+        None,
     )
     .await?;
     statuses_from(result)
@@ -259,6 +260,7 @@ pub async fn agent_install(
     app: AppHandle,
     container_id: String,
     name: String,
+    install_id: Option<String>,
 ) -> Result<CommandResult, String> {
     let spec = find(&name).ok_or_else(|| format!("未知 agent: {name}"))?;
     run_environment_script(
@@ -266,6 +268,7 @@ pub async fn agent_install(
         &container_id,
         &install_script(spec),
         Duration::from_secs(1800),
+        install_id.as_deref(),
     )
     .await
 }
@@ -287,6 +290,7 @@ pub async fn agent_remote_status(
         &probe_script(),
         Duration::from_secs(120),
         None,
+        None,
     )
     .await?;
     statuses_from(result)
@@ -300,6 +304,7 @@ pub async fn agent_remote_install(
     fingerprint: Option<String>,
     node: String,
     name: String,
+    install_id: Option<String>,
 ) -> Result<CommandResult, String> {
     let spec = find(&name).ok_or_else(|| format!("未知 agent: {name}"))?;
     run_map_script(
@@ -311,6 +316,7 @@ pub async fn agent_remote_install(
         &install_script(spec),
         Duration::from_secs(1800),
         None,
+        install_id.as_deref(),
     )
     .await
 }
