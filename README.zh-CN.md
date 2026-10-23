@@ -1,7 +1,7 @@
 <div align="center">
   <img src="apps/desktop/src/assets/logo.png" alt="MixumART" width="112">
   <h1>MixumART</h1>
-  <h3>给 agent 一台真正的电脑，就在你的电脑上。</h3>
+  <h3>一个仍在早期的宿主侧运行时：给需要真机的 agent 一台真机。</h3>
   <p>面向“需要一台真机器”的 agent 的宿主侧运行时：一个 Tauri 应用加一个 CLI，把<br/><strong>Apple Container</strong>、<strong>Docker</strong> 或 <strong>WSL 2</strong> 变成可丢弃、可检查的 mixumOS 环境。</p>
   <p>
     <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue.svg"></a>
@@ -21,11 +21,11 @@
 
 能调用 API，不等于能用一台电脑。
 
-agent 越来越需要装包、开浏览器、在桌面应用里点来点去、从一条错误命令里恢复，并把整个会话交给人类。托管沙箱给你一个黑盒；裸容器 CLI 给你一块原始积木。两者都没有给你**一台带桌面、由宿主管理、能被 agent 驱动的真机器**。
+agent 越来越需要装包、开浏览器、在桌面应用里点来点去、从一条错误命令里恢复，并把整个会话交给人类。托管沙箱往往是个黑盒；裸容器 CLI 又留下太多东西要自己拼。我们想要**一台带桌面、由宿主管理、能被 agent 驱动的真机器**——于是自己搭了一个，还不完美。
 
 MixumART 就是补上这一层的宿主侧软件。它不重新实现沙箱：它消费 [mixumOS](https://github.com/EmergeShift/mixumOS)，说 [MAP](https://github.com/EmergeShift/Mixum-Agent-Protocol) 协议。它负责必须留在你笔记本上的部分：运行时发现、环境生命周期、凭据、端口、窗口，以及 agent 使用的控制面。
 
-## 你得到什么
+## 目前能做什么
 
 | | |
 |---|---|
@@ -37,7 +37,7 @@ MixumART 就是补上这一层的宿主侧软件。它不重新实现沙箱：�
 | **默认本地** | 无托管账号。端口只绑回环。令牌进系统钥匙串，从不打印。外部命令按 argv 执行，永远不过 shell。当前构建不回传任何遥测。 |
 | **Rust 是骨架** | Tauri 壳、运行时后端、MAP 客户端、合成器与 CLI 都是 Rust；React 19 只是视图层。宿主控制面是一个 Cargo workspace。 |
 
-### 不只是“用 Rust 写”，而是围绕 Rust 构建
+### 为什么用 Rust
 
 同一个 Rust workspace 里放着运行时契约（`mixum-env-core`）、三个后端、MAP WSS 客户端（`mixum-env-map`）、surface 协议（`mixum-env-surface`）、容器内合成器（`mixum-env-compositor`）、宿主显示客户端和 CLI/daemon。带来的是：
 
@@ -242,7 +242,7 @@ MixumART 是 alpha。macOS 应用没有签名（还没买 Apple Developer Progra
 | A + B 显示 | ✅ | ✅ 代码路径 | ✅ 代码路径 |
 | 输入 / 输入法 / 剪贴板 | ✅ | ✅ 代码路径 | ✅ 代码路径 |
 
-“已实现”指代码存在且该目标能编译；“已验证”指在真实硬件上跑过。我们保留这个区分，因为一个谎报平台支持的 agent 运行时，比一个承认缺口的运行时更糟。
+“已实现”指代码存在且该目标能编译；“已验证”指在真实硬件上跑过。我们尽量保留这个区分；承认没跑过的平台，比声称覆盖更有用。
 
 ## 安全模型
 
@@ -254,6 +254,12 @@ MixumART 是 alpha。macOS 应用没有签名（还没买 Apple Developer Progra
 - **当前构建不含遥测。** MixumART 不回传数据，没有账号，也没有更新信标。未来若加入可选统计，会在生态级 [TRUST 承诺](https://github.com/EmergeShift/Mixum-Agent-Protocol/blob/main/TRUST.md)中说明，且默认关闭。
 
 运行时契约与错误映射见 [docs/runtime-contract.md](docs/runtime-contract.md)；显示威胁模型见 [docs/display.md](docs/display.md)。
+
+## 我们可能错在哪
+
+我们不确定“宿主/运行时”的切分是不是对的边界，不确定原生 Metal 叠加层是否值得它带来的复杂度，也不确定 Docker 和 WSL 2 能不能做到和 Apple Container 同样的深度。打包也还很糙：应用没签名，浏览器桥只能用开发者模式。
+
+如果你做过桌面运行时、合成器或跨平台安装器，欢迎直接说你会先改哪里。我们宁愿现在听到。
 
 ## 状态与路线图
 
@@ -329,7 +335,7 @@ cd apps/desktop && npm ci && npm run build
 
 ## 许可证
 
-[Apache-2.0](LICENSE)。
+[Apache-2.0](LICENSE)。第三方组件遵循各自许可，见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
 ---
 

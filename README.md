@@ -1,7 +1,7 @@
 <div align="center">
   <img src="apps/desktop/src/assets/logo.png" alt="MixumART" width="112">
   <h1>MixumART</h1>
-  <h3>Your agent's computer, on your computer.</h3>
+  <h3>An early host-side runtime for agents that need a real machine.</h3>
   <p>The host-side runtime for agents that need a real machine: one Tauri app and one CLI that turn<br/><strong>Apple Container</strong>, <strong>Docker</strong> or <strong>WSL 2</strong> into a disposable, inspectable mixumOS environment.</p>
   <p>
     <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue.svg"></a>
@@ -21,11 +21,11 @@
 
 Calling an API is not the same as using a computer.
 
-Agents increasingly need to install packages, run a browser, click through a desktop app, recover from a bad command, and hand the whole session to a human. Hosted sandboxes give you a black box; bare container CLIs give you a primitive. Neither gives you **a real machine with a real desktop, managed from the host, driven by an agent**.
+Agents increasingly need to install packages, run a browser, click through a desktop app, recover from a bad command, and hand the whole session to a human. Hosted sandboxes tend to be black boxes; bare container CLIs leave too much to assemble. We wanted **a real machine with a desktop, managed from the host and driven by an agent** — so we built one, imperfectly.
 
 MixumART is the host-side layer that closes that gap. It does not reimplement the sandbox: it consumes [mixumOS](https://github.com/EmergeShift/mixumOS) and speaks [MAP](https://github.com/EmergeShift/Mixum-Agent-Protocol). It owns the part that must live on your laptop: runtime discovery, environment lifecycle, credentials, ports, windows and the control plane agents talk to.
 
-## What you get
+## What it does today
 
 | | |
 |---|---|
@@ -37,7 +37,7 @@ MixumART is the host-side layer that closes that gap. It does not reimplement th
 | **Local by construction** | No hosted account. Ports bind to loopback. Tokens live in the OS keychain and are never printed. External commands are executed as argv, never through a shell. This build sends no telemetry. |
 | **Rust where it counts** | Tauri shell, runtime backends, MAP client, compositor and CLI are Rust. React 19 is the view layer. The host-side control plane is one Cargo workspace, kept clippy-clean with `-D warnings`. |
 
-### Built around Rust, not just written in it
+### Why Rust
 
 The same Rust workspace contains the runtime contract (`mixum-env-core`), the three backends, the MAP WSS client (`mixum-env-map`), the surface protocol (`mixum-env-surface`), the in-container compositor (`mixum-env-compositor`), the host-side display client and the CLI/daemon. That means:
 
@@ -245,7 +245,7 @@ none of this affects the CLI, Docker images, or the npm SDK.
 | A + B display | ✅ | ✅ code path | ✅ code path |
 | Input / IME / clipboard | ✅ | ✅ code path | ✅ code path |
 
-"Implemented" means the code path exists and compiles for that target. "Verified" means it was exercised on real hardware. We keep the distinction because an agent runtime that lies about platform support is worse than one that admits a gap.
+"Implemented" means the code path exists and compiles for that target. "Verified" means it was exercised on real hardware. We try to keep the distinction; admitting a gap is more useful than claiming coverage we have not exercised.
 
 ## Security model
 
@@ -257,6 +257,16 @@ none of this affects the CLI, Docker images, or the npm SDK.
 - **No telemetry in this build.** MixumART does not phone home; there is no account and no update beacon. Any future opt-in analytics would be documented in the ecosystem [TRUST commitments](https://github.com/EmergeShift/Mixum-Agent-Protocol/blob/main/TRUST.md) and off by default.
 
 The full runtime contract and error mapping are in [docs/runtime-contract.md](docs/runtime-contract.md); the display threat model is in [docs/display.md](docs/display.md).
+
+## Where we could be wrong
+
+We are not sure the host/runtime split is the right boundary, that a native Metal
+overlay is worth its complexity over a plain WebView, or that Docker and WSL 2 can
+be supported to the same depth as Apple Container. Packaging is also rough: the
+app is unsigned, and the browser bridge is developer-mode only.
+
+If you have shipped a desktop runtime, a compositor or a cross-platform installer,
+tell us what you would change first. We would rather hear it now.
 
 ## Status and roadmap
 
@@ -332,7 +342,7 @@ Keep platform differences inside `crates/mixum-env-runtime-*`. Do not add `cfg(t
 
 ## License
 
-[Apache-2.0](LICENSE).
+[Apache-2.0](LICENSE). Third-party components keep their own licenses; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ---
 
