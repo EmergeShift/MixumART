@@ -41,9 +41,13 @@ and exports `MIXUM_MEMORY_SNAPSHOTS=1`; agentd remounts `/proc/sys` read-write.
 
 `criu check --all` still reports dirty tracking OFF. Enable
 `CONFIG_MEM_SOFT_DIRTY` in the custom kernel before claiming production memory
-snapshots. A simple process dump/restore works, but a task started by the mixum
-Landlock/setuid sandbox was observed to hang in parasite injection; do not
-advertise memory snapshots for agent tasks until that is fixed.
+snapshots. A simple process dump/restore works. The earlier mixum-task parasite
+hang was caused by agentd SIGSTOP-freezing the task before CRIU; memory-only
+snapshots now skip that pre-freeze. Disk/hybrid still freeze for file
+consistency.
+
+A memory-only snapshot currently captures only process memory and restores into
+the existing disk state; use hybrid if both tree and memory must move together.
 
 The patched binary can also be selected explicitly:
 

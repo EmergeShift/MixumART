@@ -66,9 +66,13 @@ Dirty tracking is OFF. Memory snapshot will not work.
 ```
 
 The current kernel config does not expose soft-dirty tracking. One-shot
-dump/restore of a simple process worked, but pre-dump/dirty-page handling is not
+dump/restore of a simple task now works, but pre-dump/dirty-page handling is not
 safe until `CONFIG_MEM_SOFT_DIRTY` is enabled and checked. Do not claim
 production memory snapshots before that check passes.
+
+The first agent task dump hung because agentd pre-froze the task with SIGSTOP
+before CRIU. CRIU freezes the tree itself; memory-only snapshots now skip the
+host freeze hook (disk/hybrid still freeze for a consistent file tree).
 
 ## Security tradeoff
 
