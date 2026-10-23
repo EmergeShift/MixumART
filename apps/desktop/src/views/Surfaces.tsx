@@ -1,15 +1,24 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import {
   connectEnvironment,
   errorText,
+  gatewayDevices,
+  gatewayIsGateway,
+  gatewayNodes,
+  getAgentCredential,
+  gatewayPairClaim,
+  gatewayPairCreate,
+  gatewayRevokeDevice,
   listContainers,
   listEnvironmentSurfaces,
   listSurfaces,
   openEnvironmentSurface,
   openSurfaceWindow,
+  setAgentCredential,
   startEnvironment,
 } from '../api'
+import type { DeviceInfo, PairClaim } from '../api'
 import type { BackendStatus, Container, RuntimeKind, SurfaceInfo } from '../types'
 
 const DEFAULT_ADDR = '127.0.0.1:7601'
@@ -46,10 +55,18 @@ export function Surfaces({ backends, onOpenEnvironments }: Props) {
     () => localStorage.getItem('mixum.map.addr') ?? DEFAULT_ADDR,
   )
   const [token, setToken] = useState('')
+  const [deviceToken, setDeviceToken] = useState('')
   const [fingerprint, setFingerprint] = useState(
     () => localStorage.getItem('mixum.map.fp') ?? '',
   )
   const [manualSurfaces, setManualSurfaces] = useState<SurfaceInfo[] | null>(null)
+  const [node, setNode] = useState(() => localStorage.getItem('mixum.map.node') ?? '')
+  const [nodes, setNodes] = useState<string[]>([])
+  const [pairCode, setPairCode] = useState('')
+  const [claimCode, setClaimCode] = useState('')
+  const [claimName, setClaimName] = useState('MixumART')
+  const [claimResult, setClaimResult] = useState<PairClaim | null>(null)
+  const [devices, setDevices] = useState<DeviceInfo[]>([])
   const [route, setRoute] = useState<'all' | 'enhanced' | 'compat'>('all')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -112,6 +129,41 @@ export function Surfaces({ backends, onOpenEnvironments }: Props) {
     }
   }
 
+  const prevAddr = useRef(addr)
+  const addrRef = useRef(addr)
+
+  useEffect(() => {
+    let cancelled = false
+    addrRef.current = addr
+    // 切换 gateway 地址时必须清掉上一个地址的 bearer token、证书指纹和
+    // 窗口/设备状态,避免把 A 的东西带到 B。
+    if (prevAddr.current !== addr) {
+      prevAddr.current = addr
+      setToken('')
+      setDeviceToken('')
+      setFingerprint('')
+      setNodes([])
+      setNode('')
+      setManualSurfaces(null)
+      setDevices([])
+      setClaimResult(null)
+      setPairCode('')
+      setError(null)
+      setLoading(false)
+      localStorage.removeItem('mixum.map.node')
+      localStorage.removeItem('mixum.map.fp')
+    }
+    void getAgentCredential(`gateway-device:${addr}`)
+      .then((saved) => {
+        if (!cancelled && saved) setDeviceToken(saved)
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [addr])
+
   useEffect(() => {
     localStorage.removeItem('mixum.map.token')
     void discover()
@@ -119,21 +171,51 @@ export function Surfaces({ backends, onOpenEnvironments }: Props) {
   }, [backends])
 
   const scanManual = async () => {
-    if (!token.trim()) {
+    const scanToken = token.trim() || deviceToken.trim()
+    if (!scanToken) {
       setError('手动连接远程节点需要访问令牌；本机环境会自动配对，不需要填写。')
       return
     }
-    localStorage.setItem('mixum.map.addr', addr)
+    const requestAddr = addr
+    localStorage.setItem('mixum.map.addr', requestAddr)
     localStorage.setItem('mixum.map.fp', fingerprint)
+    localStorage.setItem('mixum.map.node', node)
     setLoading(true)
     setError(null)
     try {
-      setManualSurfaces(await listSurfaces(addr, token, fingerprint || undefined))
+      // 先取节点列表,再按选中的节点列窗口;否则多节点 gateway 在 node 为空时
+      // 会先失败,下拉框永远没有机会出现。
+      let list: string[] = []
+      // 直连 agentd 没有 gateway.node.list:先探测,避免把“不是 gateway”误报成错误。
+      const isGateway = await gatewayIsGateway(
+        requestAddr,
+        scanToken,
+        fingerprint || undefined,
+      )
+      if (addrRef.current !== requestAddr) return
+      if (isGateway) {
+        list = await gatewayNodes(requestAddr, scanToken, fingerprint || undefined)
+        if (addrRef.current !== requestAddr) return
+        setNodes(list)
+      } else {
+        setNodes([])
+      }
+      const effective = node && list.includes(node) ? node : (list[0] ?? '')
+      if (effective !== node) setNode(effective)
+      const surfaces = await listSurfaces(
+        requestAddr,
+        deviceToken || token,
+        fingerprint || undefined,
+        effective || undefined,
+      )
+      if (addrRef.current !== requestAddr) return
+      setManualSurfaces(surfaces)
     } catch (err) {
+      if (addrRef.current !== requestAddr) return
       setError(errorText(err))
       setManualSurfaces([])
     } finally {
-      setLoading(false)
+      if (addrRef.current === requestAddr) setLoading(false)
     }
   }
 
@@ -155,9 +237,119 @@ export function Surfaces({ backends, onOpenEnvironments }: Props) {
   const openManual = async (surface: SurfaceInfo) => {
     setError(null)
     try {
-      await openSurfaceWindow(addr, token, fingerprint || undefined, surface)
+      await openSurfaceWindow(
+        addr,
+        deviceToken || token,
+        fingerprint || undefined,
+        surface,
+        node || undefined,
+      )
     } catch (err) {
       setError(errorText(err))
+    }
+  }
+
+  const createPair = async () => {
+    const requestAddr = addr
+    setError(null)
+    try {
+      const pair = await gatewayPairCreate(requestAddr, token, fingerprint || undefined)
+      if (addrRef.current !== requestAddr) return
+      localStorage.setItem('mixum.map.addr', requestAddr)
+      setPairCode(`${pair.code}（${Math.round(pair.expiresIn / 60)} 分钟内有效）`)
+    } catch (err) {
+      if (addrRef.current !== requestAddr) return
+      setError(errorText(err))
+    }
+  }
+
+  const claimDevice = async () => {
+    const requestAddr = addr
+    setError(null)
+    try {
+      const claim = await gatewayPairClaim(
+        requestAddr,
+        claimCode.trim(),
+        claimName.trim() || 'MixumART',
+        fingerprint || undefined,
+      )
+      let keychainError: string | null = null
+      try {
+        await setAgentCredential(`gateway-device:${requestAddr}`, claim.token)
+      } catch (err) {
+        keychainError = `设备已配对，但写入系统钥匙串失败：${errorText(err)}`
+      }
+      // 请求期间地址可能已经被改掉:钥匙串写回旧地址是对的,但 UI 状态不能落到新地址。
+      if (addrRef.current !== requestAddr) return
+      localStorage.setItem('mixum.map.addr', requestAddr)
+      setClaimResult(claim)
+      setClaimCode('')
+      setDeviceToken(claim.token)
+      if (keychainError) setError(keychainError)
+    } catch (err) {
+      if (addrRef.current !== requestAddr) return
+      setError(errorText(err))
+    }
+  }
+
+  const loadDevices = async () => {
+    const requestAddr = addr
+    setError(null)
+    try {
+      const list = await gatewayDevices(requestAddr, token, fingerprint || undefined)
+      if (addrRef.current !== requestAddr) return
+      setDevices(list)
+    } catch (err) {
+      if (addrRef.current !== requestAddr) return
+      setError(errorText(err))
+    }
+  }
+
+  const revokeDevice = async (jti: string) => {
+    const requestAddr = addr
+    setError(null)
+    try {
+      await gatewayRevokeDevice(requestAddr, token, fingerprint || undefined, jti)
+      if (addrRef.current !== requestAddr) return
+      await loadDevices()
+    } catch (err) {
+      if (addrRef.current !== requestAddr) return
+      setError(errorText(err))
+    }
+  }
+
+  const connectWithDevice = async () => {
+    if (!deviceToken.trim()) {
+      setError('没有设备令牌:请先用配对码接入设备。')
+      return
+    }
+    const requestAddr = addr
+    // 按钮在折叠区外,点击后必须展开面板,否则节点下拉和窗口表都被 manual 挡住。
+    setManual(true)
+    setLoading(true)
+    setError(null)
+    try {
+      // 设备令牌同样可以 node.list(RFC 0003);多节点时先选节点再列窗口。
+      const list = await gatewayNodes(requestAddr, deviceToken, fingerprint || undefined)
+      if (addrRef.current !== requestAddr) return
+      setNodes(list)
+      const effective = node && list.includes(node) ? node : (list[0] ?? '')
+      if (effective !== node) setNode(effective)
+      const surfaces = await listSurfaces(
+        requestAddr,
+        deviceToken,
+        fingerprint || undefined,
+        effective || undefined,
+      )
+      if (addrRef.current !== requestAddr) return
+      localStorage.setItem('mixum.map.addr', requestAddr)
+      setManualSurfaces(surfaces)
+    } catch (err) {
+      if (addrRef.current !== requestAddr) return
+      setError(errorText(err))
+      setManualSurfaces([])
+    } finally {
+      if (addrRef.current === requestAddr) setLoading(false)
     }
   }
 
@@ -192,7 +384,10 @@ export function Surfaces({ backends, onOpenEnvironments }: Props) {
               id="map-addr"
               className="mono"
               value={addr}
-              onChange={(event) => setAddr(event.target.value)}
+              onChange={(event) => {
+                addrRef.current = event.target.value
+                setAddr(event.target.value)
+              }}
               placeholder="例如 127.0.0.1:7601"
               spellCheck={false}
             />
@@ -220,11 +415,135 @@ export function Surfaces({ backends, onOpenEnvironments }: Props) {
               spellCheck={false}
             />
           </div>
+          {nodes.length > 0 && (
+            <div className="field">
+              <label htmlFor="map-node">节点（gateway）</label>
+              <select
+                id="map-node"
+                value={node}
+                onChange={(event) => {
+                  const next = event.target.value
+                  const requestAddr = addr
+                  setNode(next)
+                  localStorage.setItem('mixum.map.node', next)
+                  setManualSurfaces(null)
+                  if (!token.trim() && !deviceToken.trim()) return
+                  setLoading(true)
+                  setError(null)
+                  void listSurfaces(
+                    requestAddr,
+                    deviceToken || token,
+                    fingerprint || undefined,
+                    next || undefined,
+                  )
+                    .then((surfaces) => {
+                      if (addrRef.current === requestAddr) setManualSurfaces(surfaces)
+                    })
+                    .catch((err) => {
+                      if (addrRef.current === requestAddr) setError(errorText(err))
+                    })
+                    .finally(() => {
+                      if (addrRef.current === requestAddr) setLoading(false)
+                    })
+                }}
+              >
+                <option value="">自动</option>
+                {nodes.map((name) => (
+                  <option key={name} value={name}>
+                    {name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
           <button className="ghost" onClick={() => void scanManual()} disabled={loading}>
             {loading ? '查找中…' : '查找远程窗口'}
           </button>
         </div>
       )}
+
+      <details className="gateway-panel">
+        <summary>Gateway 配对与设备</summary>
+        <div className="chips" style={{ alignItems: 'flex-end' }}>
+          <div className="field">
+            <label>配对码</label>
+            <input className="mono" value={pairCode} readOnly placeholder="点击生成" />
+          </div>
+          <button className="ghost" onClick={() => void createPair()} disabled={!token.trim()}>
+            生成配对码
+          </button>
+        </div>
+        <div className="chips" style={{ alignItems: 'flex-end' }}>
+          <div className="field">
+            <label htmlFor="claim-code">设备配对码</label>
+            <input
+              id="claim-code"
+              className="mono"
+              maxLength={6}
+              value={claimCode}
+              onChange={(event) => setClaimCode(event.target.value)}
+              placeholder="6 位数字"
+            />
+          </div>
+          <div className="field">
+            <label htmlFor="claim-name">设备名</label>
+            <input
+              id="claim-name"
+              value={claimName}
+              onChange={(event) => setClaimName(event.target.value)}
+            />
+          </div>
+          <button className="ghost" onClick={() => void claimDevice()} disabled={!claimCode.trim()}>
+            配对
+          </button>
+        </div>
+        {claimResult && (
+          <>
+            <p className="mode-note">
+              已配对设备 <span className="mono">{claimResult.deviceId}</span>
+              （设备令牌已写入系统钥匙串并填入设备令牌）。
+            </p>
+          </>
+        )}
+        <div className="chips">
+          <button className="ghost" onClick={() => void loadDevices()} disabled={!token.trim()}>
+            刷新设备
+          </button>
+        </div>
+        {devices.length > 0 && (
+          <table className="table">
+            <thead>
+              <tr>
+                <th>设备</th>
+                <th>主体</th>
+                <th>属主</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {devices.map((device) => (
+                <tr key={device.jti}>
+                  <td>{device.name || device.jti}</td>
+                  <td className="mono muted">{device.sub}</td>
+                  <td className="mono muted">{device.owner}</td>
+                  <td className="row-actions">
+                    <button className="ghost" onClick={() => void revokeDevice(device.jti)}>
+                      吊销
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+        <p className="mode-note">配对码 5 分钟有效；设备令牌独立于当前用户令牌，可单独吊销。</p>
+      </details>
+        {deviceToken.trim() && (
+          <button className="ghost" onClick={() => void connectWithDevice()} disabled={loading}>
+            用设备令牌连接
+          </button>
+        )}
+
 
       <p className="mode-note">
         <strong>增强模式</strong>画面更清晰、流量更省，推荐使用。
