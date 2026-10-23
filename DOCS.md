@@ -12,7 +12,7 @@ linked below.
   `daemon`, `display`, `module-map`, `privilege`, `runtime-contract`,
   `support-matrix`, `ui`).
 - English-only pages still needing a Chinese counterpart: `browser-bridge`,
-  `browser-early-access`, `criu-build`, `snapshot-limits`.
+  `criu-build`, `snapshot-limits`.
 
 ## Pages
 
@@ -21,7 +21,7 @@ linked below.
 | [architecture](docs/architecture.md) | current | [English](docs/architecture.md) | [中文](docs/architecture.zh-CN.md) |
 | [base-env](docs/base-env.md) | current | [English](docs/base-env.md) | [中文](docs/base-env.zh-CN.md) |
 | [browser-bridge](docs/browser-bridge.md) | current | [English](docs/browser-bridge.md) | pending |
-| [browser early access](docs/browser-early-access.md) | early access | [English](docs/browser-early-access.md) | pending |
+| [browser early access](docs/browser-early-access.md) | early access | [English](docs/browser-early-access.md) | [中文](docs/browser-early-access.zh-CN.md) |
 | [CLI](docs/cli.md) | current | [English](docs/cli.md) | [中文](docs/cli.zh-CN.md) |
 | [contributing](docs/contributing.md) | current | [English](docs/contributing.md) | [中文](docs/contributing.zh-CN.md) |
 | [CRIU build](docs/criu-build.md) | current | [English](docs/criu-build.md) | pending |
