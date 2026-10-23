@@ -1,87 +1,102 @@
-# 界面结构
+> English translation of the Chinese document. Original: [ui.zh-CN.md](ui.zh-CN.md). Technical review pending.
 
-界面是 React 19 + TypeScript + Vite，手写 CSS。不引组件库。
+# UI structure
 
-## 0. 定位（决定信息架构）
+The UI is React 19 + TypeScript + Vite with hand-written CSS. No component library.
 
-MART **本身不是 Agent**——它从我们自己的 agent 里拆出来，独立开源给所有
-agent 用。界面承载三件事：
+## 0. Positioning (drives the information architecture)
 
-1. **所有 Agent 的人类入口**：管理和查看全部容器——每个容器是谁发起的、
-   在跑什么终端/程序，监看并接管 computer use；
-2. **全部设置**：mixumOS 设置 + MART 设置；
-3. **Agent 平台接入**：工作模式（作为工具 / sub-agent / 隔离环境）、
-   Agent Core 选择（Mixum / Pi / DeepSeek Harness / Codex）、BYOK 与凭证迁移。
+MART **is not an agent itself** — it was split out of our own agent and open-sourced
+for all agents. The UI carries three things:
 
-## 1. 窗口结构
+1. **The human entry point for every agent**: manage and inspect all containers —
+   who started each one, which terminal/program it is running, watch and take over
+   computer use.
+2. **All settings**: mixumOS settings + MART settings.
+3. **Agent platform integration**: work mode (tool / sub-agent / isolated
+   environment), Agent Core choice (Mixum / Pi / DeepSeek Harness / Codex), BYOK and
+   credential migration.
+
+## 1. Window structure
 
 ```
 ┌──────────┬────────────────────────────────────────────────┐
-│ ◈ mixum  │  总览            [演示数据] 宿主信息   [刷新] │
+│ ◈ mixum  │  Overview        [demo data] host info  [refresh] │
 │   ART    ├────────────────────────────────────────────────┤
-│          │  ┌ 所有 Agent 的桌面入口 ───────────────────┐  │
-│  总览    │  │  说明 + 统计(运行时/运行中/Agent 归属)    │  │
-│  容器    │  └──────────────────────────────────────────┘  │
-│  窗口    │  运行中的 Agent 环境                            │
-│  Agent   │  ┌ Agent 卡 ─┐ ┌ Agent 卡 ─┐                  │
-│  设置    │  │ 归属/模式  │ │ 归属/模式  │                  │
-│          │  │ 监看缩略   │ │ 监看缩略   │                  │
-│ 运行时   │  │ 接管/终端  │ │ 接管/终端  │                  │
-│ 状态胶囊 │  └───────────┘ └───────────┘                  │
+│          │  ┌ Desktop entry for all agents ────────────┐  │
+│  Overview│  │  description + stats (runtimes/running/owner) │  │
+│  Containers│ └──────────────────────────────────────────┘  │
+│  Windows │  Running agent environments                     │
+│  Agents  │  ┌ Agent card ┐ ┌ Agent card ┐                  │
+│  Settings│  │ owner/mode │ │ owner/mode │                  │
+│          │  │ thumbnail  │ │ thumbnail  │                  │
+│  Runtime │  │ takeover/terminal │ │ takeover/terminal │   │
+│  status  │  └────────────┘ └────────────┘                  │
 └──────────┴────────────────────────────────────────────────┘
 ```
 
-- 左栏 224px：品牌、五项导航、运行时状态胶囊、版本；
-- 顶栏：页面标题 + 说明、演示徽标（浏览器直开时）、宿主信息、刷新；
-- 内容区独立滚动；≤980px 进入窄窗降级（hero 纵向、卡片单列、顶栏换行）。
+- Left rail 224 px: brand, five nav items, runtime status pill, version.
+- Top bar: page title + description, demo badge (when opened in a browser), host
+  info, refresh.
+- Content area scrolls independently; at ≤980 px it degrades (hero stacks, cards
+  become one column, top bar wraps).
 
-## 2. 视图表
+## 2. View table
 
-| 视图 | 文件 | 数据来源 | 状态 |
-|------|------|----------|------|
-| 总览 | `src/views/Cockpit.tsx` | `list_containers`（聚合可用运行时） | 已实现；环境操作跳转到环境页 |
-| 容器 | `src/views/Containers.tsx` | `list_containers` + 连接档案 | 已实现：创建/启动/停止/删除、连接/监看、快照、命令终端、日志 |
-| 窗口 | `src/views/Surfaces.tsx` / `SurfaceView.tsx` | `list_surfaces` / `open_surface_window` | 已实现；接管支持按钮或 Ctrl/Cmd+Shift+T |
-| Agent | `src/views/Agents.tsx` | 本地 Agent 配置 + 系统钥匙串 | 已实现配置持久化；凭据写入系统钥匙串，外部连接器仍由外部 Agent 负责 |
-| 设置 | `src/views/Settings.tsx` | `runtime_status` + 资源命令 | 已实现运行时状态、镜像列表、磁盘占用 |
+| View | File | Data source | Status |
+|---|---|---|---|
+| Overview | `src/views/Cockpit.tsx` | `list_containers` (aggregates available runtimes) | implemented; environment actions jump to the containers page |
+| Containers | `src/views/Containers.tsx` | `list_containers` + connection profiles | implemented: create/start/stop/delete, connect/watch, snapshots, command terminal, logs |
+| Windows | `src/views/Surfaces.tsx` / `SurfaceView.tsx` | `list_surfaces` / `open_surface_window` | implemented; takeover via button or Ctrl/Cmd+Shift+T |
+| Agents | `src/views/Agents.tsx` | local agent config + system keychain | config persistence implemented; credentials go to the system keychain; external connectors remain the external agent's job |
+| Settings | `src/views/Settings.tsx` | `runtime_status` + resource commands | implemented: runtime status, image list, disk usage |
 
-## 3. 数据与演示模式
+## 3. Data and demo mode
 
-- 所有 invoke 收敛于 `src/api.ts`，组件不出现命令名；
-- **浏览器（无 Tauri）直开会自动切到演示数据**（`src/demo.ts`），顶栏显示
-  「演示数据」徽标——用于设计评审与截图，不伪装真实状态；
-- `Container.agent` 为可选字段：后端尚未提供归属信息时显示「未标注」，
-  不虚构来源；
-- 状态查询在挂载时执行一次 + 手动刷新，不做后台轮询。
+- All invokes go through `src/api.ts`; components never contain command names.
+- **Opening in a browser (no Tauri) automatically switches to demo data**
+  (`src/demo.ts`) and shows a "demo data" badge — for design review and screenshots,
+  never pretending to be real state.
+- `Container.agent` is optional: when the backend has no ownership information it
+  shows "unlabeled"; it never invents a source.
+- Status is queried once on mount and refreshed manually; no background polling.
 
-## 4. 设计 token（暖纸 · 细线 · 衬线标题）
+## 4. Design tokens (warm paper · thin lines · serif headings)
 
-目标是「一个人做的桌面工具」，不是仪表盘模板：无渐变、无发光、无玻璃，
-靠字与线组织层次。
+The target is "a desktop tool one person made", not a dashboard template: no
+gradients, glow or glass; hierarchy comes from type and lines.
 
-| 变量 | 值 | 用途 |
-|------|-----|------|
-| `--paper` | `#f4f2ec` | 窗口底色（暖纸） |
-| `--surface` / `--surface-2` | `#fffefa` / `#f8f6f0` | 面板 / 表头与悬停 |
-| `--line` / `--line-strong` | `#e3dfd5` / `#d2cdc0` | 分隔线 / 控件边框 |
-| `--ink` / `--ink-2` / `--muted` | `#24221d` / `#4e4a42` / `#7a756c` | 正文 / 次级 / 辅助 |
-| `--accent` | `#2f5a7a` | 选中、焦点、链接（墨蓝） |
-| `--ok` / `--warn` / `--danger` | `#2f6b45` / `#8a6320` / `#a4433a` | 状态色 |
-| `--serif` | 系统衬线（Iowan/Songti/Georgia） | 标题、统计数字 |
+| Variable | Value | Use |
+|---|---|---|
+| `--paper` | `#f4f2ec` | window background (warm paper) |
+| `--surface` / `--surface-2` | `#fffefa` / `#f8f6f0` | panels / table headers and hover |
+| `--line` / `--line-strong` | `#e3dfd5` / `#d2cdc0` | dividers / control borders |
+| `--ink` / `--ink-2` / `--muted` | `#24221d` / `#4e4a42` / `#7a756c` | body / secondary / helper |
+| `--accent` | `#2f5a7a` | selection, focus, links (ink blue) |
+| `--ok` / `--warn` / `--danger` | `#2f6b45` / `#8a6320` / `#a4433a` | status colours |
+| `--serif` | system serif (Iowan/Songti/Georgia) | headings, statistics |
 
-- 标题使用衬线，正文系统无衬线；等宽仅用于标识与数值；
-- 焦点态使用 2px 外描边（键盘可达）；尊重 `prefers-reduced-motion`；
-- 与容器内 console 的关系：**对偶而非复用**——宿主暖色纸感，容器内浅色
-  工作台；共享状态词与等宽信息惯例，不共享组件。
+- Headings use serif, body uses system sans; monospace only for identifiers and
+  numbers.
+- Focus uses a 2 px outer outline (keyboard reachable); respect
+  `prefers-reduced-motion`.
+- Relationship to the in-container console: **a counterpart, not reuse** — host is
+  warm paper, the container is a light workbench; share state words and monospace
+  conventions, not components.
 
-## 5. 文案约定（面向普通人）
+## 5. Copy conventions (for ordinary people)
 
-- 中文、陈述句、不用感叹号与 emoji；**内部约定不上屏**；
-- 状态词：`正在运行` / `已停止` / `已暂停` / `未启动` / `未知`；运行软件用
-  `可用` / `未安装` / `未运行` / `不可用`；
-- 说人话：`谁在用`、`使用方式`、`运行软件`、`环境系统`、`登录凭据`；
-  专业词汇首次出现时用一句话解释（如内存快照的同一内核约束）；
-- **窗口的 A/B 通道是开发约定，不暴露给用户**：A（mixcomp）显示为
-  「兼容模式」，B（合成器）显示为「增强模式」，并在页内解释各自含义；
-- 环境终端使用宿主 PTY + runtime `exec`，是持久交互会话；Agent 启动仍是一次性 task。
-- 技术标识（`apple_container`、地址、路径）用等宽字体，不翻译，放在次要位置。
+- Chinese, declarative sentences, no exclamation marks or emoji; **internal
+  conventions never appear on screen**.
+- State words: `running` / `stopped` / `paused` / `not started` / `unknown`; software
+  uses `available` / `not installed` / `not running` / `unavailable`.
+- Plain language: "who is using it", "usage mode", "runtime", "environment system",
+  "login credentials"; explain a technical term in one sentence the first time it
+  appears (e.g. the same-kernel constraint of memory snapshots).
+- **The window's A/B channels are a development convention, not exposed to users**:
+  A (mixcomp) shows as "compatibility mode", B (compositor) as "enhanced mode", with
+  an in-page explanation of each.
+- The environment terminal uses the host PTY + runtime `exec` and is a persistent
+  interactive session; agent launch is still a one-shot task.
+- Technical identifiers (`apple_container`, addresses, paths) use monospace, are not
+  translated, and sit in secondary positions.

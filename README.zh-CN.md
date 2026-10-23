@@ -310,7 +310,7 @@ MixumART/
 | [Daemon](docs/daemon.zh-CN.md) | `mixum-artd` 协议与方法 |
 | [显示](docs/display.zh-CN.md) | B 路线合成器、surface/damage、输入、Metal、XWayland |
 | [运行时契约](docs/runtime-contract.md) | 后端语义、错误、序列化 |
-| [界面](docs/ui.md) | 视图结构、设计 token、文案 |
+| [界面](docs/ui.zh-CN.md) | 视图结构、设计 token、文案 |
 | [贡献](docs/contributing.zh-CN.md) | 环境、命令、跨平台规则、已知坑 |
 
 设计文档目前以中文为主；CLI/daemon 契约与测试是可读的英文事实来源。欢迎帮忙翻译。
