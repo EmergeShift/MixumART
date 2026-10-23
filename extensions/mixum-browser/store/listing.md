@@ -41,4 +41,4 @@ local Mixum container browser.
   the extension is inert until a native-host request arrives.
 
 ## Privacy policy URL
-https://mixum.dev/privacy/browser-bridge (to be published by the Mixum site)
+https://mixum.emergeshift.com/privacy/browser-bridge (**under construction**; tracking: [#64](https://github.com/EmergeShift/MixumART/issues/64))
