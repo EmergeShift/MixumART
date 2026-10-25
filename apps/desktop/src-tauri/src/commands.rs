@@ -19,7 +19,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tauri::State;
 
-use crate::AppState;
+use crate::{AppState, RemotePrivilegeTarget};
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1144,6 +1144,27 @@ fn last_error_line(lines: &[String]) -> Option<String> {
         .find_map(|line| line.strip_prefix("错误：").map(|text| text.trim().to_owned()))
 }
 
+/// 一次远程脚本结束时清掉没被使用的待审批凭据（任务完成/超时/取消都会走到）。
+struct RemotePrivilegeCleanup {
+    app: AppHandle,
+    keys: Vec<String>,
+}
+
+impl Drop for RemotePrivilegeCleanup {
+    fn drop(&mut self) {
+        if self.keys.is_empty() {
+            return;
+        }
+        if let Some(state) = self.app.try_state::<AppState>() {
+            if let Ok(mut pending) = state.remote_privileges.lock() {
+                for key in &self.keys {
+                    pending.remove(key);
+                }
+            }
+        }
+    }
+}
+
 /// 直连环境或经 gateway 路由的远程节点共用：提交 shell 任务并等待终态。
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_map_script(
@@ -1174,6 +1195,11 @@ pub(crate) async fn run_map_script(
         .map_err(|error| error.to_string())?;
     let deadline = tokio::time::Instant::now() + timeout;
     let mut lines = Vec::new();
+    let mut privilege_seq = 0u64;
+    let mut remote_cleanup = RemotePrivilegeCleanup {
+        app: app.clone(),
+        keys: Vec::new(),
+    };
     let emit_install = |kind: &str, line: Option<&str>, state: Option<&str>, message: Option<&str>| {
         if let Some(install_id) = install_id {
             let _ = app.emit(
@@ -1231,13 +1257,50 @@ pub(crate) async fn run_map_script(
             }
         };
         if event.op == "privilege.request" {
-            // 本地环境转发给审批 UI；远程节点的审批暂不在这里代理。
             if let Some(container_id) = container_id {
                 let _ = app.emit(
                     "privilege-request",
                     serde_json::json!({
                         "containerId": container_id,
                         "request": event.payload,
+                    }),
+                );
+            } else {
+                // 远程节点：凭据只留在后端，前端拿 approvalId 回来决策。
+                let request_id = event
+                    .payload
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let approval_id =
+                    format!("{addr}|{}|{request_id}|{privilege_seq}", node.unwrap_or(""));
+                privilege_seq += 1;
+                if let Some(state) = app.try_state::<AppState>() {
+                    if let Ok(mut pending) = state.remote_privileges.lock() {
+                        pending.insert(
+                            approval_id.clone(),
+                            RemotePrivilegeTarget {
+                                addr: addr.to_owned(),
+                                token: token.to_owned(),
+                                fingerprint: fingerprint.map(ToOwned::to_owned),
+                                node: node.map(ToOwned::to_owned),
+                                request_id: request_id.to_owned(),
+                            },
+                        );
+                        remote_cleanup.keys.push(approval_id.clone());
+                    }
+                }
+                let _ = app.emit(
+                    "privilege-request",
+                    serde_json::json!({
+                        "containerId": "",
+                        "request": event.payload,
+                        "remote": {
+                            "approvalId": approval_id,
+                            "addr": addr,
+                            "node": node,
+                            "fingerprint": fingerprint,
+                        },
                     }),
                 );
             }
@@ -1952,6 +2015,40 @@ pub async fn environment_privilege_decide(
     .map_err(|error| error.to_string())?;
     client
         .privilege_decision(&id, approve, &reason)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// Approve or deny a privilege request on a remote gateway node.
+///
+/// The gateway token is the authorization boundary; OS authentication is a
+/// best-effort second factor only on platforms that implement it.
+#[tauri::command]
+pub async fn remote_privilege_decide(
+    state: State<'_, AppState>,
+    approval_id: String,
+    approve: bool,
+    reason: String,
+) -> Result<(), String> {
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    if approve {
+        authenticate_host_privilege()?;
+    }
+    let target = {
+        let mut pending = state
+            .remote_privileges
+            .lock()
+            .map_err(|_| "远程审批状态不可用".to_string())?;
+        pending
+            .remove(&approval_id)
+            .ok_or_else(|| "远程审批请求已过期".to_string())?
+    };
+    let client = MapClient::connect(&target.addr, &target.token, target.fingerprint.as_deref())
+        .await
+        .map_err(|error| error.to_string())?;
+    client.set_node(target.node);
+    client
+        .privilege_decision(&target.request_id, approve, &reason)
         .await
         .map_err(|error| error.to_string())
 }

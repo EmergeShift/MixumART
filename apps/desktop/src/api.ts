@@ -82,6 +82,15 @@ export const decidePrivilege = (
     ? demoDelay(undefined)
     : invoke<void>('environment_privilege_decide', { containerId, id, approve, reason })
 
+export const decideRemotePrivilege = (
+  approvalId: string,
+  approve: boolean,
+  reason = '',
+) =>
+  isDemo()
+    ? demoDelay(undefined)
+    : invoke<void>('remote_privilege_decide', { approvalId, approve, reason })
+
 export const snapshotTree = (containerId: string) =>
   isDemo()
     ? demoDelay({ head: 'demo', branch: 'main', nodes: [] })
