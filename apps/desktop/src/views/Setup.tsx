@@ -7,10 +7,16 @@ import {
   setupStartRunner,
   setupPlan,
 } from '../api'
-import type { SetupPlan, SetupResult, SetupLanguage } from '../types'
+import type { InstallAction, RuntimeKind, SetupPlan, SetupResult, SetupLanguage } from '../types'
 
 type Props = {
   onDone: () => void
+}
+
+type PendingAction = {
+  kind: RuntimeKind
+  start: boolean
+  action: InstallAction
 }
 
 const COPY = {
@@ -25,6 +31,13 @@ const COPY = {
     install: '安装',
     start: '启动',
     installing: '安装中…',
+    adminTitle: '需要管理员权限',
+    adminBody: '这一步会安装或启动系统级运行时。点击继续后，系统会弹出原生管理员授权窗口。',
+    adminPrompt: 'macOS 会要求输入管理员密码；Windows 会弹出 UAC；Linux 会使用 polkit。',
+    cancel: '取消',
+    continue: '继续并授权',
+    actionDone: '操作输出',
+    close: '关闭',
     image: 'mixumOS',
     imageHint: '使用本地镜像，或输入镜像引用后拉取。',
     pull: '拉取',
@@ -59,6 +72,13 @@ const COPY = {
     install: 'Install',
     start: 'Start',
     installing: 'Installing…',
+    adminTitle: 'Administrator permission required',
+    adminBody: 'This step installs or starts a system-level runtime. Continue to open the native authorization prompt.',
+    adminPrompt: 'macOS asks for an administrator password, Windows shows UAC, and Linux uses polkit.',
+    cancel: 'Cancel',
+    continue: 'Continue and authorize',
+    actionDone: 'Action output',
+    close: 'Close',
     image: 'mixumOS',
     imageHint: 'Use a local image, or enter a reference to pull.',
     pull: 'Pull',
@@ -111,6 +131,8 @@ export function Setup({ onDone }: Props) {
   const [installing, setInstalling] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<SetupResult | null>(null)
+  const [pendingAction, setPendingAction] = useState<PendingAction | null>(null)
+  const [actionOutput, setActionOutput] = useState<string | null>(null)
 
   const copy = COPY[language]
   const mixumImages = useMemo(
@@ -152,19 +174,30 @@ export function Setup({ onDone }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const install = async (kind: SetupPlan['runners'][number]['kind'], start: boolean) => {
+  const executeAction = async (kind: RuntimeKind, start: boolean) => {
     setInstalling(kind)
     setError(null)
+    setActionOutput(null)
     try {
       const output = start
         ? await setupStartRunner(kind)
         : await setupInstallRunner(kind)
-      if (output) window.alert(output)
+      setActionOutput(output || copy.actionDone)
       await load()
     } catch (err) {
       setError(errorText(err))
     } finally {
       setInstalling(null)
+      setPendingAction(null)
+    }
+  }
+
+  const requestAction = (kind: RuntimeKind, start: boolean, action: InstallAction) => {
+    setRuntime(kind)
+    if (action.requiresAdmin) {
+      setPendingAction({ kind, start, action })
+    } else {
+      void executeAction(kind, start)
     }
   }
 
@@ -278,8 +311,10 @@ export function Setup({ onDone }: Props) {
                     className="setup-install"
                     onClick={(event) => {
                       event.stopPropagation()
-                      setRuntime(item.kind)
-                      void install(item.kind, Boolean(item.start && !item.install))
+                      const action = item.start ?? item.install
+                      if (action) {
+                        requestAction(item.kind, Boolean(item.start && !item.install), action)
+                      }
                     }}
                   >
                     {installing === item.kind
@@ -416,6 +451,47 @@ export function Setup({ onDone }: Props) {
             <button className="primary" onClick={onDone}>{copy.next}</button>
           </div>
         </section>
+      )}
+
+      {actionOutput && (
+        <section className="setup-output">
+          <div className="section-head">
+            <h3>{copy.actionDone}</h3>
+            <button className="ghost" onClick={() => setActionOutput(null)}>{copy.close}</button>
+          </div>
+          <pre>{actionOutput}</pre>
+        </section>
+      )}
+
+      {pendingAction && (
+        <div className="setup-modal-backdrop" onClick={() => setPendingAction(null)}>
+          <div
+            className="setup-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="setup-admin-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <h3 id="setup-admin-title">{copy.adminTitle}</h3>
+            <p>{copy.adminBody}</p>
+            <code>{pendingAction.action.command.join(' ')}</code>
+            <p className="muted">{pendingAction.action.note}</p>
+            <p className="muted">{copy.adminPrompt}</p>
+            <div className="setup-actions">
+              <button className="ghost" onClick={() => setPendingAction(null)}>{copy.cancel}</button>
+              <button
+                className="primary"
+                onClick={() => {
+                  const action = pendingAction
+                  setPendingAction(null)
+                  void executeAction(action.kind, action.start)
+                }}
+              >
+                {copy.continue}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )

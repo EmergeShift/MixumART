@@ -42,6 +42,11 @@ The registered command is the absolute `mixum` executable followed by `mcp`;
 the desktop chooses its bundled CLI when present, otherwise `mixum` from
 `PATH`.
 
+For privileged runner installation or start actions, the desktop shows an
+in-app confirmation first, then opens the native OS authorization UI:
+macOS uses `osascript` administrator privileges, Windows uses a UAC
+`Start-Process -Verb RunAs`, and Linux uses `pkexec`. No terminal is needed.
+
 ## Re-entry
 
 The desktop app opens Setup on first launch and keeps an **初始化** tab plus a

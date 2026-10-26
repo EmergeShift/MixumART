@@ -1438,3 +1438,46 @@ input:focus {
 .setup-agent em { color: var(--muted); font-size: 11px; font-style: normal; }
 .setup-agent code { color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; }
 .setup-actions { display: flex; gap: 9px; justify-content: flex-end; margin-top: 8px; }
+
+.setup-output pre {
+  margin: 0;
+  padding: 12px;
+  max-height: 220px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  color: var(--muted);
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.setup-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgb(0 0 0 / 45%);
+  backdrop-filter: blur(3px);
+}
+.setup-modal {
+  width: min(520px, 100%);
+  padding: 22px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--panel, var(--bg));
+  box-shadow: 0 24px 80px rgb(0 0 0 / 35%);
+}
+.setup-modal h3 { margin: 0 0 8px; }
+.setup-modal p { margin: 8px 0; color: var(--muted); line-height: 1.55; }
+.setup-modal code {
+  display: block;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--fg);
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}

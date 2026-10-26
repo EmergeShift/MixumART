@@ -456,7 +456,7 @@ pub async fn start_runner(kind: RuntimeKind) -> Result<String> {
     let action = start_action(kind).ok_or_else(|| {
         SetupError::Unsupported(format!("{} has no start action", kind.display_name()))
     })?;
-    run_action(action).await
+    run_action(action)
 }
 
 pub async fn install_runner(kind: RuntimeKind) -> Result<String> {
@@ -466,10 +466,12 @@ pub async fn install_runner(kind: RuntimeKind) -> Result<String> {
             kind.display_name()
         ))
     })?;
-    run_action(action).await
+    run_action(action)
 }
 
-async fn run_action(action: InstallAction) -> Result<String> {
+/// Run one already selected install/start action. The desktop elevation bridge
+/// uses this for commands that do not need administrator rights.
+pub fn run_action(action: InstallAction) -> Result<String> {
     let Some(program) = action.command.first() else {
         return Err(SetupError::Invalid("empty install command".into()));
     };
