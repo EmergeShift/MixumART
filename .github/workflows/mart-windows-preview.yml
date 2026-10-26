@@ -1,6 +1,8 @@
 name: mart-windows-preview
 
 on:
+  push:
+    branches: [feat/mixum-setup]
   workflow_dispatch:
 
 permissions:
