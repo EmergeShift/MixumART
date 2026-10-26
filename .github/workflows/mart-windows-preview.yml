@@ -1,0 +1,58 @@
+name: mart-windows-preview
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/mixum-setup
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: apps/desktop
+        run: npm ci
+
+      - name: Build CLI binaries
+        run: cargo build --release -p mixum-cli --bins
+
+      - name: Stage bundled CLI resources
+        shell: pwsh
+        run: |
+          $res = "apps/desktop/src-tauri/resources"
+          New-Item -ItemType Directory -Force "$res/bin" | Out-Null
+          Copy-Item "target/release/mixum.exe" "$res/bin/mixum.exe"
+          Copy-Item "target/release/mixum-browser-host.exe" "$res/bin/mixum-browser-host.exe"
+          New-Item -ItemType Directory -Force "$res/extensions" | Out-Null
+          Copy-Item -Recurse -Force "extensions/mixum-browser" "$res/extensions/mixum-browser"
+          Remove-Item -Recurse -Force "$res/extensions/mixum-browser/store" -ErrorAction SilentlyContinue
+          Copy-Item "docs/browser-early-access.md" "$res/BROWSER-README.md"
+
+      - name: Build Windows installer
+        working-directory: apps/desktop
+        run: npm run tauri build -- --target x86_64-pc-windows-msvc --bundles nsis
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: mart-windows-x86_64
+          path: |
+            target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+            target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
+          if-no-files-found: error

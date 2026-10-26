@@ -15,7 +15,8 @@ fn data_dir() -> PathBuf {
 
 fn launcher(app: &AppHandle) -> String {
     if let Ok(resources) = app.path().resource_dir() {
-        let bundled = resources.join("bin").join("mixum");
+        let name = if cfg!(target_os = "windows") { "mixum.exe" } else { "mixum" };
+        let bundled = resources.join("bin").join(name);
         if bundled.is_file() {
             return bundled.display().to_string();
         }

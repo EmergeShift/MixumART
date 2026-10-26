@@ -93,7 +93,8 @@ pub fn run() {
             // messaging host on first launch; the extension itself still needs
             // Chrome Web Store or manual Load unpacked (Chrome restriction).
             if let Ok(resources) = app.path().resource_dir() {
-                let cli = resources.join("bin").join("mixum");
+                let cli_name = if cfg!(target_os = "windows") { "mixum.exe" } else { "mixum" };
+                let cli = resources.join("bin").join(cli_name);
                 let extension = resources.join("extensions").join("mixum-browser");
                 if cli.is_file() {
                     let _ = std::process::Command::new(&cli)

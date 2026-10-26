@@ -1,0 +1,11 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "resources": {
+      "resources/bin/mixum.exe": "bin/mixum.exe",
+      "resources/bin/mixum-browser-host.exe": "bin/mixum-browser-host.exe",
+      "resources/extensions/mixum-browser": "extensions/mixum-browser",
+      "resources/BROWSER-README.md": "BROWSER-README.md"
+    }
+  }
+}
