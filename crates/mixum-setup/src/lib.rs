@@ -18,7 +18,7 @@ use toml_edit::{value, Array, DocumentMut, Item, Table};
 pub mod update;
 pub use update::UpdateInfo;
 
-pub const DEFAULT_IMAGE: &str = "ghcr.io/emerge-shift/mixumos:0.1.6";
+pub const DEFAULT_IMAGE: &str = "ghcr.io/emergeshift/mixumos:0.1.6";
 const MCP_SERVER_KEY: &str = "mixum";
 
 #[derive(Debug, Error)]
