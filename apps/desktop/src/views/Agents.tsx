@@ -222,8 +222,10 @@ export function Agents() {
     }
   }
 
+  // 显式传入 env 时按本地环境处理：下拉切换后 agentEnvId 的 setState 尚未提交，
+  // 用 state 判断会把「远程 → 本地」的切换误当成远程目标。
   const refreshAgentStatus = async (env?: AgentEnvironmentInfo) => {
-    if (agentEnvId === REMOTE_TARGET) {
+    if (!env && agentEnvId === REMOTE_TARGET) {
       if (!remoteConnected || !remoteNode) {
         setAgentError('请先连接 gateway 并选择节点')
         return
@@ -670,6 +672,9 @@ export function Agents() {
                     value={remoteNode}
                     onChange={(event) => {
                       const next = event.target.value
+                      // 先推进代次再探测：refreshRemoteStatus 以 `${addr}|${node}` 校验代次，
+                      // 不同步 remoteKeyRef 会让新节点的响应和 agentProbing 复位全被丢弃。
+                      remoteKeyRef.current = `${remoteAddr.trim()}|${next}`
                       setRemoteNode(next)
                       localStorage.setItem('mixum.map.node', next)
                       setAgentRows(null)
