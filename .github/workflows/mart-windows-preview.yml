@@ -40,10 +40,12 @@ jobs:
           $res = "apps/desktop/src-tauri/resources"
           New-Item -ItemType Directory -Force "$res/bin" | Out-Null
           Copy-Item "target/release/mixum.exe" "$res/bin/mixum.exe"
+          $config = @{ bundle = @{ resources = @{ "resources/bin/mixum.exe" = "bin/mixum.exe" } } } | ConvertTo-Json -Depth 5
+          Set-Content -Path "apps/desktop/src-tauri/tauri.release.conf.json" -Value $config
 
       - name: Build Windows installer
         working-directory: apps/desktop
-        run: npm run tauri build -- --target x86_64-pc-windows-msvc --bundles nsis
+        run: npm run tauri build -- --config src-tauri/tauri.release.conf.json --target x86_64-pc-windows-msvc --bundles nsis
 
       - name: Upload installer
         uses: actions/upload-artifact@v4

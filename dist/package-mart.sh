@@ -6,7 +6,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 RES="$ROOT/apps/desktop/src-tauri/resources"
 TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+CONF="$ROOT/apps/desktop/src-tauri/tauri.release.conf.json"
+trap 'rm -rf "$TMP"; rm -f "$CONF"' EXIT
 
 # Resolve a relative CARGO_TARGET_DIR once so cargo and the post-build copy
 # below agree on where the bundle lands (tauri build changes cwd).
@@ -30,8 +31,21 @@ cp -a "$CLI_DIR/share/mixum/extensions/mixum-browser" "$RES/extensions/mixum-bro
 rm -rf "$RES/extensions/mixum-browser/store"
 cp "$ROOT/docs/browser-early-access.md" "$RES/BROWSER-README.md"
 
+cat > "$CONF" <<'JSON'
+{
+  "bundle": {
+    "resources": {
+      "resources/bin/mixum": "bin/mixum",
+      "resources/bin/mixum-browser-host": "bin/mixum-browser-host",
+      "resources/extensions/mixum-browser": "extensions/mixum-browser",
+      "resources/BROWSER-README.md": "BROWSER-README.md"
+    }
+  }
+}
+JSON
+
 cd "$ROOT/apps/desktop"
-npx tauri build "$@"
+npx tauri build --config "$CONF" "$@"
 
 echo "bundled CLI resources were staged in $RES"
 
