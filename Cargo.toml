@@ -11,6 +11,7 @@ members = [
   "crates/mixum-env-map",
   "apps/desktop/src-tauri",
   "crates/mixum-cli",
+  "crates/mixum-setup",
   "crates/mixum-browser",
 ]
 
@@ -36,6 +37,9 @@ dirs = "6"
 clap = { version = "4", features = ["derive"] }
 fs2 = "0.4"
 portable-pty = "0.9"
+toml_edit = "0.22"
+ureq = { version = "2", features = ["json", "tls"] }
+semver = "1"
 
 mixum-env-core = { path = "crates/mixum-env-core" }
 mixum-env-runtime-apple = { path = "crates/mixum-env-runtime-apple" }
@@ -45,3 +49,4 @@ mixum-env-surface = { path = "crates/mixum-env-surface" }
 mixum-env-compositor = { path = "crates/mixum-env-compositor" }
 mixum-env-display = { path = "crates/mixum-env-display" }
 mixum-env-map = { path = "crates/mixum-env-map" }
+mixum-setup = { path = "crates/mixum-setup" }

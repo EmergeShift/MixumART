@@ -34,6 +34,7 @@ mixum env snapshot create SELECTOR [--label LABEL]
 mixum env snapshot restore SELECTOR NODE --yes
 mixum port check PORT
 mixum port list
+mixum setup [--dry-run] [--json]
 mixum desktop
 mixum mcp
 mixum version

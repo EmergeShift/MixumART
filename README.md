@@ -141,6 +141,19 @@ cargo build --release -p mixum-cli
 
 `doctor` prints the data directory, the three backends, their state and the port range. A missing runtime is a **state**, not an error: the CLI tells you what to install or start.
 
+### 1.5 Connect agents with setup
+
+```bash
+./target/release/mixum setup
+# or non-interactive:
+./target/release/mixum setup --lang en --runtime docker --image mixumos:0.1.6 --agent codex
+```
+
+Setup chooses the language, checks or installs the VM runner, selects/pulls a
+mixumOS image, and registers `mixum mcp` with the selected host agents. The same
+flow is available from the desktop **初始化** tab and writes the same
+`setup.json` / `config.json` files. See [Setup](docs/setup.md).
+
 ### 2. Create an environment
 
 ```bash
@@ -315,6 +328,7 @@ MixumART/
 |---|---|
 | [Architecture](docs/architecture.md) | Positioning, division of labor with mixumOS, process model, roadmap |
 | [CLI](docs/cli.md) | Command contract, ports, selectors, JSON, exit codes |
+| [Setup](docs/setup.md) | Language, runtime/image and host agent MCP registration |
 | [Daemon](docs/daemon.md) | `mixum-artd` protocol and methods |
 | [Display](docs/display.md) | B-route compositor, surface/damage, input, Metal, XWayland |
 | [Runtime contract](docs/runtime-contract.md) | Backend semantics, errors, serialization |

@@ -9,6 +9,7 @@ mod agent_install;
 mod commands;
 #[cfg(target_os = "macos")]
 mod macos;
+mod setup_commands;
 mod terminal;
 
 use std::{
@@ -139,6 +140,12 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            setup_commands::setup_plan,
+            setup_commands::setup_apply,
+            setup_commands::setup_install_runner,
+            setup_commands::setup_start_runner,
+            setup_commands::setup_check_update,
+            setup_commands::setup_settings,
             commands::host_info,
             commands::runtime_status,
             commands::list_containers,
