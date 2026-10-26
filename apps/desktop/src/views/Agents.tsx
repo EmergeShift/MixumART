@@ -1,8 +1,19 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { listen } from '@tauri-apps/api/event'
 
 import {
+  agentCatalog,
+  agentEnvironments,
+  agentInstall,
+  agentPrompt,
+  agentRemoteInstall,
+  agentRemoteStatus,
+  agentStatus,
+  connectEnvironment,
   deleteAgentCredential,
   errorText,
+  gatewayNodes,
+  getAgentCredential,
   hasAgentCredential,
   loadAgentProfiles,
   loadEnvironmentConnections,
@@ -10,8 +21,13 @@ import {
   removeAgentProfile,
   saveAgentProfile,
   setAgentCredential,
+  type AgentEnvironmentInfo,
+  type AgentInfo,
+  type AgentInstallEvent,
   type AgentProfile,
+  type AgentStatus,
 } from '../api'
+import type { CommandResult } from '../api'
 import type { ConnectionInfo } from '../types'
 
 const MODES = [
@@ -44,6 +60,8 @@ const CORES = [
 
 const KINDS = ['Codex', 'Claude Code', 'Cursor', '其它 MAP Agent']
 
+const REMOTE_TARGET = '__remote__'
+
 const emptyDraft = (): AgentProfile => ({
   id: crypto.randomUUID(),
   name: '',
@@ -67,6 +85,26 @@ export function Agents() {
   const [launching, setLaunching] = useState<string | null>(null)
   const [launchLines, setLaunchLines] = useState<string[] | null>(null)
   const [launchName, setLaunchName] = useState('')
+  const [agentEnvs, setAgentEnvs] = useState<AgentEnvironmentInfo[]>([])
+  const [agentEnvId, setAgentEnvId] = useState('')
+  const [agentCatalogList, setAgentCatalogList] = useState<AgentInfo[]>([])
+  const [agentRows, setAgentRows] = useState<AgentStatus[] | null>(null)
+  const [agentProbing, setAgentProbing] = useState(false)
+  const [agentInstalling, setAgentInstalling] = useState<string | null>(null)
+  const [agentLines, setAgentLines] = useState<string[] | null>(null)
+  const [agentInstallName, setAgentInstallName] = useState('')
+  const [agentError, setAgentError] = useState<string | null>(null)
+  const [copiedAgent, setCopiedAgent] = useState<string | null>(null)
+  const [promptFallback, setPromptFallback] = useState<{ name: string; text: string } | null>(null)
+  const [remoteAddr, setRemoteAddr] = useState(() => localStorage.getItem('mixum.map.addr') ?? '')
+  const [remoteFp, setRemoteFp] = useState(() => localStorage.getItem('mixum.map.fp') ?? '')
+  const [remoteNode, setRemoteNode] = useState(() => localStorage.getItem('mixum.map.node') ?? '')
+  const [remoteToken, setRemoteToken] = useState('')
+  const [remoteNodes, setRemoteNodes] = useState<string[]>([])
+  const [remoteBusy, setRemoteBusy] = useState(false)
+  const [remoteConnected, setRemoteConnected] = useState(false)
+  const [agentInstallState, setAgentInstallState] = useState<string | null>(null)
+  const installIdRef = useRef<string | null>(null)
 
   const load = async () => {
     setError(null)
@@ -78,12 +116,352 @@ export function Agents() {
     }
   }
 
+  const ensureAgentConnection = async (env: AgentEnvironmentInfo) => {
+    if (connections[env.id]) return connections[env.id]
+    const connection = await connectEnvironment(env.kind, env.id, env.addr)
+    setConnections((previous) => ({ ...previous, [env.id]: connection }))
+    return connection
+  }
+
+  const remoteAddrRef = useRef(remoteAddr)
+  const remoteKeyRef = useRef(`${remoteAddr}|${remoteNode}`)
+  const agentEnvRef = useRef(agentEnvId)
+  const prevRemoteAddr = useRef(remoteAddr)
+
+  useEffect(() => {
+    remoteAddrRef.current = remoteAddr
+    if (prevRemoteAddr.current === remoteAddr) return
+    prevRemoteAddr.current = remoteAddr
+    // 换 gateway 必须清掉旧 bearer token/指纹/节点与安装结果,避免把 A 的凭据
+    // 发到 B,也避免旧地址的异步响应回写到新地址。
+    remoteKeyRef.current = `${remoteAddr}|`
+    setRemoteToken('')
+    setRemoteFp('')
+    setRemoteNode('')
+    setRemoteNodes([])
+    setRemoteConnected(false)
+    setRemoteBusy(false)
+    setAgentProbing(false)
+    setAgentRows(null)
+    setAgentLines(null)
+    setAgentError(null)
+    setAgentInstalling(null)
+    setAgentInstallName('')
+    setAgentInstallState(null)
+    installIdRef.current = null
+    localStorage.removeItem('mixum.map.node')
+    localStorage.removeItem('mixum.map.fp')
+  }, [remoteAddr])
+
+  const isRemote = agentEnvId === REMOTE_TARGET
+
+  const refreshRemoteStatus = async (
+    addr: string,
+    token: string,
+    node: string,
+    fingerprint: string,
+  ) => {
+    const key = `${addr.trim()}|${node}`
+    setAgentProbing(true)
+    setAgentError(null)
+    try {
+      const rows = await agentRemoteStatus(
+        addr.trim(),
+        token.trim(),
+        node,
+        fingerprint.trim() || undefined,
+      )
+      if (remoteKeyRef.current === key) setAgentRows(rows)
+    } catch (err) {
+      if (remoteKeyRef.current === key) {
+        setAgentError(errorText(err))
+        setAgentRows(null)
+      }
+    } finally {
+      if (remoteKeyRef.current === key) setAgentProbing(false)
+    }
+  }
+
+  const connectRemote = async () => {
+    const addr = remoteAddr.trim()
+    const token = remoteToken.trim()
+    const fingerprint = remoteFp.trim()
+    if (!addr || !token) {
+      setAgentError('请填写远程 gateway 地址和访问令牌')
+      return
+    }
+    let key = `${addr}|${remoteNode}`
+    setRemoteBusy(true)
+    setAgentError(null)
+    try {
+      const nodes = await gatewayNodes(addr, token, fingerprint || undefined)
+      if (remoteAddrRef.current !== addr) return
+      setRemoteNodes(nodes)
+      const next = nodes.includes(remoteNode) ? remoteNode : (nodes[0] ?? '')
+      key = `${addr}|${next}`
+      remoteKeyRef.current = key
+      setRemoteNode(next)
+      setRemoteConnected(true)
+      localStorage.setItem('mixum.map.addr', addr)
+      if (fingerprint) localStorage.setItem('mixum.map.fp', fingerprint)
+      else localStorage.removeItem('mixum.map.fp')
+      if (next) {
+        localStorage.setItem('mixum.map.node', next)
+        await refreshRemoteStatus(addr, token, next, fingerprint)
+      } else {
+        setAgentRows(null)
+        setAgentError('gateway 上没有在线节点')
+      }
+    } catch (err) {
+      if (remoteKeyRef.current === key) {
+        setAgentError(errorText(err))
+        setRemoteConnected(false)
+      }
+    } finally {
+      if (remoteKeyRef.current === key) setRemoteBusy(false)
+    }
+  }
+
+  // 显式传入 env 时按本地环境处理：下拉切换后 agentEnvId 的 setState 尚未提交，
+  // 用 state 判断会把「远程 → 本地」的切换误当成远程目标。
+  const refreshAgentStatus = async (env?: AgentEnvironmentInfo) => {
+    if (!env && agentEnvId === REMOTE_TARGET) {
+      if (!remoteConnected || !remoteNode) {
+        setAgentError('请先连接 gateway 并选择节点')
+        return
+      }
+      await refreshRemoteStatus(remoteAddr, remoteToken, remoteNode, remoteFp)
+      return
+    }
+    const target = env ?? agentEnvs.find((item) => item.id === agentEnvId)
+    if (!target) return
+    const envId = target.id
+    // 首次自动探测时 agentEnvId 还没写入 state；同步 ref，finally 才能复位。
+    agentEnvRef.current = envId
+    setAgentProbing(true)
+    setAgentError(null)
+    try {
+      await ensureAgentConnection(target)
+      const rows = await agentStatus(envId)
+      if (agentEnvRef.current === envId) setAgentRows(rows)
+    } catch (err) {
+      if (agentEnvRef.current === envId) {
+        setAgentError(errorText(err))
+        setAgentRows(null)
+      }
+    } finally {
+      if (agentEnvRef.current === envId) setAgentProbing(false)
+    }
+  }
+
+  const installErrorText = (result: CommandResult) =>
+    result.error?.trim() ||
+    [...result.lines]
+      .reverse()
+      .find((line) => line.startsWith('错误：'))
+      ?.replace('错误：', '')
+      .trim() ||
+    ''
+
+  const applyInstallResult = (result: CommandResult) => {
+    setAgentInstallState(result.state)
+    setAgentLines((previous) => {
+      const merged = [...(previous ?? [])]
+      for (const line of result.lines) {
+        if (!merged.includes(line)) merged.push(line)
+      }
+      const stateLine = `[${result.state}]`
+      if (!merged.includes(stateLine)) merged.push(stateLine)
+      return merged
+    })
+    if (result.error) setAgentError(result.error)
+  }
+
+  const installAgent = async (name: string) => {
+    if (agentEnvId === REMOTE_TARGET) {
+      if (!remoteConnected || !remoteNode) {
+        setAgentError('请先连接 gateway 并选择节点')
+        return
+      }
+      if (
+        !window.confirm(
+          `在远程节点「${remoteNode}」安装 ${name}？
+
+安装会在节点里联网下载，可能需要几分钟；完成后提示词写入 ~/.mixum/agents/${name}/PROMPT.md。`,
+        )
+      ) {
+        return
+      }
+      const label = `${remoteAddr} · ${remoteNode}`
+      const installId = crypto.randomUUID()
+      const installKey = `${remoteAddr.trim()}|${remoteNode}`
+      installIdRef.current = installId
+      setAgentInstalling(name)
+      setAgentInstallName(label)
+      setAgentInstallState(null)
+      setAgentError(null)
+      setAgentLines([`[安装] ${name} → ${label}`, '日志会实时显示；完成后自动刷新状态。'])
+      try {
+        const result = await agentRemoteInstall(
+          remoteAddr.trim(),
+          remoteToken.trim(),
+          remoteNode,
+          name,
+          remoteFp.trim() || undefined,
+          installId,
+        )
+        if (
+          installIdRef.current !== installId ||
+          remoteKeyRef.current !== installKey
+        ) {
+          return
+        }
+        applyInstallResult(result)
+        if (result.state !== 'completed') {
+          setAgentError(installErrorText(result) || `安装未完成（${result.state}）`)
+        } else {
+          await refreshRemoteStatus(remoteAddr, remoteToken, remoteNode, remoteFp)
+        }
+      } catch (err) {
+        if (installIdRef.current === installId) {
+          setAgentLines((previous) => [...(previous ?? []), '[failed]'])
+          setAgentError(errorText(err))
+        }
+      } finally {
+        if (installIdRef.current === installId) {
+          installIdRef.current = null
+          setAgentInstalling(null)
+        }
+      }
+      return
+    }
+    const target = agentEnvs.find((item) => item.id === agentEnvId)
+    if (!target) {
+      setAgentError('请先选择一个运行中的环境')
+      return
+    }
+    if (
+      !window.confirm(
+        `在「${target.name}」内安装 ${name}？\n\n安装会联网下载，可能需要几分钟；完成后提示词写入 ~/.mixum/agents/${name}/PROMPT.md。`,
+      )
+    ) {
+      return
+    }
+    const installId = crypto.randomUUID()
+    const envId = target.id
+    installIdRef.current = installId
+    setAgentInstalling(name)
+    setAgentInstallName(target.name)
+    setAgentInstallState(null)
+    setAgentError(null)
+    setAgentLines([`[安装] ${name} → ${target.name}`, `环境: ${target.addr}`, '日志会实时显示；完成后自动刷新状态。'])
+    try {
+      await ensureAgentConnection(target)
+      const result = await agentInstall(target.id, name, installId)
+      if (
+        installIdRef.current !== installId ||
+        agentEnvRef.current !== envId
+      ) {
+        return
+      }
+      applyInstallResult(result)
+      if (result.state !== 'completed') {
+        setAgentError(installErrorText(result) || `安装未完成（${result.state}）`)
+      } else {
+        await refreshAgentStatus(target)
+      }
+    } catch (err) {
+      if (installIdRef.current === installId) {
+        setAgentLines((previous) => [...(previous ?? []), '[failed]'])
+        setAgentError(errorText(err))
+      }
+    } finally {
+      if (installIdRef.current === installId) {
+        installIdRef.current = null
+        setAgentInstalling(null)
+      }
+    }
+  }
+
+  const copyAgentPrompt = async (name: string) => {
+    try {
+      const text = await agentPrompt(name)
+      let copied = false
+      try {
+        await navigator.clipboard.writeText(text)
+        copied = true
+      } catch {
+        const area = document.createElement('textarea')
+        area.value = text
+        document.body.appendChild(area)
+        area.select()
+        copied = document.execCommand('copy')
+        area.remove()
+      }
+      if (!copied) {
+        setPromptFallback({ name, text })
+        return
+      }
+      setPromptFallback(null)
+      setCopiedAgent(name)
+      window.setTimeout(
+        () => setCopiedAgent((current) => (current === name ? null : current)),
+        2000,
+      )
+    } catch (err) {
+      setAgentError(errorText(err))
+    }
+  }
+
   useEffect(() => {
     void load()
     void loadEnvironmentConnections()
       .then(setConnections)
       .catch((err: unknown) => setError(errorText(err)))
+    void agentCatalog()
+      .then(setAgentCatalogList)
+      .catch((err: unknown) => setAgentError(errorText(err)))
+    void agentEnvironments()
+      .then((environments) => {
+        setAgentEnvs(environments)
+        const first = environments[0]
+        setAgentEnvId((current) => current || first?.id || REMOTE_TARGET)
+        if (first) void refreshAgentStatus(first)
+      })
+      .catch((err: unknown) => setAgentError(errorText(err)))
   }, [])
+
+  useEffect(() => {
+    const savedAddr = localStorage.getItem('mixum.map.addr')
+    if (!savedAddr) return
+    void getAgentCredential(`gateway-device:${savedAddr}`)
+      .then((saved) => {
+        if (saved) setRemoteToken((current) => current || saved)
+      })
+      .catch(() => undefined)
+  }, [])
+
+  useEffect(() => {
+    let dispose: (() => void) | undefined
+    listen<AgentInstallEvent>('agent-install', (event) => {
+      const payload = event.payload
+      if (!payload.installId || payload.installId !== installIdRef.current) return
+      if (payload.kind === 'log' && payload.line) {
+        setAgentLines((previous) => [...(previous ?? []), payload.line as string])
+        return
+      }
+      if (payload.kind === 'state') {
+        setAgentInstallState(payload.state ?? null)
+        if (payload.message) setAgentError(payload.message)
+      }
+    })
+      .then((unlisten) => {
+        dispose = unlisten
+      })
+      .catch(() => undefined)
+    return () => dispose?.()
+  }, [])
+
 
   const save = async () => {
     if (!editing) return
@@ -195,6 +573,221 @@ export function Agents() {
             </article>
           ))}
         </div>
+      </section>
+
+      <section>
+        <div className="section-head">
+          <div>
+            <h2>环境内一键安装</h2>
+            <p>
+              在运行中的 mixumOS 环境里安装主流 Agent；安装脚本在环境内执行，提示词写到{' '}
+              <span className="mono">{'~/.mixum/agents/<name>/PROMPT.md'}</span>。
+              也可以只复制提示词，挂到任意外部 Agent 上。
+            </p>
+          </div>
+        </div>
+        {agentError && <div className="error">{agentError}</div>}
+        <div className="chips" style={{ alignItems: 'flex-end' }}>
+          <div className="field">
+            <label htmlFor="agent-env">目标环境</label>
+            <select
+              id="agent-env"
+              value={agentEnvId}
+              onChange={(event) => {
+                const value = event.target.value
+                setAgentEnvId(value)
+                setAgentRows(null)
+                setAgentError(null)
+                setAgentLines(null)
+                setAgentInstalling(null)
+                setAgentInstallName('')
+                setAgentInstallState(null)
+                installIdRef.current = null
+                if (value !== REMOTE_TARGET) {
+                  const next = agentEnvs.find((item) => item.id === value)
+                  if (next) void refreshAgentStatus(next)
+                }
+              }}
+              disabled={agentProbing || !!agentInstalling || remoteBusy}
+            >
+              {agentEnvs.map((env) => (
+                <option key={env.id} value={env.id}>
+                  {env.name} · {env.addr}
+                </option>
+              ))}
+              <option value={REMOTE_TARGET}>远程节点（gateway）</option>
+            </select>
+          </div>
+          {isRemote && (
+            <>
+              <div className="field">
+                <label htmlFor="agent-remote-addr">Gateway 地址</label>
+                <input
+                  id="agent-remote-addr"
+                  className="mono"
+                  value={remoteAddr}
+                  onChange={(event) => {
+                    remoteAddrRef.current = event.target.value
+                    setRemoteAddr(event.target.value)
+                  }}
+                  placeholder="127.0.0.1:17701"
+                  spellCheck={false}
+                />
+              </div>
+              <div className="field">
+                <label htmlFor="agent-remote-token">访问令牌</label>
+                <input
+                  id="agent-remote-token"
+                  className="mono"
+                  type="password"
+                  value={remoteToken}
+                  onChange={(event) => setRemoteToken(event.target.value)}
+                  placeholder="map1.…（也支持已配对设备令牌）"
+                  spellCheck={false}
+                />
+              </div>
+              <div className="field">
+                <label htmlFor="agent-remote-fp">证书指纹（可选）</label>
+                <input
+                  id="agent-remote-fp"
+                  className="mono"
+                  value={remoteFp}
+                  onChange={(event) => setRemoteFp(event.target.value)}
+                  placeholder="首次连接可留空"
+                  spellCheck={false}
+                />
+              </div>
+              <button
+                className="ghost"
+                onClick={() => void connectRemote()}
+                disabled={remoteBusy || agentProbing || !!agentInstalling}
+              >
+                {remoteBusy ? '连接中…' : '连接并刷新节点'}
+              </button>
+              {remoteNodes.length > 0 && (
+                <div className="field">
+                  <label htmlFor="agent-remote-node">节点</label>
+                  <select
+                    id="agent-remote-node"
+                    value={remoteNode}
+                    onChange={(event) => {
+                      const next = event.target.value
+                      // 先推进代次再探测：refreshRemoteStatus 以 `${addr}|${node}` 校验代次，
+                      // 不同步 remoteKeyRef 会让新节点的响应和 agentProbing 复位全被丢弃。
+                      remoteKeyRef.current = `${remoteAddr.trim()}|${next}`
+                      setRemoteNode(next)
+                      localStorage.setItem('mixum.map.node', next)
+                      setAgentRows(null)
+                      if (remoteConnected && remoteToken.trim()) {
+                        void refreshRemoteStatus(remoteAddr, remoteToken, next, remoteFp)
+                      }
+                    }}
+                    disabled={agentProbing || !!agentInstalling}
+                  >
+                    {remoteNodes.map((name) => (
+                      <option key={name} value={name}>
+                        {name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+            </>
+          )}
+          <button
+            className="ghost"
+            onClick={() => void refreshAgentStatus()}
+            disabled={agentProbing || !!agentInstalling || !agentEnvId}
+          >
+            {agentProbing ? '探测中…' : '刷新安装状态'}
+          </button>
+        </div>
+        {agentEnvs.length === 0 && !isRemote && (
+          <p className="mode-note">
+            没有运行中的 mixumOS 环境。可以先选择「远程节点（gateway）」，或到「环境」页启动一个环境。
+          </p>
+        )}
+        {isRemote && (
+          <p className="mode-note">
+            远程安装通过 gateway 路由到节点，需要 task.run 权限；配对设备令牌权限不足时请粘贴用户/Admin 令牌。
+          </p>
+        )}
+        <div className="table-scroll">
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>Agent</th>
+                    <th>说明</th>
+                    <th>状态</th>
+                    <th />
+                  </tr>
+                </thead>
+                <tbody>
+                  {(agentRows ??
+                    agentCatalogList.map((agent) => ({ ...agent, installed: false }))
+                  ).map((row) => (
+                    <tr key={row.name}>
+                      <td className="mono">{row.name}</td>
+                      <td>{row.summary}</td>
+                      <td>{agentRows ? (row.installed ? '已安装' : '未安装') : '未知'}</td>
+                      <td className="row-actions">
+                        <button
+                          className="ghost"
+                          onClick={() => void copyAgentPrompt(row.name)}
+                        >
+                          {copiedAgent === row.name ? '已复制' : '复制提示词'}
+                        </button>
+                        <button
+                          className="ghost"
+                          onClick={() => void installAgent(row.name)}
+                          disabled={!!agentInstalling || row.installed}
+                        >
+                          {agentInstalling === row.name ? '安装中…' : '安装'}
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <p className="mode-note">
+              安装会联网下载，日志实时显示，完成后自动刷新状态。任务在环境内执行，
+              受快照、隔离与权限审批约束。
+            </p>
+            {promptFallback && (
+              <section className="connect-panel" aria-label="Agent 提示词">
+                <div className="section-head">
+                  <div>
+                    <h3>{promptFallback.name} · 提示词</h3>
+                    <p>系统拒绝自动写入剪贴板，请全选手动复制。</p>
+                  </div>
+                  <button className="ghost" onClick={() => setPromptFallback(null)}>
+                    关闭
+                  </button>
+                </div>
+                <textarea
+                  className="mono"
+                  readOnly
+                  rows={8}
+                  style={{ width: '100%', resize: 'vertical' }}
+                  value={promptFallback.text}
+                />
+              </section>
+            )}
+            {agentLines && (
+              <section className="connect-panel terminal-panel" aria-label="Agent 安装输出">
+                <div className="section-head">
+                  <div>
+                    <h3>{agentInstallName || '环境'} · 安装输出{agentInstallState ? ` · ${agentInstallState}` : ''}</h3>
+                    <p>关闭不会终止已提交的安装任务。</p>
+                  </div>
+                  <button className="ghost" onClick={() => setAgentLines(null)}>
+                    关闭
+                  </button>
+                </div>
+                <pre className="terminal-output">{agentLines.join('\n')}</pre>
+              </section>
+            )}
       </section>
 
       <section>

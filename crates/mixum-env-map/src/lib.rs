@@ -589,6 +589,12 @@ impl MapClient {
         Ok(())
     }
 
+    /// Fetch a task snapshot (`task.get`), used as a completion fallback when a
+    /// very fast task's state event races the event subscription.
+    pub async fn task_get(&self, id: &str) -> Result<Value, MapError> {
+        Ok(self.call("task.get", json!({ "id": id })).await?.payload)
+    }
+
     /// Run a command through agentd's shell task driver; returns the task id.
     pub async fn submit_shell_task(&self, command: &str) -> Result<String, MapError> {
         let reply = self

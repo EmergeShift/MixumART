@@ -5,6 +5,7 @@
 //! - 命令实现 → `commands.rs`
 //! - 界面 → `apps/desktop/src`
 
+mod agent_install;
 mod commands;
 #[cfg(target_os = "macos")]
 mod macos;
@@ -19,12 +20,23 @@ use mixum_env_core::{BackendRegistry, RuntimeKind};
 use mixum_env_surface::InputEvent;
 use tauri::Manager;
 
+/// 远程节点上一条等待批准的 root 请求；凭据只留在后端，事件里只发 approvalId。
+#[derive(Clone)]
+pub struct RemotePrivilegeTarget {
+    pub addr: String,
+    pub token: String,
+    pub fingerprint: Option<String>,
+    pub node: Option<String>,
+    pub request_id: String,
+}
+
 /// 全局状态：后端注册表 + 每个 surface 窗口的输入/关闭通道。
 pub struct AppState {
     pub registry: Arc<BackendRegistry>,
     pub surface_inputs: Mutex<HashMap<u32, tokio::sync::mpsc::UnboundedSender<InputEvent>>>,
     pub surface_closes: Mutex<HashMap<u32, tokio::sync::oneshot::Sender<()>>>,
     pub surface_clients: Mutex<HashMap<u32, Arc<mixum_env_map::MapClient>>>,
+    pub remote_privileges: Mutex<HashMap<String, RemotePrivilegeTarget>>,
     pub terminals: crate::terminal::TerminalManager,
     #[cfg(target_os = "macos")]
     pub native_surfaces: Mutex<HashMap<u32, usize>>,
@@ -37,6 +49,7 @@ impl AppState {
             surface_inputs: Mutex::new(HashMap::new()),
             surface_closes: Mutex::new(HashMap::new()),
             surface_clients: Mutex::new(HashMap::new()),
+            remote_privileges: Mutex::new(HashMap::new()),
             terminals: crate::terminal::TerminalManager::default(),
             #[cfg(target_os = "macos")]
             native_surfaces: Mutex::new(HashMap::new()),
@@ -137,6 +150,13 @@ pub fn run() {
             commands::load_agent_profiles,
             commands::save_agent_profile,
             commands::remove_agent_profile,
+            agent_install::agent_catalog,
+            agent_install::agent_prompt,
+            agent_install::agent_environments,
+            agent_install::agent_status,
+            agent_install::agent_install,
+            agent_install::agent_remote_status,
+            agent_install::agent_remote_install,
             commands::runtime_disk_usage,
             commands::runtime_logs,
             commands::runtime_prune,
@@ -165,6 +185,7 @@ pub fn run() {
             commands::environment_migrate_new,
             commands::environment_run_command,
             commands::environment_privilege_decide,
+            commands::remote_privilege_decide,
             commands::list_approvals,
             commands::list_pending_privileges,
             commands::approve_root_approval,

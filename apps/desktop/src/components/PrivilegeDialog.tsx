@@ -1,6 +1,6 @@
 import { useState } from 'react'
 
-import { decidePrivilege, errorText } from '../api'
+import { decidePrivilege, decideRemotePrivilege, errorText } from '../api'
 
 export type PrivilegeRequest = {
   id: string
@@ -12,9 +12,17 @@ export type PrivilegeRequest = {
   risk?: string
 }
 
+export type RemotePrivilegeTarget = {
+  approvalId: string
+  addr: string
+  node?: string | null
+  fingerprint?: string | null
+}
+
 export type PrivilegeEvent = {
   containerId: string
   request: PrivilegeRequest
+  remote?: RemotePrivilegeTarget
 }
 
 export function PrivilegeDialog({
@@ -34,7 +42,10 @@ export function PrivilegeDialog({
     setBusy(true)
     setError(null)
     try {
-      await decidePrivilege(event.containerId, request.id, approve, '')
+      const decided = event.remote
+        ? decideRemotePrivilege(event.remote.approvalId, approve, '')
+        : decidePrivilege(event.containerId, request.id, approve, '')
+      await decided
       onClose()
     } catch (err) {
       setError(errorText(err))
@@ -56,10 +67,18 @@ export function PrivilegeDialog({
           </button>
         </div>
         <p className="privilege-note">
-          只有这一条命令会以 root 执行；不会给 Agent 一个 root shell。批准前请按系统提示完成密码/生物识别。
+          {event.remote
+            ? '只有这一条命令会在远程节点以 root 执行；凭据不会随事件发送，批准前请确认目标节点可信。'
+            : '只有这一条命令会以 root 执行；不会给 Agent 一个 root shell。批准前请按系统提示完成密码/生物识别。'}
         </p>
         <pre className="privilege-command">{command}</pre>
         <dl className="privilege-meta">
+          {event.remote && (
+            <div>
+              <dt>目标</dt>
+              <dd>远程节点 {event.remote.node || '-'} · {event.remote.addr}</dd>
+            </div>
+          )}
           <div><dt>工作目录</dt><dd>{request.cwd || '-'}</dd></div>
           <div><dt>任务</dt><dd>{request.taskId || '-'}</dd></div>
           <div><dt>Agent 理由</dt><dd>{request.reason || '-'}</dd></div>
@@ -70,7 +89,7 @@ export function PrivilegeDialog({
             拒绝
           </button>
           <button type="button" className="btn primary" onClick={() => void decide(true)} disabled={busy}>
-            {busy ? '等待系统认证…' : '批准一次'}
+            {busy ? (event.remote ? '提交审批…' : '等待系统认证…') : '批准一次'}
           </button>
         </div>
       </div>

@@ -82,6 +82,15 @@ export const decidePrivilege = (
     ? demoDelay(undefined)
     : invoke<void>('environment_privilege_decide', { containerId, id, approve, reason })
 
+export const decideRemotePrivilege = (
+  approvalId: string,
+  approve: boolean,
+  reason = '',
+) =>
+  isDemo()
+    ? demoDelay(undefined)
+    : invoke<void>('remote_privilege_decide', { approvalId, approve, reason })
+
 export const snapshotTree = (containerId: string) =>
   isDemo()
     ? demoDelay({ head: 'demo', branch: 'main', nodes: [] })
@@ -236,6 +245,123 @@ export const saveAgentProfile = (profile: AgentProfile) =>
 
 export const removeAgentProfile = (id: string) =>
   isDemo() ? demoDelay(undefined) : invoke<void>('remove_agent_profile', { id })
+
+export type AgentInfo = {
+  name: string
+  summary: string
+}
+
+export type AgentStatus = AgentInfo & {
+  installed: boolean
+}
+
+export type AgentEnvironmentInfo = {
+  id: string
+  name: string
+  kind: RuntimeKind
+  addr: string
+}
+
+const DEMO_AGENTS: AgentInfo[] = [
+  { name: 'claude-code', summary: 'Anthropic Claude Code（npm 官方包）' },
+  { name: 'codex', summary: 'OpenAI Codex CLI（npm 官方包）' },
+  { name: 'gemini-cli', summary: 'Google Gemini CLI（npm 官方包）' },
+  { name: 'opencode', summary: 'OpenCode（官方安装脚本）' },
+]
+
+const demoAgentEnvironments = (): AgentEnvironmentInfo[] =>
+  demoContainers
+    .filter((container) => container.image.toLowerCase().includes('mixumos') && container.state === 'running')
+    .map((container) => {
+      const port = container.ports.find((item) => item.container === 7601) ?? container.ports[0]
+      return {
+        id: container.id,
+        name: container.name,
+        kind: 'apple_container' as const,
+        addr: port ? `127.0.0.1:${port.host}` : '127.0.0.1:7601',
+      }
+    })
+
+export const agentCatalog = () =>
+  isDemo() ? demoDelay(DEMO_AGENTS) : invoke<AgentInfo[]>('agent_catalog')
+
+export const agentPrompt = (name: string) =>
+  isDemo()
+    ? demoDelay(
+        `你正在 mixumOS 容器内工作（由 mixumOS 管理，agent 名称：${name}）。\n任务：{{instruction}}`,
+      )
+    : invoke<string>('agent_prompt', { name })
+
+export const agentEnvironments = () =>
+  isDemo()
+    ? demoDelay(demoAgentEnvironments())
+    : invoke<AgentEnvironmentInfo[]>('agent_environments')
+
+export const agentStatus = (containerId: string) =>
+  isDemo()
+    ? demoDelay(DEMO_AGENTS.map((agent) => ({ ...agent, installed: false })))
+    : invoke<AgentStatus[]>('agent_status', { containerId })
+
+export type AgentInstallEvent = {
+  installId: string
+  kind: 'log' | 'state'
+  line?: string | null
+  state?: string | null
+  message?: string | null
+}
+
+export const agentInstall = (containerId: string, name: string, installId?: string) =>
+  isDemo()
+    ? demoDelay<CommandResult>({
+        taskId: 'demo',
+        state: 'completed',
+        lines: [`[演示] 已安装 ${name}，提示词写入 ~/.mixum/agents/${name}/PROMPT.md`],
+        error: null,
+      })
+    : invoke<CommandResult>('agent_install', {
+        containerId,
+        name,
+        installId: installId ?? null,
+      })
+
+export const agentRemoteStatus = (
+  addr: string,
+  token: string,
+  node: string,
+  fingerprint?: string,
+) =>
+  isDemo()
+    ? demoDelay(DEMO_AGENTS.map((agent) => ({ ...agent, installed: false })))
+    : invoke<AgentStatus[]>('agent_remote_status', {
+        addr,
+        token,
+        node,
+        fingerprint: fingerprint || null,
+      })
+
+export const agentRemoteInstall = (
+  addr: string,
+  token: string,
+  node: string,
+  name: string,
+  fingerprint?: string,
+  installId?: string,
+) =>
+  isDemo()
+    ? demoDelay<CommandResult>({
+        taskId: 'demo',
+        state: 'completed',
+        lines: [`[演示] 已在远程节点 ${node} 安装 ${name}`],
+        error: null,
+      })
+    : invoke<CommandResult>('agent_remote_install', {
+        addr,
+        token,
+        node,
+        name,
+        fingerprint: fingerprint || null,
+        installId: installId ?? null,
+      })
 
 export const runtimeImages = (kind: RuntimeKind) =>
   isDemo()

@@ -19,7 +19,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tauri::State;
 
-use crate::AppState;
+use crate::{AppState, RemotePrivilegeTarget};
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1110,42 +1110,200 @@ pub async fn environment_run_command(
     container_id: String,
     command: String,
 ) -> Result<CommandResult, String> {
-    let connection = connection_for(&app, &container_id)?;
-    let client = MapClient::connect(
+    run_environment_script(&app, &container_id, &command, Duration::from_secs(600), None).await
+}
+
+/// 在连接档案对应的环境里提交一次 shell 任务并等待终态。
+/// 普通命令与 Agent 一键安装共用这条路径（事件、权限审批转发一致）。
+pub(crate) async fn run_environment_script(
+    app: &AppHandle,
+    container_id: &str,
+    script: &str,
+    timeout: Duration,
+    install_id: Option<&str>,
+) -> Result<CommandResult, String> {
+    let connection = connection_for(app, container_id)?;
+    run_map_script(
+        app,
         &connection.addr,
         &connection.token,
         connection.fingerprint.as_deref(),
+        None,
+        script,
+        timeout,
+        Some(container_id),
+        install_id,
     )
     .await
-    .map_err(|error| error.to_string())?;
+}
+
+fn last_error_line(lines: &[String]) -> Option<String> {
+    lines
+        .iter()
+        .rev()
+        .find_map(|line| line.strip_prefix("错误：").map(|text| text.trim().to_owned()))
+}
+
+/// 一次远程脚本结束时清掉没被使用的待审批凭据（任务完成/超时/取消都会走到）。
+struct RemotePrivilegeCleanup {
+    app: AppHandle,
+    keys: Vec<String>,
+}
+
+impl Drop for RemotePrivilegeCleanup {
+    fn drop(&mut self) {
+        if self.keys.is_empty() {
+            return;
+        }
+        if let Some(state) = self.app.try_state::<AppState>() {
+            if let Ok(mut pending) = state.remote_privileges.lock() {
+                for key in &self.keys {
+                    pending.remove(key);
+                }
+            }
+        }
+    }
+}
+
+/// 直连环境或经 gateway 路由的远程节点共用：提交 shell 任务并等待终态。
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn run_map_script(
+    app: &AppHandle,
+    addr: &str,
+    token: &str,
+    fingerprint: Option<&str>,
+    node: Option<&str>,
+    script: &str,
+    timeout: Duration,
+    container_id: Option<&str>,
+    install_id: Option<&str>,
+) -> Result<CommandResult, String> {
+    let client = MapClient::connect(addr, token, fingerprint)
+        .await
+        .map_err(|error| error.to_string())?;
+    client.set_node(node.map(ToOwned::to_owned));
     let mut events = client.events();
     client
         .subscribe_task_events()
         .await
         .map_err(|error| error.to_string())?;
+    // 极快的任务可能在节点事件泵就绪前完成；留出一个调度窗口。
+    tokio::time::sleep(Duration::from_millis(100)).await;
     let task_id = client
-        .submit_shell_task(&command)
+        .submit_shell_task(script)
         .await
         .map_err(|error| error.to_string())?;
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(600);
+    let deadline = tokio::time::Instant::now() + timeout;
     let mut lines = Vec::new();
+    let mut privilege_seq = 0u64;
+    let mut remote_cleanup = RemotePrivilegeCleanup {
+        app: app.clone(),
+        keys: Vec::new(),
+    };
+    let emit_install = |kind: &str, line: Option<&str>, state: Option<&str>, message: Option<&str>| {
+        if let Some(install_id) = install_id {
+            let _ = app.emit(
+                "agent-install",
+                serde_json::json!({
+                    "installId": install_id,
+                    "kind": kind,
+                    "line": line,
+                    "state": state,
+                    "message": message,
+                }),
+            );
+        }
+    };
     loop {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining.is_zero() {
             return Err(format!("命令执行超时，任务 {task_id} 仍在运行"));
         }
-        let event = tokio::time::timeout(remaining, events.recv())
-            .await
-            .map_err(|_| format!("命令执行超时，任务 {task_id} 仍在运行"))?
-            .map_err(|error| format!("事件通道关闭：{error}"))?;
+        let poll = remaining.min(Duration::from_millis(1000));
+        let event = match tokio::time::timeout(poll, events.recv()).await {
+            Ok(event) => event.map_err(|error| format!("事件通道关闭：{error}"))?,
+            Err(_) => {
+                // 1s 内没有事件：用 task.get 兜底，避免快速任务的 state 事件丢失。
+                if let Ok(payload) = client.task_get(&task_id).await {
+                    let state = payload
+                        .get("state")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    if state == "completed" {
+                        emit_install("state", None, Some("completed"), None);
+                        return Ok(CommandResult {
+                            task_id,
+                            state: "completed".into(),
+                            lines,
+                            error: None,
+                        });
+                    }
+                    if state == "failed" || state == "canceled" {
+                        let error = payload
+                            .get("error")
+                            .and_then(Value::as_str)
+                            .map(ToOwned::to_owned)
+                            .or_else(|| last_error_line(&lines));
+                        emit_install("state", None, Some(state), error.as_deref());
+                        return Ok(CommandResult {
+                            task_id,
+                            state: state.to_owned(),
+                            lines,
+                            error,
+                        });
+                    }
+                }
+                continue;
+            }
+        };
         if event.op == "privilege.request" {
-            let _ = app.emit(
-                "privilege-request",
-                serde_json::json!({
-                    "containerId": container_id,
-                    "request": event.payload,
-                }),
-            );
+            if let Some(container_id) = container_id {
+                let _ = app.emit(
+                    "privilege-request",
+                    serde_json::json!({
+                        "containerId": container_id,
+                        "request": event.payload,
+                    }),
+                );
+            } else {
+                // 远程节点：凭据只留在后端，前端拿 approvalId 回来决策。
+                let request_id = event
+                    .payload
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let approval_id =
+                    format!("{addr}|{}|{request_id}|{privilege_seq}", node.unwrap_or(""));
+                privilege_seq += 1;
+                if let Some(state) = app.try_state::<AppState>() {
+                    if let Ok(mut pending) = state.remote_privileges.lock() {
+                        pending.insert(
+                            approval_id.clone(),
+                            RemotePrivilegeTarget {
+                                addr: addr.to_owned(),
+                                token: token.to_owned(),
+                                fingerprint: fingerprint.map(ToOwned::to_owned),
+                                node: node.map(ToOwned::to_owned),
+                                request_id: request_id.to_owned(),
+                            },
+                        );
+                        remote_cleanup.keys.push(approval_id.clone());
+                    }
+                }
+                let _ = app.emit(
+                    "privilege-request",
+                    serde_json::json!({
+                        "containerId": "",
+                        "request": event.payload,
+                        "remote": {
+                            "approvalId": approval_id,
+                            "addr": addr,
+                            "node": node,
+                            "fingerprint": fingerprint,
+                        },
+                    }),
+                );
+            }
             continue;
         }
         if event.op != "task.event" {
@@ -1857,6 +2015,40 @@ pub async fn environment_privilege_decide(
     .map_err(|error| error.to_string())?;
     client
         .privilege_decision(&id, approve, &reason)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// Approve or deny a privilege request on a remote gateway node.
+///
+/// The gateway token is the authorization boundary; OS authentication is a
+/// best-effort second factor only on platforms that implement it.
+#[tauri::command]
+pub async fn remote_privilege_decide(
+    state: State<'_, AppState>,
+    approval_id: String,
+    approve: bool,
+    reason: String,
+) -> Result<(), String> {
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    if approve {
+        authenticate_host_privilege()?;
+    }
+    let target = {
+        let mut pending = state
+            .remote_privileges
+            .lock()
+            .map_err(|_| "远程审批状态不可用".to_string())?;
+        pending
+            .remove(&approval_id)
+            .ok_or_else(|| "远程审批请求已过期".to_string())?
+    };
+    let client = MapClient::connect(&target.addr, &target.token, target.fingerprint.as_deref())
+        .await
+        .map_err(|error| error.to_string())?;
+    client.set_node(target.node);
+    client
+        .privilege_decision(&target.request_id, approve, &reason)
         .await
         .map_err(|error| error.to_string())
 }
