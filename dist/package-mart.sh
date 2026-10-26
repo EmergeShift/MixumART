@@ -33,27 +33,5 @@ cp "$ROOT/docs/browser-early-access.md" "$RES/BROWSER-README.md"
 cd "$ROOT/apps/desktop"
 npx tauri build "$@"
 
-# Tauri bundles the app before arbitrary resource copy; inject the mandatory
-# CLI/host/extension, then re-sign ad-hoc and rebuild the DMG.
-APP="$(find "$TARGET_DIR" -type d -path '*/release/bundle/macos/mixum Agent Runtime.app' 2>/dev/null | head -1)"
-[ -n "$APP" ] || { echo 'app bundle missing' >&2; exit 1; }
-rm -rf "$APP/Contents/Resources/bin" "$APP/Contents/Resources/extensions"
-cp -a "$RES/bin" "$APP/Contents/Resources/bin"
-cp -a "$RES/extensions" "$APP/Contents/Resources/extensions"
-cp "$RES/BROWSER-README.md" "$APP/Contents/Resources/BROWSER-README.md"
-codesign --force --deep --sign - "$APP" 2>/dev/null || true
+echo "bundled CLI resources were staged in $RES"
 
-VERSION="$(python3 - "$ROOT/apps/desktop/src-tauri/tauri.conf.json" <<'PY'
-import json, sys
-print(json.load(open(sys.argv[1])).get("version", "0.0.0"))
-PY
-)"
-DMG_DIR="$(dirname "$(dirname "$APP")")/dmg"
-DMG="$(find "$DMG_DIR" -maxdepth 1 -type f -name "mixum Agent Runtime_${VERSION}_*.dmg" 2>/dev/null | head -1)"
-[ -n "$DMG" ] || DMG="$DMG_DIR/mixum Agent Runtime_${VERSION}_$(uname -m).dmg"
-if command -v hdiutil >/dev/null 2>&1; then
-  mkdir -p "$DMG_DIR"
-  rm -f "$DMG"
-  hdiutil create -volname "mixum Agent Runtime" -srcfolder "$APP" -ov -format UDZO "$DMG" >/dev/null
-fi
-echo "bundled CLI in $APP/Contents/Resources/bin"
