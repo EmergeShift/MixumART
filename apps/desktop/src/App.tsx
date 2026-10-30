@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { listen } from '@tauri-apps/api/event'
 
 import logo from './assets/logo.png'
-import { errorText, hostInfo, listApprovals, listPendingPrivileges, runtimeStatus, type ApprovalView, type PendingPrivilege } from './api'
+import { errorText, hostInfo, listApprovals, listPendingPrivileges, runtimeStatus, setupSettings, type ApprovalView, type PendingPrivilege } from './api'
 import { isDemo } from './demo'
 import { statusLabel, statusTone } from './status'
 import { ThemeToggle, WindowControls } from './components/Chrome'
@@ -13,6 +13,7 @@ import { Agents } from './views/Agents'
 import { Cockpit } from './views/Cockpit'
 import { Containers } from './views/Containers'
 import { Settings } from './views/Settings'
+import { Setup } from './views/Setup'
 import { Surfaces } from './views/Surfaces'
 import type { BackendStatus, HostInfo } from './types'
 import { detectPlatform } from './platform'
@@ -25,7 +26,7 @@ import {
   type ThemeMode,
 } from './theme'
 
-type Tab = 'cockpit' | 'containers' | 'surfaces' | 'agents' | 'settings'
+type Tab = 'cockpit' | 'containers' | 'surfaces' | 'agents' | 'settings' | 'setup'
 
 const OS_LABELS: Record<string, string> = {
   macos: 'macOS',
@@ -40,6 +41,7 @@ const NAV: { tab: Tab; label: string; sub: string; icon: IconName }[] = [
   { tab: 'containers', label: '环境', sub: '每个环境在哪、由谁使用', icon: 'layers' },
   { tab: 'surfaces', label: '窗口', sub: '监看与接管环境里的应用', icon: 'monitor' },
   { tab: 'agents', label: 'Agent', sub: '对接外部 Agent，决定谁在环境里干活', icon: 'agent' },
+  { tab: 'setup', label: '初始化', sub: '语言、环境系统与接入 Agent', icon: 'settings' },
   { tab: 'settings', label: '设置', sub: '运行软件、环境系统与应用设置', icon: 'settings' },
 ]
 
@@ -75,6 +77,14 @@ export default function App() {
   useEffect(() => {
     void refresh()
   }, [refresh])
+
+  useEffect(() => {
+    void setupSettings()
+      .then((settings) => {
+        if (!settings.completed) setTab('setup')
+      })
+      .catch(() => undefined)
+  }, [])
 
   useEffect(() => {
     document.documentElement.dataset.platform = PLATFORM
@@ -225,6 +235,7 @@ export default function App() {
             {tab === 'containers' && <Containers backends={backends} />}
             {tab === 'surfaces' && <Surfaces backends={backends} onOpenEnvironments={() => setTab('containers')} />}
             {tab === 'agents' && <Agents />}
+            {tab === 'setup' && <Setup onDone={() => setTab('cockpit')} />}
             {tab === 'settings' && (
               <Settings
                 backends={backends}
@@ -235,6 +246,7 @@ export default function App() {
                     : resolvedTheme === 'dark' ? '深色' : '浅色'
                 }
                 onRefresh={() => void refresh()}
+                onSetup={() => setTab('setup')}
               />
             )}
           </div>

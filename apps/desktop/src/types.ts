@@ -116,3 +116,94 @@ export type SurfaceInputEvent =
   | { type: 'pointer_axis'; surface: number; action: 'scroll_up' | 'scroll_down' }
   | { type: 'key'; surface: number; keysym: string; action: 'press' | 'release' }
   | { type: 'text'; surface: number; text: string }
+
+// ---------------------------------------------------------------------------
+// Setup / init
+// ---------------------------------------------------------------------------
+
+export type SetupLanguage = 'zh-CN' | 'en'
+
+export type InstallAction = {
+  command: string[]
+  requiresAdmin: boolean
+  note: string
+}
+
+export type SetupRunner = {
+  kind: RuntimeKind
+  name: string
+  supported: boolean
+  status: RuntimeStatus
+  install: InstallAction | null
+  start: InstallAction | null
+}
+
+export type SetupImage = {
+  runtime: RuntimeKind
+  reference: string
+  local: boolean
+}
+
+export type SetupEnvironment = {
+  runtime: RuntimeKind
+  id: string
+  name: string
+  image: string
+  state: string
+}
+
+export type SetupClient = {
+  id: string
+  name: string
+  path: string
+  status: 'configured' | 'needs_update' | 'missing' | 'invalid'
+  detail: string | null
+}
+
+export type SetupSettings = {
+  language: SetupLanguage | null
+  runtime: RuntimeKind | null
+  image: string | null
+  environmentId: string | null
+  agents: string[]
+  completed: boolean
+  updatedAtMs: number
+}
+
+export type SetupPlan = {
+  settings: SetupSettings
+  runners: SetupRunner[]
+  images: SetupImage[]
+  environments: SetupEnvironment[]
+  clients: SetupClient[]
+  launcher: string
+  defaultImage: string
+}
+
+export type SetupRequest = {
+  language: SetupLanguage
+  runtime: RuntimeKind
+  image: string | null
+  pullImage: boolean
+  environmentId: string | null
+  clients: string[]
+}
+
+export type ClientFailure = {
+  id: string
+  error: string
+}
+
+export type SetupResult = {
+  settings: SetupSettings
+  configured: string[]
+  failed: ClientFailure[]
+  runner: RuntimeKind
+  image: string | null
+}
+
+export type UpdateInfo = {
+  current: string
+  latest: string
+  url: string
+}

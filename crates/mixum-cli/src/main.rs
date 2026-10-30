@@ -9,6 +9,7 @@ mod map_ops;
 mod mcp;
 mod output;
 mod ports;
+mod setup;
 mod state;
 mod terminal;
 
@@ -23,7 +24,21 @@ use cli::{
 async fn main() {
     let cli = Cli::parse();
     let json = cli.json;
+    let is_mcp = matches!(&cli.command, Command::Mcp);
+    let update_dir = state::resolve_data_dir(cli.data_dir.as_deref()).ok();
     let result = run(cli).await;
+    if result.is_ok() && !json && !is_mcp {
+        if let Some(data_dir) = update_dir {
+            if let Some(update) =
+                mixum_setup::update::check_update(&data_dir, env!("CARGO_PKG_VERSION"))
+            {
+                eprintln!(
+                    "mixum {} is available (current {}): {}",
+                    update.latest, update.current, update.url
+                );
+            }
+        }
+    }
     if let Err(error) = result {
         if json {
             output::print_json(&serde_json::json!({
@@ -281,6 +296,7 @@ async fn run(cli: Cli) -> Result<(), output::CliError> {
         },
         Command::Mcp => mcp::serve(),
         Command::Desktop => launch_desktop(cli.json),
+        Command::Setup(args) => setup::run(args, &data_dir, cli.json).await,
         Command::Config { command } => match command {
             ConfigCommand::Show => config::show(&data_dir, cli.json),
             ConfigCommand::Set { key, value } => config::set(&data_dir, &key, &value, cli.json),

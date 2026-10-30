@@ -15,6 +15,15 @@ import type {
   SurfaceInputEvent,
 } from './types'
 
+import type {
+  SetupPlan,
+  SetupRequest,
+  SetupResult,
+  SetupSettings,
+  UpdateInfo,
+  RuntimeKind as SetupRuntimeKind,
+} from './types'
+
 const demoDelay = <T,>(value: T): Promise<T> =>
   new Promise((resolve) => setTimeout(() => resolve(value), 120))
 
@@ -630,3 +639,76 @@ export type PendingPrivilege = {
 
 export const listPendingPrivileges = () =>
   isDemo() ? demoDelay<PendingPrivilege[]>([]) : invoke<PendingPrivilege[]>('list_pending_privileges')
+
+// ---------------------------------------------------------------------------
+// Setup / init
+// ---------------------------------------------------------------------------
+
+export const setupPlan = () =>
+  isDemo()
+    ? demoDelay<SetupPlan>({
+        settings: {
+          language: null,
+          runtime: null,
+          image: null,
+          environmentId: null,
+          agents: [],
+          completed: false,
+          updatedAtMs: 0,
+        },
+        runners: [
+          { kind: 'docker', name: 'Docker', supported: true, status: { state: 'ready', version: 'demo', detail: null }, install: null, start: null },
+          { kind: 'apple_container', name: 'Apple Container', supported: true, status: { state: 'ready', version: 'demo', detail: null }, install: null, start: null },
+          { kind: 'wsl2', name: 'WSL 2', supported: false, status: { state: 'unsupported', reason: 'not on this platform' }, install: null, start: null },
+        ],
+        images: [{ runtime: 'docker', reference: 'mixumos:0.1.6', local: true }],
+        environments: [],
+        clients: [
+          { id: 'claude_code', name: 'Claude Code', path: '~/.claude.json', status: 'missing', detail: null },
+          { id: 'codex', name: 'Codex', path: '~/.codex/config.toml', status: 'missing', detail: null },
+        ],
+        launcher: 'mixum',
+        defaultImage: 'ghcr.io/emerge-shift/mixumos:0.1.6',
+      })
+    : invoke<SetupPlan>('setup_plan')
+
+export const setupApply = (request: SetupRequest) =>
+  isDemo()
+    ? demoDelay<SetupResult>({
+        settings: {
+          language: request.language,
+          runtime: request.runtime,
+          image: request.image,
+          environmentId: null,
+          agents: request.clients,
+          completed: true,
+          updatedAtMs: Date.now(),
+        },
+        configured: request.clients,
+        failed: [],
+        runner: request.runtime,
+        image: request.image,
+      })
+    : invoke<SetupResult>('setup_apply', { request })
+
+export const setupInstallRunner = (kind: SetupRuntimeKind) =>
+  isDemo() ? demoDelay(`would install ${kind}`) : invoke<string>('setup_install_runner', { kind })
+
+export const setupStartRunner = (kind: SetupRuntimeKind) =>
+  isDemo() ? demoDelay(`would start ${kind}`) : invoke<string>('setup_start_runner', { kind })
+
+export const setupSettings = () =>
+  isDemo()
+    ? demoDelay<SetupSettings>({
+        language: null,
+        runtime: null,
+        image: null,
+        environmentId: null,
+        agents: [],
+        completed: false,
+        updatedAtMs: 0,
+      })
+    : invoke<SetupSettings>('setup_settings')
+
+export const setupCheckUpdate = () =>
+  isDemo() ? demoDelay<UpdateInfo | null>(null) : invoke<UpdateInfo | null>('setup_check_update')

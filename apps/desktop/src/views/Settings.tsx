@@ -10,9 +10,10 @@ type Props = {
   host: HostInfo | null
   appearance: string
   onRefresh: () => void
+  onSetup: () => void
 }
 
-export function Settings({ backends, host, appearance, onRefresh }: Props) {
+export function Settings({ backends, host, appearance, onRefresh, onSetup }: Props) {
   const [resources, setResources] = useState<
     Record<string, { images: string[]; disk: string; error: string | null }>
   >({})
@@ -252,6 +253,7 @@ export function Settings({ backends, host, appearance, onRefresh }: Props) {
             <h2>应用设置</h2>
             <p>MART 自己的设置。</p>
           </div>
+          <button className="ghost" onClick={onSetup}>初始化 / 添加 Agent</button>
         </div>
         <div className="settings-list">
           <div className="setting-row">

@@ -6,7 +6,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 RES="$ROOT/apps/desktop/src-tauri/resources"
 TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+CONF="$ROOT/apps/desktop/src-tauri/tauri.release.conf.json"
+trap 'rm -rf "$TMP"; rm -f "$CONF"' EXIT
 
 # Resolve a relative CARGO_TARGET_DIR once so cargo and the post-build copy
 # below agree on where the bundle lands (tauri build changes cwd).
@@ -30,30 +31,21 @@ cp -a "$CLI_DIR/share/mixum/extensions/mixum-browser" "$RES/extensions/mixum-bro
 rm -rf "$RES/extensions/mixum-browser/store"
 cp "$ROOT/docs/browser-early-access.md" "$RES/BROWSER-README.md"
 
+cat > "$CONF" <<'JSON'
+{
+  "bundle": {
+    "resources": {
+      "resources/bin/mixum": "bin/mixum",
+      "resources/bin/mixum-browser-host": "bin/mixum-browser-host",
+      "resources/extensions/mixum-browser": "extensions/mixum-browser",
+      "resources/BROWSER-README.md": "BROWSER-README.md"
+    }
+  }
+}
+JSON
+
 cd "$ROOT/apps/desktop"
-npx tauri build "$@"
+npx tauri build --config "$CONF" "$@"
 
-# Tauri bundles the app before arbitrary resource copy; inject the mandatory
-# CLI/host/extension, then re-sign ad-hoc and rebuild the DMG.
-APP="$(find "$TARGET_DIR" -type d -path '*/release/bundle/macos/mixum Agent Runtime.app' 2>/dev/null | head -1)"
-[ -n "$APP" ] || { echo 'app bundle missing' >&2; exit 1; }
-rm -rf "$APP/Contents/Resources/bin" "$APP/Contents/Resources/extensions"
-cp -a "$RES/bin" "$APP/Contents/Resources/bin"
-cp -a "$RES/extensions" "$APP/Contents/Resources/extensions"
-cp "$RES/BROWSER-README.md" "$APP/Contents/Resources/BROWSER-README.md"
-codesign --force --deep --sign - "$APP" 2>/dev/null || true
+echo "bundled CLI resources were staged in $RES"
 
-VERSION="$(python3 - "$ROOT/apps/desktop/src-tauri/tauri.conf.json" <<'PY'
-import json, sys
-print(json.load(open(sys.argv[1])).get("version", "0.0.0"))
-PY
-)"
-DMG_DIR="$(dirname "$(dirname "$APP")")/dmg"
-DMG="$(find "$DMG_DIR" -maxdepth 1 -type f -name "mixum Agent Runtime_${VERSION}_*.dmg" 2>/dev/null | head -1)"
-[ -n "$DMG" ] || DMG="$DMG_DIR/mixum Agent Runtime_${VERSION}_$(uname -m).dmg"
-if command -v hdiutil >/dev/null 2>&1; then
-  mkdir -p "$DMG_DIR"
-  rm -f "$DMG"
-  hdiutil create -volname "mixum Agent Runtime" -srcfolder "$APP" -ov -format UDZO "$DMG" >/dev/null
-fi
-echo "bundled CLI in $APP/Contents/Resources/bin"

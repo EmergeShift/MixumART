@@ -1,9 +1,12 @@
 //! Chrome bridge host-facing commands: install native host, export a lease,
 //! and hand that lease to a container browser controller.
 
+#[cfg(unix)]
 use std::io::{BufRead, BufReader, Write};
+#[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
 use std::time::Duration;
 
 use serde_json::{json, Value};
@@ -52,6 +55,7 @@ pub fn install(json: bool) -> Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 pub fn export(domains: &[String], urls: &[String], json: bool) -> Result<()> {
     if domains.is_empty() {
         return Err(CliError::usage(
@@ -106,6 +110,7 @@ pub fn export(domains: &[String], urls: &[String], json: bool) -> Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 pub async fn share(
     data_dir: &Path,
     selector: &str,
@@ -192,6 +197,26 @@ pub async fn share(
         }
     }
     Ok(())
+}
+
+#[cfg(not(unix))]
+pub fn export(_domains: &[String], _urls: &[String], _json: bool) -> Result<()> {
+    Err(CliError::usage(
+        "the Chrome bridge is currently available on macOS and Linux only",
+    ))
+}
+
+#[cfg(not(unix))]
+pub async fn share(
+    _data_dir: &Path,
+    _selector: &str,
+    _domains: &[String],
+    _urls: &[String],
+    _json: bool,
+) -> Result<()> {
+    Err(CliError::usage(
+        "the Chrome bridge is currently available on macOS and Linux only",
+    ))
 }
 
 fn extension_dir() -> Result<PathBuf> {

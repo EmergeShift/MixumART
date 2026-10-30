@@ -69,8 +69,41 @@ pub enum Command {
     Mcp,
     /// Open the installed MixumART desktop app.
     Desktop,
+    /// First-run setup: language, runtime/image and agent MCP registration.
+    Setup(SetupArgs),
     /// Print version and build information.
     Version,
+}
+
+#[derive(Debug, Args)]
+pub struct SetupArgs {
+    /// UI language: zh-CN or en. Detected from LANG when omitted.
+    #[arg(long)]
+    pub lang: Option<String>,
+    /// Runtime to use; omitted means choose an available one.
+    #[arg(long, value_enum)]
+    pub runtime: Option<RuntimeArg>,
+    /// Image reference. Omit to choose a local mixumOS image.
+    #[arg(long)]
+    pub image: Option<String>,
+    /// Pull the selected image before registering agents.
+    #[arg(long)]
+    pub pull: bool,
+    /// Reuse an existing mixumOS environment id instead of choosing an image.
+    #[arg(long)]
+    pub environment: Option<String>,
+    /// Client id to configure; repeatable. Example: codex.
+    #[arg(long = "agent", value_name = "ID")]
+    pub agents: Vec<String>,
+    /// Configure every detected agent.
+    #[arg(long)]
+    pub all_detected: bool,
+    /// Install a missing runtime without asking (the install command is still shown).
+    #[arg(long)]
+    pub yes: bool,
+    /// Print the plan; do not write anything.
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 #[derive(Debug, Subcommand)]

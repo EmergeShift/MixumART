@@ -1,0 +1,57 @@
+name: mart-windows-preview
+
+on:
+  push:
+    branches: [feat/mixum-setup]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/mixum-setup
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: apps/desktop
+        run: npm ci
+
+      - name: Build CLI binaries
+        run: cargo build --release -p mixum-cli --bin mixum
+
+      - name: Stage bundled CLI resources
+        shell: pwsh
+        run: |
+          $res = "apps/desktop/src-tauri/resources"
+          New-Item -ItemType Directory -Force "$res/bin" | Out-Null
+          Copy-Item "target/release/mixum.exe" "$res/bin/mixum.exe"
+          $config = @{ bundle = @{ resources = @{ "resources/bin/mixum.exe" = "bin/mixum.exe" } } } | ConvertTo-Json -Depth 5
+          Set-Content -Path "apps/desktop/src-tauri/tauri.release.conf.json" -Value $config
+
+      - name: Build Windows installer
+        working-directory: apps/desktop
+        run: npm run tauri build -- --config src-tauri/tauri.release.conf.json --target x86_64-pc-windows-msvc --bundles nsis
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: mart-windows-x86_64
+          path: |
+            target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+            target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
+          if-no-files-found: error

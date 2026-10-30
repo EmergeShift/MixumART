@@ -583,6 +583,7 @@ mod tests {
             mounts: vec![],
             env: Default::default(),
             command: vec![],
+            cap_add: vec![],
         }
     }
 
