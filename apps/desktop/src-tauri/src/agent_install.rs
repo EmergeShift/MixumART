@@ -59,9 +59,9 @@ pub const AGENTS: &[AgentSpec] = &[
     AgentSpec {
         name: "claude-code",
         summary: "Anthropic Claude Code（npm 官方包）",
-        probe: "command -v claude >/dev/null 2>&1 || [ -x \"$HOME/.local/bin/claude\" ]",
-        install: r#"npm install -g --prefix "$HOME/.local" @anthropic-ai/claude-code
-command -v claude || test -x "$HOME/.local/bin/claude""#,
+        probe: "claude --version >/dev/null 2>&1",
+        install: r#"npm install -g --prefix "$HOME/.local" --allow-scripts=@anthropic-ai/claude-code @anthropic-ai/claude-code
+claude --version >/dev/null"#,
     },
     AgentSpec {
         name: "codex",
@@ -74,7 +74,7 @@ command -v codex || test -x "$HOME/.local/bin/codex""#,
         name: "gemini-cli",
         summary: "Google Gemini CLI（npm 官方包）",
         probe: "command -v gemini >/dev/null 2>&1 || [ -x \"$HOME/.local/bin/gemini\" ]",
-        install: r#"npm install -g --prefix "$HOME/.local" @google/gemini-cli
+        install: r#"npm install -g --prefix "$HOME/.local" --allow-scripts=@github/keytar,node-pty @google/gemini-cli
 command -v gemini || test -x "$HOME/.local/bin/gemini""#,
     },
     AgentSpec {
@@ -128,7 +128,9 @@ pub fn install_script(spec: &AgentSpec) -> String {
 }
 
 pub fn probe_script() -> String {
-    let mut script = String::new();
+    let mut script = String::from(
+        "export PATH=\"$HOME/.local/bin:$HOME/.opencode/bin:$PATH\"\n",
+    );
     for spec in AGENTS {
         script.push_str(&format!(
             "if {}; then echo 'installed {}'; else echo 'missing {}'; fi\n",
@@ -350,9 +352,12 @@ mod tests {
     fn install_script_writes_prompt_and_installs() {
         let script = install_script(find("claude-code").expect("claude-code"));
         assert!(script.starts_with("set -e\n"));
-        assert!(
-            script.contains("npm install -g --prefix \"$HOME/.local\" @anthropic-ai/claude-code")
-        );
+        assert!(script.contains(
+            "npm install -g --prefix \"$HOME/.local\" --allow-scripts=@anthropic-ai/claude-code @anthropic-ai/claude-code"
+        ));
+        assert!(script.contains("claude --version >/dev/null"));
+        let gemini = install_script(find("gemini-cli").expect("gemini-cli"));
+        assert!(gemini.contains("--allow-scripts=@github/keytar,node-pty"));
         assert!(script.contains("$HOME/.mixum/agents/claude-code/PROMPT.md"));
         assert!(script.contains("MIXUM_PROMPT_EOF"));
         let opencode = install_script(find("opencode").expect("opencode"));
