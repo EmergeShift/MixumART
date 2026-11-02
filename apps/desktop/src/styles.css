@@ -1413,18 +1413,18 @@ input:focus {
   width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center;
   border: 1px solid var(--line); color: var(--muted); font-size: 12px;
 }
-.setup-steps span.active { border-color: var(--fg); color: var(--fg); }
-.setup-steps span.done { background: var(--fg); border-color: var(--fg); color: var(--bg); }
+.setup-steps span.active { border-color: var(--ink); color: var(--ink); }
+.setup-steps span.done { background: var(--ink); border-color: var(--ink); color: var(--surface); }
 .setup-options { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; }
 .option-card {
   text-align: left; border: 1px solid var(--line); border-radius: 10px; padding: 13px 14px;
-  background: transparent; color: var(--fg); display: flex; flex-direction: column; gap: 5px;
+  background: transparent; color: var(--ink); display: flex; flex-direction: column; gap: 5px;
   cursor: pointer;
 }
 .option-card:hover { border-color: var(--muted); }
-.option-card.selected { border-color: var(--fg); background: color-mix(in srgb, var(--fg) 5%, transparent); }
+.option-card.selected { border-color: var(--ink); background: color-mix(in srgb, var(--ink) 5%, transparent); }
 .option-card span { color: var(--muted); font-size: 12px; line-height: 1.45; }
-.option-card .setup-install { color: var(--fg); text-decoration: underline; text-underline-offset: 2px; }
+.option-card .setup-install { color: var(--ink); text-decoration: underline; text-underline-offset: 2px; }
 .setup-image-row { display: flex; gap: 9px; align-items: center; }
 .setup-image-row input { flex: 1; min-width: 0; }
 .setup-check { display: flex; align-items: center; gap: 6px; white-space: nowrap; color: var(--muted); font-size: 12px; }
@@ -1466,7 +1466,8 @@ input:focus {
   padding: 22px;
   border: 1px solid var(--line);
   border-radius: 14px;
-  background: var(--panel, var(--bg));
+  background: var(--card);
+  color: var(--ink);
   box-shadow: 0 24px 80px rgb(0 0 0 / 35%);
 }
 .setup-modal h3 { margin: 0 0 8px; }
@@ -1476,7 +1477,7 @@ input:focus {
   padding: 10px 12px;
   border: 1px solid var(--line);
   border-radius: 8px;
-  color: var(--fg);
+  color: var(--ink);
   font-size: 11px;
   white-space: pre-wrap;
   word-break: break-all;
