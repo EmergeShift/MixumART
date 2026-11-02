@@ -226,6 +226,38 @@ B 收 17.6KB 全量 + 补丁，互不串流。
 > `/etc/profile.d/mixum-x11.sh` 注入。非登录 `docker exec` 可用 `sh -lc`
 > 或自行 source。agentd 多 comp 下仍可用 A 窗口手动回退。
 
+### B 路线剪贴板（窗口级，走 MAP）
+
+B compositor 实现了 MAP 的 `display.clipboard` 契约（RFC 0004 的
+`display.clipboard.set` + `.changed`），B 窗口的行为与 A 窗口一致：
+
+- 连上 agentd 后先发 `{"type":"capabilities","clipboard":true}`；
+- 收到 `display.clipboard.set` 后落成 `{"type":"clipboard.set","id","text"}`，
+  合成器把文本设为 Wayland seat 的 server-side selection
+  （`text/plain;charset=utf-8`、`text/plain`），容器应用即可粘贴；
+- 容器内客户端抢到选区时，用 socketpair（2s 超时）把文本读出来，回
+  `{"type":"clipboard","id","text"}`，归属取焦点窗口（单窗口时回退到它，
+  否则丢弃）。限额与 agentd/mixcomp 一致：4 MiB（按 UTF-8 字节）、
+  空选区不发事件、含 NUL／非 UTF-8／转义后超控制帧上限的一律整段丢弃。
+
+同时暴露了 `wlr-data-control`：`wl-copy`/`wl-paste` 和剪贴板管理器这类没有
+surface 的客户端也能读写选区，MAP 层剪贴板不依赖"哪个窗口恰好有焦点"。
+
+两个已知缺口：
+
+- **宿主 → X11 是间接的。** 合成器故意不在宿主 set 时抢 X11 选区所有权
+  （`xwm.new_selection`）：一旦抢了，XFixes 会把后续的所有权变更吞掉，X11 应用
+  就再也复制不了（它的 `CurrentTime` 接管会被 X server 拒绝）。目前 X11 客户端
+  只在 XWM 已经代理 X11 选区时（即此前有 Wayland 客户端复制过）才看得到宿主
+  文本；要正经支持，需要常驻的 X11 剪贴板客户端。
+- **窗口归属按焦点判定**，与 A 路线同口径：没有 surface 的客户端（如 `wl-copy`）
+  复制时归属记到焦点窗口；多窗口且无焦点时宁可丢弃也不猜。
+
+`tests/e2e/b-clipboard.mjs` 对 Wayland 路径做了端到端覆盖（真实 agentd：
+set → `wl-paste`、`wl-copy` → `changed` 且窗口归属正确、订阅门控、
+空串/4 MiB+1/恰好 4 MiB）。X11 用例默认关闭（`MIXUM_E2E_X11=1` 打开），
+因为它在最小测试镜像里依赖 Xwayland 的时序。
+
 实测（0.1.2 节点，foot 996×663）：全量 17KB，时钟补丁 48×26 约 1.5KB；
 TCP 注入 `a` + `Return` 后 foot shell 输出 `got:`/`a`。宿主查看器同时
 负责把鼠标/键盘事件写回同一连接。多窗口实测：`art-a`/`art-b` 两个

@@ -2752,6 +2752,7 @@ name = "mixum-env-compositor"
 version = "0.1.0"
 dependencies = [
  "mixum-env-surface",
+ "nix 0.28.0",
  "png 0.17.16",
  "serde_json",
  "smithay",

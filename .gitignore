@@ -26,3 +26,6 @@ pnpm-debug.log*
 .vscode/*
 !.vscode/extensions.json
 dist/release/
+
+# 本地构建/调试产物（compositor dev 镜像、smithay 参考源码、e2e 二进制）
+/build/
