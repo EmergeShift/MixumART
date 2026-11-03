@@ -16,6 +16,11 @@ fn main() {
 #[cfg(any(target_os = "linux", test))]
 mod pixels;
 
+// keysym → evdev 查表：同样是纯数据，宿主平台上也要能测（合成器本身只在
+// Linux 上跑，修饰键漏了只有容器里的 e2e 才看得见，太晚）。
+#[cfg(any(target_os = "linux", test))]
+mod keys;
+
 #[cfg(target_os = "linux")]
 fn main() {
     if let Err(error) = linux::run() {
@@ -1601,69 +1606,8 @@ mod linux {
     }
 
     fn keysym_to_keycode(name: &str) -> Option<Keycode> {
-        let evdev = match name {
-            "Return" | "Enter" => 28,
-            "BackSpace" => 14,
-            "Tab" => 15,
-            "space" => 57,
-            "Escape" => 1,
-            "Left" => 105,
-            "Right" => 106,
-            "Up" => 103,
-            "Down" => 108,
-            "minus" => 12,
-            "equal" => 13,
-            "comma" => 51,
-            "period" => 52,
-            "slash" => 53,
-            "semicolon" => 39,
-            "apostrophe" => 40,
-            value if value.len() == 1 => {
-                let ch = value.as_bytes()[0];
-                // Linux evdev keycodes are not alphabetical.
-                match ch {
-                    b'a' => 30,
-                    b'b' => 48,
-                    b'c' => 46,
-                    b'd' => 32,
-                    b'e' => 18,
-                    b'f' => 33,
-                    b'g' => 34,
-                    b'h' => 35,
-                    b'i' => 23,
-                    b'j' => 36,
-                    b'k' => 37,
-                    b'l' => 38,
-                    b'm' => 50,
-                    b'n' => 49,
-                    b'o' => 24,
-                    b'p' => 25,
-                    b'q' => 16,
-                    b'r' => 19,
-                    b's' => 31,
-                    b't' => 20,
-                    b'u' => 22,
-                    b'v' => 47,
-                    b'w' => 17,
-                    b'x' => 45,
-                    b'y' => 21,
-                    b'z' => 44,
-                    b'0' => 11,
-                    b'1' => 2,
-                    b'2' => 3,
-                    b'3' => 4,
-                    b'4' => 5,
-                    b'5' => 6,
-                    b'6' => 7,
-                    b'7' => 8,
-                    b'8' => 9,
-                    b'9' => 10,
-                    _ => return None,
-                }
-            }
-            _ => return None,
-        };
-        Some(Keycode::new(evdev + 8))
+        // XKB keycode = evdev 码 + 8；查表本身在 keys 模块里，宿主平台也能测。
+        super::keys::to_evdev(name).map(|evdev| Keycode::new(evdev + 8))
     }
 
     smithay::delegate_compositor!(Art);
