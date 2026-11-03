@@ -227,9 +227,15 @@ frame and B receives a 17.6KB full frame + patches, with no cross-streaming.
 > has the MTKView/Metal native overlay layer, falling back to WebView canvas on non-macOS or
 > with `MIXUM_NATIVE_METAL=0`.
 >
-> **B2 remote clipboard (pull)**: `Cmd/Ctrl+Alt+V` pulls the B compositor's current
-> selection over MAP `display.clipboard` and writes it to the host clipboard;
-> host→remote is still pasting with `Cmd/Ctrl+V` (ASCII).
+> **B2 remote clipboard**: `Cmd/Ctrl+Alt+V` pulls the B compositor's current selection
+> over MAP `display.clipboard` and writes it to the host clipboard. The other direction
+> goes through the window selection: `Cmd/Ctrl+V` writes the host clipboard into the
+> window with `display.clipboard.set` and then sends the application one `Ctrl+V`, so
+> multi-line and long text survive instead of turning into thousands of `display.input`
+> events; agent-held windows answer `conflict` and fall back to per-key injection.
+> Copying inside the container pushes `display.clipboard.changed` back to the host
+> clipboard — the surface session subscribes explicitly, and echoes of the text it just
+> set are suppressed so the two ends cannot loop.
 >
 > **B3 XWayland / A fallback**: the B compositor now supports X11 toplevels,
 > override-redirect menus, keyboard and mouse, and X11↔Wayland clipboard through

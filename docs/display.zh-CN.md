@@ -214,9 +214,13 @@ B 收 17.6KB 全量 + 补丁，互不串流。
 > Tauri 已切到 MAP（`mixum-env-map`）；macOS 已有 MTKView/Metal 原生叠加层，
 > 非 macOS 或 `MIXUM_NATIVE_METAL=0` 时回退 WebView canvas。
 >
-> **B2 远端剪贴板（拉取）**：`Cmd/Ctrl+Alt+V` 通过 MAP
-> `display.clipboard` 拉取 B compositor 当前 selection 并写入宿主剪贴板；
-> host→remote 仍是 `Cmd/Ctrl+V` 粘贴（ASCII）。
+> **B2 远端剪贴板**：`Cmd/Ctrl+Alt+V` 通过 MAP `display.clipboard` 拉取 B
+> compositor 当前 selection 并写入宿主剪贴板。反方向走窗口选区：`Cmd/Ctrl+V` 用
+> `display.clipboard.set` 把宿主剪贴板写进窗口，再向应用发一次 `Ctrl+V`——多行
+> 文本和长文本因此能原样过去，不用拆成上千条 `display.input`；agent 持有窗口时
+> agentd 回 `conflict`，前端退回逐键注入。容器内复制会经
+> `display.clipboard.changed` 写回宿主剪贴板：surface 会话显式订阅，且自己刚下发
+> 的那条回声会被抑制，两端不会互相回推。
 >
 > **B3 XWayland / A 回退**：B compositor 现在通过 Smithay XWayland + XWM
 > 支持 X11 toplevel、override-redirect 菜单、键鼠和 X11↔Wayland 剪贴板。
