@@ -552,7 +552,6 @@ impl MapClient {
         Ok(())
     }
 
-    /// Pull the node's current clipboard text (B2 remote selection).
     pub async fn detach(&self, surface: u32) -> Result<(), MapError> {
         self.call("display.detach", json!({ "window": surface }))
             .await?;
@@ -568,6 +567,7 @@ impl MapClient {
         Ok(())
     }
 
+    /// Pull the node's current clipboard text (B2 remote selection).
     pub async fn clipboard(&self) -> Result<String, MapError> {
         let reply = self.call("display.clipboard", json!({})).await?;
         let text = reply
@@ -577,6 +577,32 @@ impl MapClient {
             .unwrap_or_default()
             .to_owned();
         Ok(text)
+    }
+
+    /// Push host text into `window`'s selection (B2 window-scoped clipboard).
+    ///
+    /// The text lands in the owner compositor's selection, so the application
+    /// pastes it itself — formatting and multi-line layout survive, unlike the
+    /// `display.input` text injection. agentd answers `bad_request` for empty or
+    /// oversized text (1..=4 MiB of UTF-8), `conflict` while an agent holds the
+    /// window, and `not_found` for an unknown window.
+    pub async fn clipboard_set(&self, window: u32, text: &str) -> Result<(), MapError> {
+        self.call(
+            "display.clipboard.set",
+            json!({ "window": window, "text": text }),
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Opt this session into `display.clipboard.changed` pushes.
+    ///
+    /// Watching `display.windows` is deliberately not consent for clipboard
+    /// text, so the subscription is explicit; it is also not restored by
+    /// `session.resume`, so callers re-issue it after reconnecting.
+    pub async fn clipboard_subscribe(&self) -> Result<(), MapError> {
+        self.call("display.clipboard.subscribe", json!({})).await?;
+        Ok(())
     }
 
     /// Subscribe to push envelopes (task events, window events, ...).

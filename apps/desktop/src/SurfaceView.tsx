@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { listen } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 
-import { remoteClipboard, surfaceInput, surfacePutFile, surfaceTakeover } from './api'
+import { remoteClipboard, remoteClipboardSet, surfaceInput, surfacePutFile, surfaceTakeover } from './api'
 import type { SurfaceFrame, SurfaceInfo, SurfaceInputEvent } from './types'
 
 type Props = {
@@ -75,6 +75,13 @@ export function SurfaceView({ surface, addr }: Props) {
       }),
       listen<string>('surface-disconnected', (event) => {
         setStatus(`显示连接断开：${event.payload}`)
+      }),
+      // 容器里复制 → 写回宿主剪贴板。回声（宿主自己刚下发的那条）已由后端吞掉，
+      // 这里不用再判重。
+      listen<string>('surface-clipboard', (event) => {
+        void navigator.clipboard
+          .writeText(event.payload)
+          .catch((error: unknown) => setStatus(`写宿主剪贴板失败：${String(error)}`))
       }),
     ]
 
@@ -168,6 +175,36 @@ export function SurfaceView({ surface, addr }: Props) {
     }
   }
 
+  // 粘贴走选区而不是逐字符注入：宿主把文本放进窗口选区，再让容器里的应用
+  // 自己按 Ctrl+V 取。多行、缩进、富文本都能原样过去，长文本也不用一字符
+  // 一条 display.input。agent 持有窗口时 agentd 回 conflict，这时退回注入。
+  const paste = async (text: string) => {
+    if (!text) return
+    try {
+      await remoteClipboardSet(surface, text)
+    } catch (error: unknown) {
+      setStatus(`远端选区不可写，已改为逐键注入：${String(error)}`)
+      sendText(text)
+      return
+    }
+    const keysyms = ['Control_L', 'v']
+    for (const keysym of keysyms) send({ type: 'key', surface, keysym, action: 'press' })
+    for (const keysym of [...keysyms].reverse()) {
+      send({ type: 'key', surface, keysym, action: 'release' })
+    }
+  }
+
+  const pullRemoteClipboard = () =>
+    remoteClipboard(surface)
+      .then((text) => navigator.clipboard.writeText(text))
+      .catch((error: unknown) => setStatus(String(error)))
+
+  const pushHostClipboard = () =>
+    navigator.clipboard
+      .readText()
+      .then((text) => paste(text))
+      .catch((error: unknown) => setStatus(`读宿主剪贴板失败：${String(error)}`))
+
   const keyName = (event: React.KeyboardEvent): string | null => {
     if (event.key === ' ') return 'space'
     if (event.key.length === 1) return event.key.toLowerCase()
@@ -227,6 +264,22 @@ export function SurfaceView({ surface, addr }: Props) {
         >
           {takeoverMode === 'user' ? '释放窗口' : '接管窗口'}
         </button>
+        <button
+          type="button"
+          className="ghost"
+          onClick={() => void pullRemoteClipboard()}
+          title="把容器里的选区取回宿主剪贴板；快捷键：Ctrl/Cmd+Alt+V"
+        >
+          读取远端剪贴板
+        </button>
+        <button
+          type="button"
+          className="ghost"
+          onClick={() => void pushHostClipboard()}
+          title="把宿主剪贴板写进窗口选区，并在容器里按一次 Ctrl+V"
+        >
+          写入远端剪贴板
+        </button>
       </div>
       <canvas
         ref={canvasRef}
@@ -255,12 +308,17 @@ export function SurfaceView({ surface, addr }: Props) {
         onKeyDown={(event) => {
           if ((event.metaKey || event.ctrlKey) && event.altKey && event.key.toLowerCase() === 'v') {
             event.preventDefault()
-            void remoteClipboard(surface)
-              .then((text) => navigator.clipboard.writeText(text))
-              .catch((error: unknown) => setStatus(String(error)))
+            void pullRemoteClipboard()
             return
           }
           if (event.nativeEvent.isComposing) return
+          // 带 Ctrl/Cmd 的组合在这里是快捷键，不是文字。修饰键本身不往容器送
+          // （Key 事件只带一个 keysym），所以再送裸字符只会插进一个杂字——
+          // Ctrl+V 会变成"先打一个 v 再粘贴"。
+          if (event.metaKey || event.ctrlKey) {
+            event.preventDefault()
+            return
+          }
           const keysym = keyName(event)
           if (!keysym) return
           event.preventDefault()
@@ -268,6 +326,11 @@ export function SurfaceView({ surface, addr }: Props) {
         }}
         onKeyUp={(event) => {
           if (event.nativeEvent.isComposing) return
+          // 与 keydown 对齐：被拦下的组合不要留下一个没有对应按下的释放事件。
+          if (event.metaKey || event.ctrlKey) {
+            event.preventDefault()
+            return
+          }
           const keysym = keyName(event)
           if (!keysym) return
           event.preventDefault()
@@ -277,7 +340,7 @@ export function SurfaceView({ surface, addr }: Props) {
           const text = event.clipboardData.getData('text')
           if (!text) return
           event.preventDefault()
-          sendText(text)
+          void paste(text)
         }}
         onCompositionEnd={(event) => {
           if (event.data) sendText(event.data)
