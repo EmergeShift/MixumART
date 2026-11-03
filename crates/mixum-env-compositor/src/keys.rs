@@ -9,7 +9,10 @@
 
 /// 修饰键必须能单独收发：宿主用它们合成 `Ctrl+V`，也靠它们让容器内的
 /// `Ctrl+C` 真正生效——`Key` 事件只带一个 keysym，修饰键只能自己走一趟。
-pub fn to_evdev(name: &str) -> Option<u16> {
+///
+/// 返回 `u32` 是因为 `Keycode::new` 收的就是 `u32`；在宿主平台上这段代码
+/// 不参与编译，类型对不上只有容器里才发现，所以这里刻意和它对齐。
+pub fn to_evdev(name: &str) -> Option<u32> {
     let evdev = match name {
         "Return" | "Enter" => 28,
         "BackSpace" => 14,
