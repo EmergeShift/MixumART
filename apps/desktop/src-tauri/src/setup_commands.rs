@@ -126,6 +126,7 @@ fn cancelled(text: &str) -> bool {
         || text.contains("user canceled")
         || text.contains("operation was canceled")
         || text.contains("已取消")
+        || text.contains("取消")
 }
 
 #[cfg(target_os = "macos")]
@@ -197,6 +198,81 @@ fn run_elevated(action: &InstallAction) -> Result<String, String> {
     })
 }
 
+/// Windows 提权脚本回传的两个标记。
+///
+/// PowerShell 5.1 在 stdout 被重定向时按控制台代码页输出（zh-CN 是 GBK），
+/// 直接 `from_utf8_lossy` 会得到乱码，`cancelled()` 也就匹配不到“已取消”，
+/// 取消会被当成成功。因此脚本只回传 ASCII 标记，错误文本用
+/// base64(UTF-8) 包裹，绕开代码页——比强设 `[Console]::OutputEncoding` 更可靠。
+#[cfg(target_os = "windows")]
+const ELEVATION_CANCELLED: &str = "MIXUM_ELEVATION_CANCELLED";
+#[cfg(target_os = "windows")]
+const ELEVATION_FAILED: &str = "MIXUM_ELEVATION_FAILED:";
+
+#[cfg(target_os = "windows")]
+#[derive(Debug, PartialEq, Eq)]
+enum ElevationOutcome {
+    Cancelled,
+    Failed(String),
+}
+
+#[cfg(target_os = "windows")]
+fn elevation_outcome(text: &str) -> Option<ElevationOutcome> {
+    use base64::Engine as _;
+    for line in text.lines() {
+        let line = line.trim();
+        if line == ELEVATION_CANCELLED {
+            return Some(ElevationOutcome::Cancelled);
+        }
+        if let Some(payload) = line.strip_prefix(ELEVATION_FAILED) {
+            let detail = base64::engine::general_purpose::STANDARD
+                .decode(payload.trim())
+                .ok()
+                .and_then(|bytes| String::from_utf8(bytes).ok())
+                .unwrap_or_else(|| "提权脚本返回了无法解析的错误详情。".to_string());
+            return Some(ElevationOutcome::Failed(detail));
+        }
+    }
+    None
+}
+
+/// `Start-Process` 失败是非终止错误：不设 `-ErrorAction` 时 `$p` 保持 `$null`，
+/// 而 `exit $null.ExitCode` 实际退出 0——这就是“取消被当成成功”的根因。
+/// 脚本因此改成：`$ErrorActionPreference='Stop'` + try/catch，显式判空，
+/// 失败一律退非零。
+///
+/// 取消的识别：PowerShell 5.1 抛的是**没有 `InnerException` 的裸
+/// `InvalidOperationException`**（HResult 0x80131509），1223 只出现在消息文本里，
+/// 所以先扫异常链上的 `Win32Exception.NativeErrorCode`（未来版本可能暴露），
+/// 再退回“与系统本地化的 ERROR_CANCELLED 文案比对”——不硬编码中英文。
+#[cfg(target_os = "windows")]
+const ELEVATION_SCRIPT: &str = r#"$ErrorActionPreference = 'Stop'
+try {
+  $p = Start-Process -FilePath __MIXUM_PROGRAM__ -ArgumentList @(__MIXUM_ARGUMENTS__) -Verb RunAs -Wait -PassThru
+} catch {
+  $native = 0
+  $cause = $_.Exception
+  while ($null -ne $cause) {
+    if ($cause -is [System.ComponentModel.Win32Exception]) { $native = $cause.NativeErrorCode; break }
+    $cause = $cause.InnerException
+  }
+  $cancelText = (New-Object System.ComponentModel.Win32Exception 1223).Message
+  $message = [string]$_.Exception.Message
+  if ($native -eq 1223 -or ($cancelText -and $message.Contains($cancelText))) {
+    Write-Output 'MIXUM_ELEVATION_CANCELLED'
+    exit 1223
+  }
+  $detail = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($message))
+  Write-Output ('MIXUM_ELEVATION_FAILED:' + $detail)
+  exit 1
+}
+if ($null -eq $p) {
+  $detail = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes('Start-Process returned no process'))
+  Write-Output ('MIXUM_ELEVATION_FAILED:' + $detail)
+  exit 1
+}
+exit $p.ExitCode"#;
+
 #[cfg(target_os = "windows")]
 fn run_elevated(action: &InstallAction) -> Result<String, String> {
     let args = strip_sudo(&action.command);
@@ -208,29 +284,47 @@ fn run_elevated(action: &InstallAction) -> Result<String, String> {
         .map(|value| powershell_quote(value))
         .collect::<Vec<_>>()
         .join(",");
-    let script = format!(
-        "$p = Start-Process -FilePath {} -ArgumentList @({}) -Verb RunAs -Wait -PassThru; exit $p.ExitCode",
-        powershell_quote(program),
-        arguments
-    );
+    let script = ELEVATION_SCRIPT
+        .replace("__MIXUM_PROGRAM__", &powershell_quote(program))
+        .replace("__MIXUM_ARGUMENTS__", &arguments);
     let output = Command::new("powershell.exe")
         .args(["-NoProfile", "-NonInteractive", "-Command", &script])
         .output()
         .map_err(|error| format!("cannot open the Windows UAC prompt: {error}"))?;
-    if !output.status.success() {
-        let text = output_text(output);
-        return if cancelled(&text) {
-            Err("已取消管理员授权。".to_string())
-        } else {
-            Err(format!("管理员操作失败：{text}"))
-        };
-    }
+    let succeeded = output.status.success();
+    let code = output.status.code();
     let text = output_text(output);
+    if !succeeded {
+        // 提权进程自己失败时拿不到它的 stderr（ShellExecute 不转发句柄），
+        // 所以这里只能报退出码并给出可手动执行的命令，不展示可能乱码的文本。
+        return Err(elevation_error(&text, code, &action.command.join(" ")));
+    }
     Ok(if text.is_empty() {
         action.note.clone()
     } else {
         format!("{text}\n{}", action.note)
     })
+}
+
+#[cfg(target_os = "windows")]
+fn elevation_error(text: &str, code: Option<i32>, manual: &str) -> String {
+    match elevation_outcome(text) {
+        Some(ElevationOutcome::Cancelled) => "已取消管理员授权。".to_string(),
+        // 兜底：脚本已把异常原文按 UTF-8 解回来了，万一某个 locale 下
+        // `Win32Exception(1223).Message` 与实际文案不一致，这里仍能识别取消。
+        Some(ElevationOutcome::Failed(detail)) if cancelled(&detail) => {
+            "已取消管理员授权。".to_string()
+        }
+        Some(ElevationOutcome::Failed(detail)) => format!("管理员操作失败：{detail}"),
+        None => match code {
+            Some(code) => format!(
+                "管理员操作失败：提权进程退出码 {code}。可在管理员 PowerShell 中手动运行：\n{manual}"
+            ),
+            None => format!(
+                "管理员操作失败：提权进程被终止。可在管理员 PowerShell 中手动运行：\n{manual}"
+            ),
+        },
+    }
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows", unix)))]
@@ -280,5 +374,90 @@ mod tests {
         assert!(cancelled("User canceled."));
         assert!(cancelled("已取消"));
         assert!(!cancelled("permission denied"));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn parses_elevation_markers() {
+        use base64::Engine as _;
+
+        assert_eq!(
+            elevation_outcome("MIXUM_ELEVATION_CANCELLED"),
+            Some(ElevationOutcome::Cancelled)
+        );
+        assert_eq!(
+            elevation_outcome("  MIXUM_ELEVATION_CANCELLED  \r\n"),
+            Some(ElevationOutcome::Cancelled)
+        );
+        // 判定只依赖 ASCII 标记：前面的 GBK→UTF-8 乱码不影响结果。
+        assert_eq!(
+            elevation_outcome("锟斤拷\nMIXUM_ELEVATION_CANCELLED"),
+            Some(ElevationOutcome::Cancelled)
+        );
+        let detail = base64::engine::general_purpose::STANDARD.encode("拒绝访问。".as_bytes());
+        assert_eq!(
+            elevation_outcome(&format!("{ELEVATION_FAILED}{detail}")),
+            Some(ElevationOutcome::Failed("拒绝访问。".to_string()))
+        );
+        assert!(matches!(
+            elevation_outcome(&format!("{ELEVATION_FAILED}not-base64!!")),
+            Some(ElevationOutcome::Failed(_))
+        ));
+        assert_eq!(elevation_outcome(""), None);
+        assert_eq!(elevation_outcome("some unrelated error"), None);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn elevation_script_guards_start_process() {
+        // 根因回归：取消时 $p 为空 → 旧脚本 `exit $p.ExitCode` 退出 0（假成功）。
+        let script = ELEVATION_SCRIPT
+            .replace("__MIXUM_PROGRAM__", &powershell_quote("wsl.exe"))
+            .replace("__MIXUM_ARGUMENTS__", &powershell_quote("--install"));
+        assert!(script.contains("$ErrorActionPreference = 'Stop'"));
+        assert!(script.contains("try {"));
+        assert!(script.contains("catch {"));
+        assert!(script.contains("if ($null -eq $p)"));
+        assert!(script.contains("$native -eq 1223"));
+        // 真实异常是裸 InvalidOperationException（无 InnerException），1223 只在文案里，
+        // 因此必须保留“系统本地化文案”这条判定路径。
+        assert!(script.contains("Win32Exception 1223"));
+        assert!(script.contains("$message.Contains($cancelText)"));
+        assert!(script.contains("-FilePath 'wsl.exe' -ArgumentList @('--install')"));
+        assert!(script.trim_end().ends_with("exit $p.ExitCode"));
+        // 占位符必须全部替换掉，否则 PowerShell 会把 `__MIXUM_*__` 当成命令。
+        assert!(!script.contains("__MIXUM_"));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn maps_elevation_failure_to_message() {
+        use base64::Engine as _;
+
+        let manual = "wsl.exe --install";
+        // 脚本标记 -> 取消
+        assert_eq!(
+            elevation_error("MIXUM_ELEVATION_CANCELLED", Some(1223), manual),
+            "已取消管理员授权。"
+        );
+        // 兜底：标记是 FAILED，但解回来的原文就是用户取消
+        let detail = base64::engine::general_purpose::STANDARD
+            .encode("This command cannot be run due to the error: The operation was canceled by the user.");
+        assert_eq!(
+            elevation_error(&format!("MIXUM_ELEVATION_FAILED:{detail}"), Some(1), manual),
+            "已取消管理员授权。"
+        );
+        // 真正的失败不能被吞成取消
+        let denied = base64::engine::general_purpose::STANDARD.encode("拒绝访问。".as_bytes());
+        assert_eq!(
+            elevation_error(&format!("MIXUM_ELEVATION_FAILED:{denied}"), Some(1), manual),
+            "管理员操作失败：拒绝访问。"
+        );
+        // 提权进程自己退非零（安装脚本失败）：不报假成功，给出退出码和手动命令
+        let exit7 = elevation_error("", Some(7), manual);
+        assert!(exit7.contains("退出码 7"), "{exit7}");
+        assert!(exit7.contains(manual), "{exit7}");
+        let killed = elevation_error("", None, manual);
+        assert!(killed.contains("被终止"), "{killed}");
     }
 }
