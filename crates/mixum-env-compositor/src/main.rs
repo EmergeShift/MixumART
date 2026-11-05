@@ -82,6 +82,7 @@ mod linux {
                     set_data_device_focus, set_data_device_selection, ClientDndGrabHandler,
                     DataDeviceHandler, DataDeviceState, ServerDndGrabHandler,
                 },
+                wlr_data_control::{DataControlHandler, DataControlState},
                 SelectionHandler, SelectionTarget,
             },
             shell::xdg::{
@@ -101,6 +102,116 @@ mod linux {
     const WINDOW_HEIGHT: i32 = 700;
     const TCP_PORT: u16 = 7603;
 
+    /// MAP `display.clipboard` 的上限：4 MiB，按 UTF-8 字节计（与 agentd 和
+    /// RFC 0004 一致）。空选区在 v1 不产生事件。
+    const MAX_CLIPBOARD_BYTES: usize = 4 << 20;
+    /// comp↔agentd 控制帧上限：JSON 转义后超了就不发，免得把对端撑爆。
+    const MAX_COMP_FRAME: usize = 16 * 1024 * 1024;
+    /// 等容器内 owner 把 selection 写进 fd 的时间上限。
+    const CLIPBOARD_READ_TIMEOUT: Duration = Duration::from_secs(2);
+    /// 读 selection 时的 MIME 优先级：前两个 Wayland 与 X11 客户端都认。
+    const CLIPBOARD_MIMES: [&str; 5] = [
+        "text/plain;charset=utf-8",
+        "UTF8_STRING",
+        "text/plain",
+        "TEXT",
+        "STRING",
+    ];
+    /// 宣告给 Wayland 客户端的类型：只给标准的纯文本 MIME（`UTF8_STRING` 是
+    /// X11 的原子名，Wayland 客户端看到会困惑）。
+    const WAYLAND_MIMES: [&str; 2] = ["text/plain;charset=utf-8", "text/plain"];
+
+    /// 在 source 声明的 MIME 里挑一个能当 UTF-8 文本读的。
+    ///
+    /// 只认明确的 UTF-8 / 纯文本类型：`text/plain;charset=iso8859-1` 之类不猜
+    /// 编码，宁可丢掉这一轮，也不把乱码推给宿主。
+    fn text_mime(mime_types: &[String]) -> Option<String> {
+        CLIPBOARD_MIMES.iter().find_map(|wanted| {
+            mime_types
+                .iter()
+                .find(|mime| mime.eq_ignore_ascii_case(wanted))
+                .cloned()
+        })
+    }
+
+    /// 与 agentd 相同的转义口径：`"` / `\` 算 2 字节，控制字符算 6 字节，其余
+    /// 按 UTF-8 字节数。两边必须一致，否则同一段文本会在其中一个方向上被丢。
+    fn json_escaped_len(text: &str) -> usize {
+        text.chars()
+            .map(|ch| match ch {
+                '"' | '\\' => 2,
+                ch if (ch as u32) < 0x20 => 6,
+                ch => ch.len_utf8(),
+            })
+            .sum()
+    }
+
+    /// 4 MiB 文本里若塞满控制字符，转义后能膨胀到 24 MiB，会超过控制帧上限。
+    fn clipboard_fits_control_frame(text: &str) -> bool {
+        json_escaped_len(text) + 1024 <= MAX_COMP_FRAME
+    }
+
+    /// 一对本地 socket 当管道用：写端交给 Wayland/X11 的那一端，读端自己留着。
+    ///
+    /// 用 socketpair 而不是 `pipe(2)`，是为了能直接设读超时——一个不写数据也不
+    /// 关 fd 的客户端不能把读线程钉死。
+    fn clipboard_pair() -> Option<(UnixStream, OwnedFd)> {
+        let (reader, writer) = UnixStream::pair().ok()?;
+        reader.set_read_timeout(Some(CLIPBOARD_READ_TIMEOUT)).ok()?;
+        Some((reader, OwnedFd::from(writer)))
+    }
+
+    /// 把文本写进客户端给的 fd：宿主注入的 selection 被 X11 / Wayland 应用
+    /// 粘贴时都走这里。
+    ///
+    /// 必须用 `File` 而不是 `UnixStream`：`UnixStream::write` 内部是 `send(2)`，
+    /// 而客户端给的是 `pipe(2)` 的写端，`send` 会返回 `ENOTSOCK`，数据被静默吞掉。
+    fn spawn_clipboard_write(text: Arc<String>, fd: OwnedFd) {
+        std::thread::spawn(move || {
+            let mut sink = std::fs::File::from(fd);
+            let _ = sink.write_all(text.as_bytes());
+            let _ = sink.flush();
+            // drop 关掉 fd，客户端才能看到 EOF 而不是一直等。
+            drop(sink);
+        });
+    }
+
+    /// 读容器内 owner 交出的 selection，成功就推到上行通道。
+    ///
+    /// 超过 4 MiB、含 NUL、不是合法 UTF-8 的一律整段丢弃（不发半截文本）。
+    fn spawn_clipboard_read(id: u32, mut reader: UnixStream, tx: Sender<(u32, String)>) {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let mut chunk = [0u8; 8192];
+            loop {
+                if buf.len() > MAX_CLIPBOARD_BYTES {
+                    return;
+                }
+                match reader.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                        ) =>
+                    {
+                        break
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(_) => break,
+                }
+            }
+            if buf.is_empty() || buf.len() > MAX_CLIPBOARD_BYTES || buf.contains(&0) {
+                return;
+            }
+            let Ok(text) = String::from_utf8(buf) else {
+                return;
+            };
+            let _ = tx.send((id, text));
+        });
+    }
+
     use crate::pixels::{
         bgra_to_rgba, diff_bbox, encode_png, extract, Canvas, PngMode, SurfacePixels,
     };
@@ -118,6 +229,17 @@ mod linux {
     enum MapEvent {
         Input(InputEvent),
         StreamStart(u32),
+        /// 宿主把文本写进容器 selection：`display.clipboard.set` 的私有控制记录。
+        ClipboardSet { id: u32, text: String },
+    }
+
+    /// seat selection 现在由谁供数据：决定 paste 时是转给 XWM 还是直接写回文本。
+    #[derive(Clone)]
+    enum SelectionOrigin {
+        /// 容器内 X11 客户端持有，读数据要经 XWM 转发。
+        X11Client,
+        /// 宿主注入的文本：Wayland 和 X11 两侧都由我们直接供数据。
+        Host(Arc<String>),
     }
 
     /// B compositor 作为 agentd 的 comp 客户端：JSON 控制 + 0x04 PNG 帧。
@@ -171,7 +293,8 @@ mod linux {
                 }
             });
             let (event_tx, event_rx) = mpsc::channel();
-            std::thread::spawn(move || loop {
+            std::thread::spawn(move || {
+                loop {
                 let mut header = [0u8; 5];
                 if reader.read_exact(&mut header).is_err() {
                     break;
@@ -202,17 +325,33 @@ mod linux {
                             let _ = event_tx.send(MapEvent::StreamStart(id as u32));
                         }
                     }
+                    Some("clipboard.set") => {
+                        let id = value.get("id").and_then(serde_json::Value::as_u64);
+                        let text = value.get("text").and_then(serde_json::Value::as_str);
+                        if let (Some(id), Some(text)) = (id, text) {
+                            let _ = event_tx.send(MapEvent::ClipboardSet {
+                                id: id as u32,
+                                text: text.to_owned(),
+                            });
+                        }
+                    }
                     _ => {}
                 }
+                }
             });
-            Ok((
-                Self {
-                    control: control_tx,
-                    latest_frame,
-                    frame_ready: frame_ready_tx,
-                },
-                event_rx,
-            ))
+            let transport = Self {
+                control: control_tx,
+                latest_frame,
+                frame_ready: frame_ready_tx,
+            };
+            // 剪贴板能力握手：agentd 只有收到这条之后才会把 clipboard.set 发给
+            // 我们、也才接受我们上行的 clipboard 记录（RFC 0004「compositor
+            // contract」）。没有它，agentd 对 B 窗口的 set 一律回 conflict。
+            transport.send_json(&serde_json::json!({
+                "type": "capabilities",
+                "clipboard": true,
+            }));
+            Ok((transport, event_rx))
         }
 
         fn send_json(&self, value: &serde_json::Value) {
@@ -358,6 +497,7 @@ mod linux {
         xdg_shell_state: XdgShellState,
         shm_state: ShmState,
         data_device_state: DataDeviceState,
+        data_control_state: DataControlState,
         popup_manager: PopupManager,
         popup_parents: std::collections::HashMap<WlSurface, WlSurface>,
         pointer_pos: (f64, f64),
@@ -383,6 +523,14 @@ mod linux {
         input_rx: Receiver<InputEvent>,
         map: Option<MapTransport>,
         map_rx: Receiver<MapEvent>,
+        /// 键盘焦点所在 surface 的宿主 id：剪贴板上行的窗口归属用。
+        focused: Option<u32>,
+        /// 宿主注入的文本；为 Some 时两侧 paste 都由我们供数据。
+        host_clipboard: Option<Arc<String>>,
+        clipboard_tx: Sender<(u32, String)>,
+        clipboard_rx: Receiver<(u32, String)>,
+        /// 待读取的容器选区 MIME（在 `new_selection` 里记下，主循环下一轮再读）。
+        pending_selection_read: Option<String>,
         serial: u32,
     }
 
@@ -399,6 +547,8 @@ mod linux {
             let xdg_shell_state = XdgShellState::new::<Self>(display_handle);
             let shm_state = ShmState::new::<Self>(display_handle, vec![]);
             let data_device_state = DataDeviceState::new::<Self>(display_handle);
+            // 不启用 primary selection（第 2 个参数），MapDisplay v1 只有剪贴板。
+            let data_control_state = DataControlState::new::<Self, _>(display_handle, None, |_| true);
             let xwayland_shell_state = XWaylandShellState::new::<Self>(display_handle);
             let text_input_state = TextInputManagerState::new::<Self>(display_handle);
             let input_method_state =
@@ -432,6 +582,8 @@ mod linux {
             );
             output.set_preferred(mode);
 
+            let (clipboard_tx, clipboard_rx) = mpsc::channel();
+
             Self {
                 start: Instant::now(),
                 display_handle: display_handle.clone(),
@@ -439,6 +591,7 @@ mod linux {
                 xdg_shell_state,
                 shm_state,
                 data_device_state,
+                data_control_state,
                 popup_manager: PopupManager::default(),
                 popup_parents: std::collections::HashMap::new(),
                 pointer_pos: (0.0, 0.0),
@@ -464,8 +617,59 @@ mod linux {
                 input_rx,
                 map,
                 map_rx,
+                focused: None,
+                host_clipboard: None,
+                clipboard_tx,
+                clipboard_rx,
+                pending_selection_read: None,
                 serial: 0,
             }
+        }
+
+        /// 上报剪贴板的窗口归属：焦点窗口优先，只有一个窗口时退回它。
+        ///
+        /// 焦点条目的 id 必须在 `surfaces` 里才算数——窗口销毁后焦点可能还留着
+        /// 旧 id。多窗口又没焦点时不猜：宁可这一轮不上报，也不把文本挂到别人的
+        /// 窗口上（agentd 会按窗口 ACL 过滤，挂错等于泄露给不该看的会话）。
+        fn clipboard_target(&self) -> Option<u32> {
+            let focused = self.focused.filter(|id| self.surfaces.contains_key(id));
+            focused.or_else(|| {
+                if self.surfaces.len() == 1 {
+                    self.surfaces.keys().copied().next()
+                } else {
+                    None
+                }
+            })
+        }
+
+        /// 容器内 selection 变了：交给线程读出来，读完推到上行通道。
+        fn report_selection(&mut self, reader: UnixStream) {
+            let Some(id) = self.clipboard_target() else {
+                return;
+            };
+            spawn_clipboard_read(id, reader, self.clipboard_tx.clone());
+        }
+
+        /// 宿主写入文本：设成 Wayland 的 server-side selection。
+        ///
+        /// 这里**故意不碰 X11 选区**。让 XWM 当 X11 owner（`xwm.new_selection`）
+        /// 之后，容器里 X11 应用再复制就不会触发 `XwmHandler::new_selection`——
+        /// XFixes 的所有权变更被 XWM 自己吞掉，整条上行链路失效（实测过）。
+        /// 要让 X11 应用也读到宿主文本，得另找一条不抢所有权的路（例如常驻的
+        /// X11 剪贴板客户端），见 docs/display.md 的已知缺口。
+        fn set_host_clipboard(&mut self, text: &str) {
+            let text = Arc::new(text.to_owned());
+            self.host_clipboard = Some(Arc::clone(&text));
+            let wayland_mimes = WAYLAND_MIMES
+                .iter()
+                .map(|mime| (*mime).to_owned())
+                .collect::<Vec<_>>();
+            set_data_device_selection(
+                &self.display_handle,
+                &self.seat,
+                wayland_mimes,
+                SelectionOrigin::Host(Arc::clone(&text)),
+            );
         }
 
         fn entry_for(&self, surface: &WlSurface) -> Option<u32> {
@@ -1203,18 +1407,12 @@ mod linux {
                 state.states.set(xdg_toplevel::State::Activated);
             });
             surface.send_configure();
-            // Focus the newly mapped toplevel so clipboard owners can set a
-            // selection (data_device requires keyboard focus on the source).
-            self.serial = self.serial.wrapping_add(1);
-            if let Some(keyboard) = self.seat.get_keyboard() {
-                keyboard.set_focus(self, Some(wl_surface.clone()), self.serial.into());
-            }
             self.surfaces.insert(
                 id,
                 SurfaceEntry {
                     id,
                     role: SurfaceRole::Xdg(surface),
-                    wl_surface,
+                    wl_surface: wl_surface.clone(),
                     title,
                     app_id,
                     announced: false,
@@ -1225,6 +1423,14 @@ mod linux {
                     last_full: None,
                 },
             );
+            // Focus the newly mapped toplevel so clipboard owners can set a
+            // selection (data_device requires keyboard focus on the source).
+            // 必须在 insert 之后：focus_changed 里要用 entry_for 找到窗口 id，
+            // 顺序反了焦点就记不下来，剪贴板上行会丢掉窗口归属。
+            self.serial = self.serial.wrapping_add(1);
+            if let Some(keyboard) = self.seat.get_keyboard() {
+                keyboard.set_focus(self, Some(wl_surface), self.serial.into());
+            }
         }
 
         fn new_popup(&mut self, surface: PopupSurface, _positioner: PositionerState) {
@@ -1361,6 +1567,7 @@ mod linux {
             selection == SelectionTarget::Clipboard
         }
 
+        /// X11 应用来粘贴：要么给宿主注入的文本，要么转给 Wayland 侧的 owner。
         fn send_selection(
             &mut self,
             _xwm: XwmId,
@@ -1369,6 +1576,10 @@ mod linux {
             fd: OwnedFd,
         ) {
             if selection != SelectionTarget::Clipboard {
+                return;
+            }
+            if let Some(text) = self.host_clipboard.clone() {
+                spawn_clipboard_write(text, fd);
                 return;
             }
             let _ = request_data_device_client_selection(&self.seat, mime_type, fd);
@@ -1381,18 +1592,42 @@ mod linux {
             selection: SelectionTarget,
             mime_types: Vec<String>,
         ) {
-            if selection == SelectionTarget::Clipboard {
-                set_data_device_selection(
-                    &self.display_handle,
-                    &self.seat,
-                    mime_types,
-                    SelectionTarget::Clipboard,
-                );
+            if selection != SelectionTarget::Clipboard {
+                return;
+            }
+            // X11 客户端接管了 selection，宿主注入的文本作废。
+            self.host_clipboard = None;
+            if mime_types.is_empty() {
+                clear_data_device_selection(&self.display_handle, &self.seat);
+                return;
+            }
+            set_data_device_selection(
+                &self.display_handle,
+                &self.seat,
+                mime_types.clone(),
+                SelectionOrigin::X11Client,
+            );
+            let Some(mime) = text_mime(&mime_types) else {
+                return;
+            };
+            let Some(handle) = self.loop_handle.clone() else {
+                return;
+            };
+            let Some((reader, writer)) = clipboard_pair() else {
+                return;
+            };
+            let sent = self
+                .xwm
+                .as_mut()
+                .is_some_and(|xwm| xwm.send_selection(selection, mime, writer, handle).is_ok());
+            if sent {
+                self.report_selection(reader);
             }
         }
 
         fn cleared_selection(&mut self, _xwm: XwmId, selection: SelectionTarget) {
             if selection == SelectionTarget::Clipboard {
+                self.host_clipboard = None;
                 clear_data_device_selection(&self.display_handle, &self.seat);
             }
         }
@@ -1468,7 +1703,7 @@ mod linux {
     impl OutputHandler for Art {}
 
     impl SelectionHandler for Art {
-        type SelectionUserData = SelectionTarget;
+        type SelectionUserData = SelectionOrigin;
 
         fn new_selection(
             &mut self,
@@ -1480,14 +1715,28 @@ mod linux {
                 .as_ref()
                 .map(|source| source.mime_types())
                 .unwrap_or_default();
+            // Wayland 客户端接管了 selection，宿主注入的文本作废。
+            if ty == SelectionTarget::Clipboard {
+                self.host_clipboard = None;
+            }
             if let Some(xwm) = self.xwm.as_mut() {
-                if let Err(error) = xwm.new_selection(
-                    ty,
-                    source.as_ref().map(|_| mime_types),
-                ) {
+                if let Err(error) =
+                    xwm.new_selection(ty, source.as_ref().map(|_| mime_types.clone()))
+                {
                     eprintln!("xwm new_selection: {error}");
                 }
             }
+            if ty != SelectionTarget::Clipboard {
+                return;
+            }
+            let Some(mime) = text_mime(&mime_types) else {
+                return;
+            };
+            // 不能在这里直接 request：`new_selection` 是在 SeatData 换选区的
+            // 过程中回调的，此刻 seat 里还是旧选区（通常是我们的 Compositor
+            // 选区），request_data_device_client_selection 会返回
+            // ServerSideSelection/NoSelection。交给主循环下一轮再读。
+            self.pending_selection_read = Some(mime);
         }
 
         fn send_selection(
@@ -1496,13 +1745,21 @@ mod linux {
             mime_type: String,
             fd: OwnedFd,
             _seat: Seat<Self>,
-            _user_data: &SelectionTarget,
+            user_data: &SelectionOrigin,
         ) {
-            let Some(handle) = self.loop_handle.clone() else {
+            if ty != SelectionTarget::Clipboard {
                 return;
-            };
-            if let Some(xwm) = self.xwm.as_mut() {
-                let _ = xwm.send_selection(ty, mime_type, fd, handle);
+            }
+            match user_data {
+                SelectionOrigin::Host(text) => spawn_clipboard_write(Arc::clone(text), fd),
+                SelectionOrigin::X11Client => {
+                    let Some(handle) = self.loop_handle.clone() else {
+                        return;
+                    };
+                    if let Some(xwm) = self.xwm.as_mut() {
+                        let _ = xwm.send_selection(ty, mime_type, fd, handle);
+                    }
+                }
             }
         }
     }
@@ -1510,6 +1767,12 @@ mod linux {
     impl DataDeviceHandler for Art {
         fn data_device_state(&self) -> &DataDeviceState {
             &self.data_device_state
+        }
+    }
+
+    impl DataControlHandler for Art {
+        fn data_control_state(&self) -> &DataControlState {
+            &self.data_control_state
         }
     }
 
@@ -1528,6 +1791,12 @@ mod linux {
         fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&WlSurface>) {
             let client = focused.and_then(|surface| surface.client());
             set_data_device_focus(&self.display_handle, seat, client);
+            // 只记根 surface 的宿主 id：剪贴板上报要按窗口归属，弹窗/子 surface
+            // 属于它所在的那个窗口。
+            self.focused = focused.and_then(|surface| {
+                let root = self.root_surface(surface);
+                self.entry_for(&root)
+            });
         }
 
         fn cursor_image(
@@ -1672,6 +1941,10 @@ mod linux {
     smithay::delegate_seat!(Art);
     smithay::delegate_output!(Art);
     smithay::delegate_data_device!(Art);
+    // wlr-data-control：让 wl-copy/wl-paste、剪贴板管理器这类没有 surface 的
+    // 客户端也能读写选区。没有它，只有拿到键盘焦点的窗口才能粘贴，远程剪贴板
+    // 的 e2e 和"宿主机直接读写容器剪贴板"都没法工作。
+    smithay::delegate_data_control!(Art);
 
     smithay::delegate_text_input_manager!(Art);
     smithay::delegate_xwayland_shell!(Art);
@@ -2039,6 +2312,33 @@ mod linux {
                 match event {
                     MapEvent::Input(event) => state.handle_input(event),
                     MapEvent::StreamStart(id) => state.send_last_full(id),
+                    MapEvent::ClipboardSet { id, text } => {
+                        // 只记窗口号与字节数，不记内容（RFC 0004 安全条款）。
+                        eprintln!("clipboard.set window={id} bytes={}", text.len());
+                        state.set_host_clipboard(&text);
+                    }
+                }
+            }
+            // 容器内客户端刚换了选区：现在 seat 状态已经稳定，可以读了。
+            if let Some(mime) = state.pending_selection_read.take() {
+                if let Some((reader, writer)) = clipboard_pair() {
+                    let requested =
+                        request_data_device_client_selection(&state.seat, mime, writer).is_ok();
+                    if requested {
+                        state.report_selection(reader);
+                    }
+                }
+            }
+            while let Ok((id, text)) = state.clipboard_rx.try_recv() {
+                if text.is_empty() || !clipboard_fits_control_frame(&text) {
+                    continue;
+                }
+                if let Some(map) = &state.map {
+                    map.send_json(&serde_json::json!({
+                        "type": "clipboard",
+                        "id": id,
+                        "text": text,
+                    }));
                 }
             }
             while let Ok(mut stream) = state.new_clients.try_recv() {
@@ -2051,6 +2351,112 @@ mod linux {
             display.dispatch_clients(&mut state)?;
             display.flush_clients()?;
             std::thread::sleep(Duration::from_millis(4));
+        }
+    }
+
+    #[cfg(test)]
+    mod clipboard_tests {
+        use super::*;
+        use std::time::Duration;
+
+        fn mimes(items: &[&str]) -> Vec<String> {
+            items.iter().map(|item| (*item).to_string()).collect()
+        }
+
+        #[test]
+        fn prefers_utf8_text_mime() {
+            assert_eq!(
+                text_mime(&mimes(&["text/plain", "text/plain;charset=utf-8"])),
+                Some("text/plain;charset=utf-8".to_string())
+            );
+            assert_eq!(
+                text_mime(&mimes(&["UTF8_STRING", "STRING"])),
+                Some("UTF8_STRING".to_string())
+            );
+            assert_eq!(
+                text_mime(&mimes(&["text/plain"])),
+                Some("text/plain".to_string())
+            );
+        }
+
+        #[test]
+        fn ignores_non_text_and_non_utf8_mimes() {
+            assert_eq!(text_mime(&[]), None);
+            assert_eq!(text_mime(&mimes(&["image/png", "text/html"])), None);
+            // 不猜编码：非 UTF-8 的 text/plain 变体一律放弃。
+            assert_eq!(text_mime(&mimes(&["text/plain;charset=iso8859-1"])), None);
+        }
+
+        #[test]
+        fn escape_budget_matches_agentd() {
+            // 普通文本按 UTF-8 字节计。
+            assert_eq!(json_escaped_len("hi"), 2);
+            assert_eq!(json_escaped_len("中文"), 6);
+            assert_eq!(json_escaped_len("a\"b"), 4); // a + \" + b
+            assert_eq!(json_escaped_len("a\\b"), 4); // a + \\ + b
+            assert_eq!(json_escaped_len("\u{1}"), 6);
+
+            // 4 MiB 普通文本能过；塞满控制字符后逃逸成 24 MiB，必须整段丢。
+            assert!(clipboard_fits_control_frame(&"a".repeat(MAX_CLIPBOARD_BYTES)));
+            assert!(!clipboard_fits_control_frame(
+                &"\u{1}".repeat(MAX_CLIPBOARD_BYTES)
+            ));
+        }
+
+        fn read_via_helper(payload: &[u8]) -> Option<(u32, String)> {
+            let (reader, writer) = clipboard_pair().expect("pair");
+            let (tx, rx) = mpsc::channel();
+            // 先起读线程再写：socketpair 缓冲只有几百 KB，4 MiB 的用例先写会写满
+            // 缓冲、两边互相卡死。
+            spawn_clipboard_read(7, reader, tx);
+            let mut sink = UnixStream::from(writer);
+            sink.write_all(payload).expect("write");
+            drop(sink); // 关写端，读线程看到 EOF
+            rx.recv_timeout(Duration::from_secs(5)).ok()
+        }
+
+        #[test]
+        fn reports_utf8_selection_text() {
+            assert_eq!(
+                read_via_helper("hello 世界".as_bytes()),
+                Some((7, "hello 世界".to_string()))
+            );
+        }
+
+        #[test]
+        fn drops_empty_nul_and_binary_selections() {
+            // v1 不同步空选区。
+            assert_eq!(read_via_helper(b""), None);
+            // 含 NUL：按二进制处理，不往宿主推。
+            assert_eq!(read_via_helper(b"a\0b"), None);
+            // 不是合法 UTF-8。
+            assert_eq!(read_via_helper(&[0xff, 0xfe]), None);
+        }
+
+        #[test]
+        fn drops_oversized_selections() {
+            let payload = vec![b'a'; MAX_CLIPBOARD_BYTES + 1];
+            assert_eq!(read_via_helper(&payload), None);
+        }
+
+        #[test]
+        fn accepts_exactly_the_byte_limit() {
+            let payload = vec![b'a'; MAX_CLIPBOARD_BYTES];
+            let (id, text) = read_via_helper(&payload).expect("4 MiB 边界必须通过");
+            assert_eq!(id, 7);
+            assert_eq!(text.len(), MAX_CLIPBOARD_BYTES);
+        }
+
+        /// 回归：客户端给的 fd 是 `pipe(2)` 的写端。用 `UnixStream` 包会走
+        /// `send(2)` 得到 ENOTSOCK，写出去的数据静默丢失（wl-paste 读到空）。
+        #[test]
+        fn writes_text_into_a_pipe() {
+            let (reader, writer) = nix::unistd::pipe().expect("pipe");
+            spawn_clipboard_write(Arc::new("管道里的中文".to_string()), writer);
+            let mut buf = Vec::new();
+            // spawn_clipboard_write drop 掉写端后 read_to_end 才会返回。
+            std::fs::File::from(reader).read_to_end(&mut buf).expect("read");
+            assert_eq!(String::from_utf8(buf).unwrap(), "管道里的中文");
         }
     }
 }

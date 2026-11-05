@@ -22,3 +22,6 @@ wayland-protocols-misc = { version = "0.3", features = ["client"] }
 smithay = { version = "0.7", default-features = false, features = ["wayland_frontend", "desktop", "xwayland"] }
 x11rb = { version = "0.13", features = ["xtest"] }
 xim = { version = "0.5", features = ["x11rb-server"] }
+# pipe(2) 只给单元测试用：客户端给剪贴板的 fd 是管道，拿 socketpair 测会漏掉
+# ENOTSOCK 这类 bug（UnixStream::write 在管道上就是这个问题）。
+nix = { version = "0.28", features = ["fs"] }

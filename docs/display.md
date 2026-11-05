@@ -241,6 +241,43 @@ frame and B receives a 17.6KB full frame + patches, with no cross-streaming.
 > or source it yourself. With multiple comps in agentd, A windows can still be used as a
 > manual fallback.
 
+### B-route clipboard over MAP (window-scoped)
+
+The B compositor implements the MAP `display.clipboard` contract
+(RFC 0004 / `display.clipboard.set` + `.changed`), so a B window behaves like an
+A window:
+
+- on connect it reports `{"type":"capabilities","clipboard":true}` to agentd;
+- `display.clipboard.set` arrives as `{"type":"clipboard.set","id","text"}` and is
+  applied to the Wayland seat selection (`text/plain;charset=utf-8`, `text/plain`),
+  so container apps can paste it;
+- when a container client takes the selection, the compositor reads it through a
+  socketpair (2 s timeout) and reports `{"type":"clipboard","id","text"}`, attributed
+  to the focused window (single-window fallback, otherwise dropped). It enforces the
+  same limits as agentd/mixcomp: 4 MiB in UTF-8 bytes, no event for an empty
+  selection, and NUL / non-UTF-8 / over-escape payloads are dropped whole.
+
+`wlr-data-control` is exposed, so `wl-copy`/`wl-paste` and clipboard managers work
+without keyboard focus — the MAP-level clipboard does not depend on which surface
+happens to be focused.
+
+Two known gaps:
+
+- **Host → X11 is indirect.** The compositor deliberately does not take the X11
+  selection ownership (`xwm.new_selection`) when the host sets text: doing so makes
+  XFixes swallow later ownership changes, and X11 applications then can no longer
+  copy at all (their `CurrentTime` takeover is rejected). X11 clients see host text
+  only while XWM already proxies the X11 selection (i.e. after a Wayland client has
+  copied something); a first-class path needs a resident X11 clipboard client.
+- **Window attribution is focus-based**, same as Route A: a selection change from a
+  client without a surface (e.g. `wl-copy`) is attributed to the focused window, and
+  with several windows and no focus the event is dropped rather than guessed.
+
+`tests/e2e/b-clipboard.mjs` covers the Wayland path end to end against a real agentd
+(set → `wl-paste`, `wl-copy` → `changed` with window attribution, subscribe gating,
+empty/4 MiB+/exactly-4 MiB). The X11 cases are opt-in (`MIXUM_E2E_X11=1`) because
+they depend on Xwayland timing in the minimal test image.
+
 Measured (0.1.2 node, foot 996×663): full frame 17KB, clock patch 48×26 about 1.5KB;
 after injecting `a` + `Return` over TCP, the foot shell outputs `got:`/`a`. The host viewer
 is also responsible for writing mouse/keyboard events back over the same connection.
