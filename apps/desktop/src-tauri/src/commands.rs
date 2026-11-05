@@ -1793,6 +1793,13 @@ pub fn open_surface_window(app: AppHandle, request: OpenSurfaceRequest) -> Resul
         };
         let _ = app_for_session.emit_to(&label_for_session, "surface-info", &info);
 
+        // 剪贴板要显式订阅：只订阅窗口列表不代表同意接收剪贴板文本。老版本
+        // agentd 没有这个 op，失败只记日志，不挡住画面。
+        let mut clipboard_events = client.events();
+        if let Err(error) = client.clipboard_subscribe().await {
+            eprintln!("surface {surface} clipboard subscribe failed: {error}");
+        }
+
         // 输入走独立任务：一次 `display.input` 卡住（agentd 侧背压）不能拖住帧
         // 接收和后续点击。单条请求 2s 超时，超时只记录，不堵队列。
         {
@@ -1824,6 +1831,47 @@ pub fn open_surface_window(app: AppHandle, request: OpenSurfaceRequest) -> Resul
         loop {
             tokio::select! {
                 _ = &mut close_rx => break,
+                result = clipboard_events.recv() => {
+                    match result {
+                        Ok(event) if event.op == "display.clipboard.changed" => {
+                            // agentd 按令牌 ACL 过滤，但一个令牌可能覆盖多个窗口；
+                            // 这个会话只关心自己这一扇。
+                            let window = event
+                                .payload
+                                .get("window")
+                                .and_then(Value::as_u64)
+                                .and_then(|value| u32::try_from(value).ok())
+                                .unwrap_or(surface);
+                            if window != surface {
+                                continue;
+                            }
+                            let Some(text) = event.payload.get("text").and_then(Value::as_str)
+                            else {
+                                continue;
+                            };
+                            let forward = {
+                                let state = app_for_session.state::<AppState>();
+                                let mut echo = state
+                                    .clipboard_echo
+                                    .lock()
+                                    .expect("clipboard echo lock");
+                                echo.entry(surface).or_default().accepts(text)
+                            };
+                            if forward {
+                                let _ = app_for_session.emit_to(
+                                    &label_for_session,
+                                    "surface-clipboard",
+                                    text.to_owned(),
+                                );
+                            }
+                        }
+                        Ok(_) => {}
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                            eprintln!("surface {surface} 剪贴板事件积压，丢弃 {skipped}");
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    }
+                }
                 result = frames.recv() => {
                     match result {
                         Ok(frame) if frame.surface == surface => {
@@ -1876,6 +1924,9 @@ pub fn open_surface_window(app: AppHandle, request: OpenSurfaceRequest) -> Resul
             }
             if let Ok(mut clients) = app_for_close.state::<AppState>().surface_clients.lock() {
                 clients.remove(&surface);
+            }
+            if let Ok(mut echo) = app_for_close.state::<AppState>().clipboard_echo.lock() {
+                echo.remove(&surface);
             }
             #[cfg(target_os = "macos")]
             crate::macos::detach(&app_for_close, surface);
@@ -1991,6 +2042,46 @@ pub async fn remote_clipboard(app: AppHandle, surface: u32) -> Result<String, St
         return Err(format!("surface {surface} 没有打开的窗口"));
     };
     client.clipboard().await.map_err(|error| error.to_string())
+}
+
+/// 把宿主剪贴板文本写进窗口选区（`display.clipboard.set`）。
+///
+/// agent 持有窗口时 agentd 回 `conflict`，前端据此回落到逐键注入；这里的错误
+/// 原样上抛，不做二次包装，前端只按"成功/失败"分流。
+#[tauri::command]
+pub async fn remote_clipboard_set(app: AppHandle, surface: u32, text: String) -> Result<(), String> {
+    if text.is_empty() {
+        return Err("剪贴板文本为空".into());
+    }
+    let client = {
+        let state = app.state::<AppState>();
+        let clients = state
+            .surface_clients
+            .lock()
+            .map_err(|error| error.to_string())?;
+        clients.get(&surface).cloned()
+    };
+    let Some(client) = client else {
+        return Err(format!("surface {surface} 没有打开的窗口"));
+    };
+    // 先登记再下发：合成器可能比这条应答更早把回声推上来。
+    {
+        let state = app.state::<AppState>();
+        let mut echo = state
+            .clipboard_echo
+            .lock()
+            .map_err(|error| error.to_string())?;
+        echo.entry(surface).or_default().note_set(&text);
+    }
+    if let Err(error) = client.clipboard_set(surface, &text).await {
+        if let Ok(mut echo) = app.state::<AppState>().clipboard_echo.lock() {
+            if let Some(entry) = echo.get_mut(&surface) {
+                entry.cancel(&text);
+            }
+        }
+        return Err(error.to_string());
+    }
+    Ok(())
 }
 
 #[tauri::command]

@@ -6,6 +6,7 @@
 //! - 界面 → `apps/desktop/src`
 
 mod agent_install;
+mod clipboard;
 mod commands;
 #[cfg(target_os = "macos")]
 mod macos;
@@ -37,6 +38,8 @@ pub struct AppState {
     pub surface_inputs: Mutex<HashMap<u32, tokio::sync::mpsc::UnboundedSender<InputEvent>>>,
     pub surface_closes: Mutex<HashMap<u32, tokio::sync::oneshot::Sender<()>>>,
     pub surface_clients: Mutex<HashMap<u32, Arc<mixum_env_map::MapClient>>>,
+    /// 每个窗口最近一次下发的剪贴板文本，用来吞掉合成器回推的同一条变化。
+    pub clipboard_echo: Mutex<HashMap<u32, crate::clipboard::ClipboardEcho>>,
     pub remote_privileges: Mutex<HashMap<String, RemotePrivilegeTarget>>,
     pub terminals: crate::terminal::TerminalManager,
     #[cfg(target_os = "macos")]
@@ -50,6 +53,7 @@ impl AppState {
             surface_inputs: Mutex::new(HashMap::new()),
             surface_closes: Mutex::new(HashMap::new()),
             surface_clients: Mutex::new(HashMap::new()),
+            clipboard_echo: Mutex::new(HashMap::new()),
             remote_privileges: Mutex::new(HashMap::new()),
             terminals: crate::terminal::TerminalManager::default(),
             #[cfg(target_os = "macos")]
@@ -218,6 +222,7 @@ pub fn run() {
             commands::container_terminal_resize,
             commands::close_container_terminal,
             commands::remote_clipboard,
+            commands::remote_clipboard_set,
             commands::surface_put_file,
         ])
         .run(tauri::generate_context!())

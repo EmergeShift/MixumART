@@ -595,6 +595,12 @@ export const surfaceTakeover = (surface: number, action: 'claim' | 'release') =>
 export const remoteClipboard = (surface: number) =>
   isDemo() ? Promise.resolve('clipboard unavailable in demo') : invoke<string>('remote_clipboard', { surface })
 
+/** 把宿主文本写进窗口选区；agent 持有窗口时会失败，调用方回落到逐键注入。 */
+export const remoteClipboardSet = (surface: number, text: string) =>
+  isDemo()
+    ? demoDelay('clipboard unavailable in demo').then(() => undefined)
+    : invoke<void>('remote_clipboard_set', { surface, text })
+
 export const surfacePutFile = (surface: number, name: string, data: number[]) =>
   isDemo()
     ? Promise.resolve(`/demo/transfers/${name}`)
