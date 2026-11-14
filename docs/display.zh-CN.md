@@ -247,13 +247,9 @@ B compositor 实现了 MAP 的 `display.clipboard` 契约（RFC 0004 的
 同时暴露了 `wlr-data-control`：`wl-copy`/`wl-paste` 和剪贴板管理器这类没有
 surface 的客户端也能读写选区，MAP 层剪贴板不依赖"哪个窗口恰好有焦点"。
 
-两个已知缺口：
+已知设计细节：
 
-- **宿主 → X11 是间接的。** 合成器故意不在宿主 set 时抢 X11 选区所有权
-  （`xwm.new_selection`）：一旦抢了，XFixes 会把后续的所有权变更吞掉，X11 应用
-  就再也复制不了（它的 `CurrentTime` 接管会被 X server 拒绝）。目前 X11 客户端
-  只在 XWM 已经代理 X11 选区时（即此前有 Wayland 客户端复制过）才看得到宿主
-  文本；要正经支持，需要常驻的 X11 剪贴板客户端。
+- **宿主 → X11 下行支持**：为避免 Smithay `xwm.new_selection` 触发 XFixes 吞掉后续 X11 客户端所有权变更的 bug，合成器启动了一个独立的常驻 X11 剪贴板服务（通过 `x11rb` 连接并响应 `SelectionRequest`），在收到 `clipboard.set` 时直接为 X11 客户端提供 UTF-8 文本，而在 X11 或 Wayland 客户端复制时安全释放所有权，双向互通完全正常。
 - **窗口归属按焦点判定**，与 A 路线同口径：没有 surface 的客户端（如 `wl-copy`）
   复制时归属记到焦点窗口；多窗口且无焦点时宁可丢弃也不猜。
 

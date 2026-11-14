@@ -288,10 +288,14 @@ try {
     const event = await s.nextClip(10000);
     if (event.text !== x11) throw new Error(`X11 上行不一致：${JSON.stringify(event.text)}`);
     ok("xclip 复制 → changed（X11 → 宿主）");
-    // 宿主 → X11 的下行还没做：合成器故意不抢 X11 选区所有权——一旦抢了，X11
-    // 应用再复制就收不到 XFixes 事件，整条上行链路会断（实测过）。见
-    // docs/display.md 的已知缺口。
-    console.log("  skip: 宿主 → X11 下行（当前覆盖 Wayland 侧，见 docs/display.md）");
+    // 宿主 → X11 下行：由常驻的 X11 剪贴板服务直接响应（避开 xwm.new_selection）。
+    const downX11 = `b-down-x11-${crypto.randomUUID().slice(0, 8)}`;
+    await s.call("display.clipboard.set", { window, text: downX11 });
+    const x11Pasted = sh("timeout 3 xclip -selection clipboard -o");
+    if (x11Pasted !== downX11) {
+      throw new Error(`X11 下行不一致：读到 ${JSON.stringify(x11Pasted)}，期望 ${JSON.stringify(downX11)}`);
+    }
+    ok("set → 容器 xclip -o (宿主 → X11 下行)");
   } else {
     console.log("  skip: X11 用例默认关闭（MIXUM_E2E_X11=1 打开，见 docs/display.md）");
   }

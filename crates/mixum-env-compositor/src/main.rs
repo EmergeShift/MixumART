@@ -515,6 +515,7 @@ mod linux {
         xwayland_display: Option<u32>,
         xim_tx: Option<Sender<String>>,
         xim_active: Arc<AtomicBool>,
+        x11_clip_tx: Option<Sender<X11ClipCommand>>,
         loop_handle: Option<calloop::LoopHandle<'static, Self>>,
         x11_windows: HashMap<u32, u32>,
         x11_overlays: HashMap<u32, X11Overlay>,
@@ -609,6 +610,7 @@ mod linux {
                 xwayland_display: None,
                 xim_tx: None,
                 xim_active: Arc::new(AtomicBool::new(false)),
+                x11_clip_tx: None,
                 loop_handle: None,
                 x11_windows: HashMap::new(),
                 x11_overlays: HashMap::new(),
@@ -663,8 +665,8 @@ mod linux {
         /// 要让 X11 应用也读到宿主文本，得另找一条不抢所有权的路（例如常驻的
         /// X11 剪贴板客户端），见 docs/display.md 的已知缺口。
         fn set_host_clipboard(&mut self, text: &str) {
-            let text = Arc::new(text.to_owned());
-            self.host_clipboard = Some(Arc::clone(&text));
+            let text_arc = Arc::new(text.to_owned());
+            self.host_clipboard = Some(Arc::clone(&text_arc));
             let wayland_mimes = WAYLAND_MIMES
                 .iter()
                 .map(|mime| (*mime).to_owned())
@@ -673,8 +675,11 @@ mod linux {
                 &self.display_handle,
                 &self.seat,
                 wayland_mimes,
-                SelectionOrigin::Host(Arc::clone(&text)),
+                SelectionOrigin::Host(Arc::clone(&text_arc)),
             );
+            if let Some(tx) = &self.x11_clip_tx {
+                let _ = tx.send(X11ClipCommand::Set(text.to_owned()));
+            }
         }
 
         fn entry_for(&self, surface: &WlSurface) -> Option<u32> {
@@ -1634,6 +1639,9 @@ mod linux {
             if selection == SelectionTarget::Clipboard {
                 self.host_clipboard = None;
                 clear_data_device_selection(&self.display_handle, &self.seat);
+                if let Some(tx) = &self.x11_clip_tx {
+                    let _ = tx.send(X11ClipCommand::Clear);
+                }
             }
         }
     }
@@ -2141,6 +2149,173 @@ mod linux {
         tx
     }
 
+    enum X11ClipCommand {
+        Set(String),
+        Clear,
+    }
+
+    /// 独立的常驻 X11 剪贴板服务（解决 docs/display.md 中 host→X11 剪贴板下行缺口）。
+    /// 不使用 Smithay 的 xwm.new_selection()，避免 XFixes 所有权被 XWM 吞掉导致后续 X11 应用无法复制。
+    fn start_x11_clipboard(display_number: u32) -> Sender<X11ClipCommand> {
+        let (tx, rx) = mpsc::channel::<X11ClipCommand>();
+        std::thread::spawn(move || {
+            use x11rb::connection::Connection;
+            use x11rb::protocol::xproto::*;
+            use x11rb::protocol::Event;
+            use x11rb::wrapper::ConnectionExt as _;
+
+            let Ok((conn, screen_num)) =
+                x11rb::rust_connection::RustConnection::connect(Some(&format!(
+                    ":{display_number}"
+                )))
+            else {
+                return;
+            };
+
+            let screen = &conn.setup().roots[screen_num];
+            let root = screen.root;
+
+            let atom_none: u32 = AtomEnum::NONE.into();
+            let atom_string: u32 = AtomEnum::STRING.into();
+            let atom_atom: u32 = AtomEnum::ATOM.into();
+
+            let clipboard = match conn.intern_atom(false, b"CLIPBOARD") {
+                Ok(cookie) => cookie.reply().map(|r| r.atom).unwrap_or(atom_none),
+                Err(_) => return,
+            };
+            let utf8_string = match conn.intern_atom(false, b"UTF8_STRING") {
+                Ok(cookie) => cookie.reply().map(|r| r.atom).unwrap_or(atom_string),
+                Err(_) => return,
+            };
+            let targets = match conn.intern_atom(false, b"TARGETS") {
+                Ok(cookie) => cookie.reply().map(|r| r.atom).unwrap_or(atom_none),
+                Err(_) => return,
+            };
+            let text_atom = match conn.intern_atom(false, b"TEXT") {
+                Ok(cookie) => cookie.reply().map(|r| r.atom).unwrap_or(atom_string),
+                Err(_) => return,
+            };
+
+            let win = match conn.generate_id() {
+                Ok(id) => id,
+                Err(_) => return,
+            };
+            if conn
+                .create_window(
+                    x11rb::COPY_DEPTH_FROM_PARENT,
+                    win,
+                    root,
+                    0,
+                    0,
+                    1,
+                    1,
+                    0,
+                    WindowClass::INPUT_OUTPUT,
+                    screen.root_visual,
+                    &CreateWindowAux::new().event_mask(EventMask::PROPERTY_CHANGE),
+                )
+                .is_err()
+            {
+                return;
+            }
+            let _ = conn.flush();
+
+            let mut current_text: Option<String> = None;
+
+            loop {
+                while let Ok(cmd) = rx.try_recv() {
+                    match cmd {
+                        X11ClipCommand::Set(text) => {
+                            current_text = Some(text);
+                            let _ = conn.set_selection_owner(win, clipboard, x11rb::CURRENT_TIME);
+                            let _ = conn.flush();
+                        }
+                        X11ClipCommand::Clear => {
+                            current_text = None;
+                            let _ = conn.set_selection_owner(
+                                x11rb::NONE,
+                                clipboard,
+                                x11rb::CURRENT_TIME,
+                            );
+                            let _ = conn.flush();
+                        }
+                    }
+                }
+
+                match conn.poll_for_event() {
+                    Ok(Some(Event::SelectionRequest(req))) => {
+                        if req.selection == clipboard {
+                            let mut property = req.property;
+                            if property == atom_none {
+                                property = req.target;
+                            }
+
+                            let target = req.target;
+                            if target == targets {
+                                let available_targets = [
+                                    targets,
+                                    utf8_string,
+                                    atom_string,
+                                    text_atom,
+                                ];
+                                let _ = conn.change_property32(
+                                    PropMode::REPLACE,
+                                    req.requestor,
+                                    property,
+                                    atom_atom,
+                                    &available_targets,
+                                );
+                            } else if (target == utf8_string
+                                || target == atom_string
+                                || target == text_atom)
+                                && current_text.is_some()
+                            {
+                                let text = current_text.as_ref().unwrap();
+                                let _ = conn.change_property8(
+                                    PropMode::REPLACE,
+                                    req.requestor,
+                                    property,
+                                    target,
+                                    text.as_bytes(),
+                                );
+                            } else {
+                                property = atom_none;
+                            }
+
+                            let notify = SelectionNotifyEvent {
+                                response_type: SELECTION_NOTIFY_EVENT,
+                                sequence: 0,
+                                time: req.time,
+                                requestor: req.requestor,
+                                selection: req.selection,
+                                target: req.target,
+                                property,
+                            };
+                            let _ = conn.send_event(
+                                false,
+                                req.requestor,
+                                EventMask::NO_EVENT,
+                                notify,
+                            );
+                            let _ = conn.flush();
+                        }
+                    }
+                    Ok(Some(Event::SelectionClear(clear))) => {
+                        if clear.selection == clipboard {
+                            current_text = None;
+                        }
+                    }
+                    Ok(Some(_)) => {}
+                    Ok(None) => {}
+                    Err(_) => break,
+                }
+                let _ = conn.flush();
+                std::thread::sleep(std::time::Duration::from_millis(4));
+            }
+        });
+        tx
+    }
+
     pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         let mut map_socket: Option<String> = None;
         let mut tcp_port = TCP_PORT;
@@ -2234,6 +2409,7 @@ mod linux {
                                         display_number,
                                         state.xim_active.clone(),
                                     ));
+                                    state.x11_clip_tx = Some(start_x11_clipboard(display_number));
                                 }
                                 Err(error) => eprintln!("X11 WM start: {error}"),
                             }
