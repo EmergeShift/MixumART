@@ -1689,7 +1689,7 @@ mod linux {
                 self.host_clipboard = None;
                 clear_data_device_selection(&self.display_handle, &self.seat);
                 if let Some(tx) = &self.x11_clip_tx {
-                    let _ = tx.send(X11ClipCommand::Clear);
+                    tx.send(X11ClipCommand::Clear);
                 }
             }
         }
@@ -2538,10 +2538,12 @@ mod linux {
                                         let _ = clear_notify.send(());
                                     }
                                 }
-                                Event::PropertyNotify(pn) => {
-                                    if pn.atom == ts_probe && current_text.is_some() && ownership_time == 0 {
-                                        ownership_time = pn.time;
-                                    }
+                                Event::PropertyNotify(pn)
+                                    if pn.atom == ts_probe
+                                        && current_text.is_some()
+                                        && ownership_time == 0 =>
+                                {
+                                    ownership_time = pn.time;
                                 }
                                 _ => {}
                             }
