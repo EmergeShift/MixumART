@@ -250,6 +250,8 @@ surface 的客户端也能读写选区，MAP 层剪贴板不依赖"哪个窗口�
 已知设计细节：
 
 - **宿主 → X11 下行支持**：为避免 Smithay `xwm.new_selection` 触发 XFixes 吞掉后续 X11 客户端所有权变更的 bug，合成器启动了一个独立的常驻 X11 剪贴板服务（通过 `x11rb` 连接并响应 `SelectionRequest`），在收到 `clipboard.set` 时直接为 X11 客户端提供 UTF-8 文本，而在 X11 或 Wayland 客户端复制时安全释放所有权，双向互通完全正常。
+  - **时间戳与 CurrentTime 处理**：遵循 ICCCM § 2.2 / § 2.4 规范，`req.time == CurrentTime` (0) 无条件接受；若请求携带具体时间戳且早于所有权获取时间，返回 `None` 拒绝转换；支持 `TIMESTAMP` 目标查询并返回 `INTEGER` 类型时间戳。
+  - **INCR 增量传输限制**：ICCCM § 2.7.2 的分块 INCR 机制未实现。由于 MAP 协议限制剪贴板文本上限为 4 MiB，且本地 XWayland 支持 BIG-REQUESTS 扩展（单请求 >16MB），选区文本一律通过单次属性写入。强依赖分块 INCR 的超大选区客户端属于已知限制。
 - **窗口归属按焦点判定**，与 A 路线同口径：没有 surface 的客户端（如 `wl-copy`）
   复制时归属记到焦点窗口；多窗口且无焦点时宁可丢弃也不猜。
 

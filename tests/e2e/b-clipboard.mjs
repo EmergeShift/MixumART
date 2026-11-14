@@ -295,6 +295,7 @@ try {
     if (x11Pasted !== downX11) {
       throw new Error(`X11 下行不一致：读到 ${JSON.stringify(x11Pasted)}，期望 ${JSON.stringify(downX11)}`);
     }
+    console.log(`  xclip -o -> ${JSON.stringify(x11Pasted)}`);
     ok("set → 容器 xclip -o (宿主 → X11 下行)");
   } else {
     console.log("  skip: X11 用例默认关闭（MIXUM_E2E_X11=1 打开，见 docs/display.md）");
