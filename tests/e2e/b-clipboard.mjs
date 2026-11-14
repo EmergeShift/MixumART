@@ -305,7 +305,8 @@ try {
   s.close();
 } catch (error) {
   console.error(`FAILED: ${error.message}`);
-  const logs = docker(["logs", "--tail", "60", NAME]).stdout;
+  const res = docker(["logs", "--tail", "60", NAME]);
+  const logs = (res.stdout ?? "") + (res.stderr ?? "");
   console.error(logs);
   process.exitCode = 1;
 } finally {

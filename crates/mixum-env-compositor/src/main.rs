@@ -495,6 +495,49 @@ mod linux {
         rgba: Option<SurfacePixels>,
     }
 
+    #[derive(Clone)]
+    struct XimSender {
+        tx: Sender<String>,
+        wake: Arc<UnixStream>,
+    }
+
+    impl XimSender {
+        fn send(&self, text: String) -> Result<(), mpsc::SendError<String>> {
+            self.tx.send(text)?;
+            use std::io::Write;
+            let _ = (&*self.wake).write_all(&[1]);
+            Ok(())
+        }
+    }
+
+    enum X11ClipCommand {
+        Set(Arc<String>),
+        Clear,
+    }
+
+    #[derive(Clone)]
+    struct X11ClipSender {
+        tx: Sender<X11ClipCommand>,
+        wake: Arc<UnixStream>,
+    }
+
+    impl X11ClipSender {
+        fn send(&self, cmd: X11ClipCommand) {
+            let _ = self.tx.send(cmd);
+            use std::io::Write;
+            let _ = (&*self.wake).write_all(&[1]);
+        }
+    }
+
+    #[inline]
+    fn x11_time_is_before(t1: u32, t2: u32) -> bool {
+        (t1.wrapping_sub(t2) as i32) < 0
+    }
+
+    fn get_atom<C: x11rb::protocol::xproto::ConnectionExt>(conn: &C, name: &[u8]) -> Option<u32> {
+        conn.intern_atom(false, name).ok()?.reply().ok().map(|r| r.atom)
+    }
+
     struct Art {
         start: Instant,
         display_handle: DisplayHandle,
@@ -513,9 +556,11 @@ mod linux {
         xwayland_shell_state: XWaylandShellState,
         xwm: Option<X11Wm>,
         xwayland_display: Option<u32>,
-        xim_tx: Option<Sender<String>>,
+        xim_tx: Option<XimSender>,
         xim_active: Arc<AtomicBool>,
-        x11_clip_tx: Option<Sender<X11ClipCommand>>,
+        x11_clip_tx: Option<X11ClipSender>,
+        x11_clear_tx: Sender<()>,
+        x11_clear_rx: Receiver<()>,
         loop_handle: Option<calloop::LoopHandle<'static, Self>>,
         x11_windows: HashMap<u32, u32>,
         x11_overlays: HashMap<u32, X11Overlay>,
@@ -589,6 +634,7 @@ mod linux {
             output.set_preferred(mode);
 
             let (clipboard_tx, clipboard_rx) = mpsc::channel();
+            let (x11_clear_tx, x11_clear_rx) = mpsc::channel();
 
             Self {
                 start: Instant::now(),
@@ -611,6 +657,8 @@ mod linux {
                 xim_tx: None,
                 xim_active: Arc::new(AtomicBool::new(false)),
                 x11_clip_tx: None,
+                x11_clear_tx,
+                x11_clear_rx,
                 loop_handle: None,
                 x11_windows: HashMap::new(),
                 x11_overlays: HashMap::new(),
@@ -657,13 +705,11 @@ mod linux {
             spawn_clipboard_read(id, reader, self.clipboard_tx.clone());
         }
 
-        /// 宿主写入文本：设成 Wayland 的 server-side selection。
+        /// 宿主写入文本：设成 Wayland 的 server-side selection，并通过常驻 X11 剪贴板服务同步至 X11。
         ///
-        /// 这里**故意不碰 X11 选区**。让 XWM 当 X11 owner（`xwm.new_selection`）
-        /// 之后，容器里 X11 应用再复制就不会触发 `XwmHandler::new_selection`——
-        /// XFixes 的所有权变更被 XWM 自己吞掉，整条上行链路失效（实测过）。
-        /// 要让 X11 应用也读到宿主文本，得另找一条不抢所有权的路（例如常驻的
-        /// X11 剪贴板客户端），见 docs/display.md 的已知缺口。
+        /// 避开 Smithay 的 `xwm.new_selection()`，防止 XFixes 所有权被 XWM 吞掉导致后续 X11 应用无法复制。
+        /// Wayland 侧通过 `set_data_device_selection` 直接提供数据，X11 侧通过独立的常驻客户端
+        /// （`start_x11_clipboard`）响应 `SelectionRequest`，并在 X11 客户端复制时优雅让位。
         fn set_host_clipboard(&mut self, text: &str) {
             let text_arc = Arc::new(text.to_owned());
             self.host_clipboard = Some(Arc::clone(&text_arc));
@@ -678,7 +724,7 @@ mod linux {
                 SelectionOrigin::Host(Arc::clone(&text_arc)),
             );
             if let Some(tx) = &self.x11_clip_tx {
-                let _ = tx.send(X11ClipCommand::Set(text.to_owned()));
+                tx.send(X11ClipCommand::Set(Arc::clone(&text_arc)));
             }
         }
 
@@ -1637,6 +1683,9 @@ mod linux {
 
         fn cleared_selection(&mut self, _xwm: XwmId, selection: SelectionTarget) {
             if selection == SelectionTarget::Clipboard {
+                if self.host_clipboard.is_some() {
+                    return;
+                }
                 self.host_clipboard = None;
                 clear_data_device_selection(&self.display_handle, &self.seat);
                 if let Some(tx) = &self.x11_clip_tx {
@@ -1724,6 +1773,12 @@ mod linux {
             source: Option<smithay::wayland::selection::SelectionSource>,
             _seat: Seat<Self>,
         ) {
+            // 如果是宿主注入的选区，X11 端由独立的常驻服务 start_x11_clipboard 管理，
+            // 绝不能调用 xwm.new_selection，否则 XWM 会给 XWayland 发 SetSelectionOwner(0)
+            // 导致 start_x11_clipboard 的 win 被抢走所有权并触发 SelectionClear。
+            if ty == SelectionTarget::Clipboard && self.host_clipboard.is_some() {
+                return;
+            }
             let mime_types = source
                 .as_ref()
                 .map(|source| source.mime_types())
@@ -2002,7 +2057,7 @@ mod linux {
         });
     }
 
-    fn start_xim(display_number: u32, active: Arc<AtomicBool>) -> Sender<String> {
+    fn start_xim(display_number: u32, active: Arc<AtomicBool>) -> XimSender {
         use xim::{
             InputContext, Server, ServerError, ServerHandler, UserInputContext, XimConnections,
             ALL_LOCALES,
@@ -2103,67 +2158,97 @@ mod linux {
         }
 
         let (tx, rx) = mpsc::channel::<String>();
-        std::thread::spawn(move || {
-            use x11rb::connection::Connection;
-            let Ok((conn, screen)) =
-                x11rb::rust_connection::RustConnection::connect(Some(&format!(
-                    ":{display_number}"
-                )))
-            else {
-                return;
-            };
-            let Ok(mut server) =
-                X11rbServer::init(&conn, screen, "mixum", ALL_LOCALES)
-            else {
-                return;
-            };
-            let mut connections = XimConnections::new();
-            let mut handler = XimHandler {
-                active: false,
-                focus: None,
-                active_flag: active,
-            };
-            loop {
-                while let Ok(text) = rx.try_recv() {
-                    if let Some((client, im, ic, locale)) = handler.focus.clone() {
-                        let context = InputContext::new(
-                            client,
-                            std::num::NonZeroU16::new(im).unwrap_or(std::num::NonZeroU16::MIN),
-                            std::num::NonZeroU16::new(ic).unwrap_or(std::num::NonZeroU16::MIN),
-                            locale,
-                        );
-                        let _ = server.commit(&context, &text);
-                    }
-                }
-                match conn.poll_for_event() {
-                    Ok(Some(event)) => {
-                        let _ = server.filter_event(&event, &mut connections, &mut handler);
-                    }
-                    Ok(None) => {}
-                    Err(_) => break,
-                }
-                let _ = conn.flush();
-                std::thread::sleep(std::time::Duration::from_millis(4));
-            }
-        });
-        tx
-    }
+        let (wake_reader, wake_writer) = UnixStream::pair().expect("XIM wake pair");
+        let _ = wake_reader.set_nonblocking(true);
+        let _ = wake_writer.set_nonblocking(true);
+        let sender = XimSender {
+            tx,
+            wake: Arc::new(wake_writer),
+        };
 
-    enum X11ClipCommand {
-        Set(String),
-        Clear,
+        let _ = std::thread::Builder::new()
+            .name("xim-server".into())
+            .spawn(move || {
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+                    use std::os::fd::AsRawFd;
+                    use x11rb::connection::Connection;
+                    let Ok((conn, screen)) =
+                        x11rb::rust_connection::RustConnection::connect(Some(&format!(
+                            ":{display_number}"
+                        )))
+                    else {
+                        return;
+                    };
+                    let Ok(mut server) =
+                        X11rbServer::init(&conn, screen, "mixum", ALL_LOCALES)
+                    else {
+                        return;
+                    };
+                    let mut connections = XimConnections::new();
+                    let mut handler = XimHandler {
+                        active: false,
+                        focus: None,
+                        active_flag: active,
+                    };
+
+                    let conn_fd = conn.stream().as_raw_fd();
+                    let wake_fd = wake_reader.as_raw_fd();
+
+                    loop {
+                        let mut had_work = false;
+                        while let Ok(text) = rx.try_recv() {
+                            had_work = true;
+                            if let Some((client, im, ic, locale)) = handler.focus.clone() {
+                                let context = InputContext::new(
+                                    client,
+                                    std::num::NonZeroU16::new(im).unwrap_or(std::num::NonZeroU16::MIN),
+                                    std::num::NonZeroU16::new(ic).unwrap_or(std::num::NonZeroU16::MIN),
+                                    locale,
+                                );
+                                let _ = server.commit(&context, &text);
+                            }
+                        }
+                        while let Ok(Some(event)) = conn.poll_for_event() {
+                            had_work = true;
+                            let _ = server.filter_event(&event, &mut connections, &mut handler);
+                        }
+                        if had_work {
+                            let _ = conn.flush();
+                        }
+                        let mut fds = [
+                            libc::pollfd {
+                                fd: conn_fd,
+                                events: libc::POLLIN,
+                                revents: 0,
+                            },
+                            libc::pollfd {
+                                fd: wake_fd,
+                                events: libc::POLLIN,
+                                revents: 0,
+                            },
+                        ];
+                        let ret = unsafe { libc::poll(fds.as_mut_ptr(), 2, 1000) };
+                        if ret > 0 && (fds[1].revents & libc::POLLIN) != 0 {
+                            let mut buf = [0u8; 32];
+                            let _ = (&wake_reader).read(&mut buf);
+                        }
+                    }
+                }));
+            });
+        sender
     }
 
     /// 独立的常驻 X11 剪贴板服务（解决 docs/display.md 中 host→X11 剪贴板下行缺口）。
     /// 不使用 Smithay 的 xwm.new_selection()，避免 XFixes 所有权被 XWM 吞掉导致后续 X11 应用无法复制。
     ///
     /// ## 协议与限制说明 (ICCCM / MAP):
-    /// 1. **CURRENT_TIME 处理**：
+    /// 1. **CURRENT_TIME 处理与时间戳回绕**：
     ///    - 遵循 ICCCM § 2.2 / § 2.4 规范：当请求者的 `req.time == CurrentTime` (0) 时，
     ///      代表以当前最新状态转换，无条件予以满足。
     ///    - 若 `req.time != CurrentTime` 且早于本次获取所有权的时间戳 (`ownership_time`)，
     ///      说明请求者基于过期的上下文发起请求，按 ICCCM 规范通过 `property = None` 拒绝。
-    ///    - 支持标准 `TIMESTAMP` 目标转换（返回 `INTEGER` 类型的 `ownership_time`）。
+    ///      时间戳比较使用 `x11_time_is_before`（有符号差值）处理 32 位时间戳回绕。
+    ///    - 支持标准 `TIMESTAMP` 目标转换（返回 `INTEGER` 类型的 `ownership_time`；未确定时返回 `CurrentTime`）。
     ///
     /// 2. **INCR 机制与限制**：
     ///    - ICCCM § 2.7.2 定义了 INCR 增量传输机制用于超出单次属性大小限制（传统 ~256KB）的超大选区。
@@ -2173,215 +2258,259 @@ mod linux {
     ///      c) 单次 `change_property8` 在 XWayland 下完全可承载 4 MiB 的 UTF-8 文本。
     ///    - 因此，本实现不引入复杂的多轮握手 INCR 状态机，选区文本单次写入 `UTF8_STRING`。
     ///      超出限制或强依赖 INCR 的特化客户端属于已知限制（明确记录于 docs/display.md）。
-    fn start_x11_clipboard(display_number: u32) -> Sender<X11ClipCommand> {
+    fn start_x11_clipboard(display_number: u32, clear_notify: Sender<()>) -> X11ClipSender {
         let (tx, rx) = mpsc::channel::<X11ClipCommand>();
-        std::thread::spawn(move || {
-            use x11rb::connection::Connection;
-            use x11rb::protocol::xproto::*;
-            use x11rb::protocol::Event;
-            use x11rb::wrapper::ConnectionExt as _;
+        let (wake_reader, wake_writer) = UnixStream::pair().expect("wake pair");
+        let _ = wake_reader.set_nonblocking(true);
+        let _ = wake_writer.set_nonblocking(true);
+        let sender = X11ClipSender {
+            tx,
+            wake: Arc::new(wake_writer),
+        };
 
-            let Ok((conn, screen_num)) =
-                x11rb::rust_connection::RustConnection::connect(Some(&format!(
-                    ":{display_number}"
-                )))
-            else {
-                return;
-            };
+        std::thread::Builder::new()
+            .name("x11-clipboard".into())
+            .spawn(move || {
+                let panic_res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+                    use std::os::fd::AsRawFd;
+                    use x11rb::connection::Connection;
+                    use x11rb::protocol::xproto::*;
+                    use x11rb::protocol::Event;
+                    use x11rb::wrapper::ConnectionExt as _;
 
-            let screen = &conn.setup().roots[screen_num];
-            let root = screen.root;
+                    let Ok((conn, screen_num)) =
+                        x11rb::rust_connection::RustConnection::connect(Some(&format!(
+                            ":{display_number}"
+                        )))
+                    else {
+                        eprintln!("x11-clipboard: failed to connect to :{display_number}");
+                        return;
+                    };
 
-            let atom_none: u32 = AtomEnum::NONE.into();
-            let atom_string: u32 = AtomEnum::STRING.into();
-            let atom_atom: u32 = AtomEnum::ATOM.into();
-            let atom_integer: u32 = AtomEnum::INTEGER.into();
+                    let screen = &conn.setup().roots[screen_num];
+                    let root = screen.root;
 
-            let clipboard = match conn.intern_atom(false, b"CLIPBOARD") {
-                Ok(cookie) => cookie.reply().map(|r| r.atom).unwrap_or(atom_none),
-                Err(_) => return,
-            };
-            let utf8_string = match conn.intern_atom(false, b"UTF8_STRING") {
-                Ok(cookie) => cookie.reply().map(|r| r.atom).unwrap_or(atom_string),
-                Err(_) => return,
-            };
-            let targets = match conn.intern_atom(false, b"TARGETS") {
-                Ok(cookie) => cookie.reply().map(|r| r.atom).unwrap_or(atom_none),
-                Err(_) => return,
-            };
-            let timestamp_atom = match conn.intern_atom(false, b"TIMESTAMP") {
-                Ok(cookie) => cookie.reply().map(|r| r.atom).unwrap_or(atom_none),
-                Err(_) => return,
-            };
-            let text_atom = match conn.intern_atom(false, b"TEXT") {
-                Ok(cookie) => cookie.reply().map(|r| r.atom).unwrap_or(atom_string),
-                Err(_) => return,
-            };
+                    let atom_none: u32 = AtomEnum::NONE.into();
+                    let atom_string: u32 = AtomEnum::STRING.into();
+                    let atom_atom: u32 = AtomEnum::ATOM.into();
+                    let atom_integer: u32 = AtomEnum::INTEGER.into();
 
-            let win = match conn.generate_id() {
-                Ok(id) => id,
-                Err(_) => return,
-            };
-            if conn
-                .create_window(
-                    x11rb::COPY_DEPTH_FROM_PARENT,
-                    win,
-                    root,
-                    0,
-                    0,
-                    1,
-                    1,
-                    0,
-                    WindowClass::INPUT_OUTPUT,
-                    screen.root_visual,
-                    &CreateWindowAux::new().event_mask(EventMask::PROPERTY_CHANGE),
-                )
-                .is_err()
-            {
-                return;
-            }
-            let _ = conn.flush();
+                    let Some(clipboard) = get_atom(&conn, b"CLIPBOARD") else {
+                        eprintln!("x11-clipboard: failed to intern CLIPBOARD");
+                        return;
+                    };
+                    let Some(utf8_string) = get_atom(&conn, b"UTF8_STRING") else {
+                        eprintln!("x11-clipboard: failed to intern UTF8_STRING");
+                        return;
+                    };
+                    let Some(targets) = get_atom(&conn, b"TARGETS") else {
+                        eprintln!("x11-clipboard: failed to intern TARGETS");
+                        return;
+                    };
+                    let Some(timestamp_atom) = get_atom(&conn, b"TIMESTAMP") else {
+                        eprintln!("x11-clipboard: failed to intern TIMESTAMP");
+                        return;
+                    };
+                    let Some(ts_probe) = get_atom(&conn, b"_MIXUM_CLIP_TS") else {
+                        eprintln!("x11-clipboard: failed to intern _MIXUM_CLIP_TS");
+                        return;
+                    };
+                    let text_atom = get_atom(&conn, b"TEXT").unwrap_or(atom_string);
 
-            let mut current_text: Option<String> = None;
-            let mut ownership_time: u32 = 0;
-
-            loop {
-                while let Ok(cmd) = rx.try_recv() {
-                    match cmd {
-                        X11ClipCommand::Set(text) => {
-                            current_text = Some(text);
-                            ownership_time = 0;
-                            let _ = conn.set_selection_owner(win, clipboard, x11rb::CURRENT_TIME);
-                            let _ = conn.change_property32(
-                                PropMode::REPLACE,
-                                win,
-                                clipboard,
-                                atom_atom,
-                                &[0],
-                            );
-                            let _ = conn.flush();
+                    let win = match conn.generate_id() {
+                        Ok(id) => id,
+                        Err(e) => {
+                            eprintln!("x11-clipboard: generate_id failed: {e}");
+                            return;
                         }
-                        X11ClipCommand::Clear => {
-                            current_text = None;
-                            ownership_time = 0;
-                            let _ = conn.set_selection_owner(
-                                x11rb::NONE,
-                                clipboard,
-                                x11rb::CURRENT_TIME,
-                            );
-                            let _ = conn.flush();
-                        }
+                    };
+                    if let Err(e) = conn.create_window(
+                        x11rb::COPY_DEPTH_FROM_PARENT,
+                        win,
+                        root,
+                        0,
+                        0,
+                        1,
+                        1,
+                        0,
+                        WindowClass::INPUT_OUTPUT,
+                        screen.root_visual,
+                        &CreateWindowAux::new().event_mask(EventMask::PROPERTY_CHANGE),
+                    ) {
+                        eprintln!("x11-clipboard: create_window failed: {e}");
+                        return;
                     }
-                }
+                    let _ = conn.flush();
 
-                match conn.poll_for_event() {
-                    Ok(Some(Event::SelectionRequest(req))) => {
-                        if req.selection == clipboard {
-                            let mut property = req.property;
-                            if property == atom_none {
-                                property = req.target;
-                            }
+                    let mut current_text: Option<std::sync::Arc<String>> = None;
+                    let mut ownership_time: u32 = 0;
 
-                            // ICCCM § 2.2 / § 2.4:
-                            // req.time == CurrentTime (0) 必须无条件接受。
-                            // 若 req.time 为具体时间戳且早于获取所有权时间，拒绝转换。
-                            if req.time != x11rb::CURRENT_TIME
-                                && ownership_time != 0
-                                && req.time < ownership_time
-                            {
-                                property = atom_none;
-                            }
+                    let conn_fd = conn.stream().as_raw_fd();
+                    let wake_fd = wake_reader.as_raw_fd();
 
-                            if property != atom_none {
-                                let target = req.target;
-                                if target == targets {
-                                    let available_targets = [
-                                        targets,
-                                        timestamp_atom,
-                                        utf8_string,
-                                        atom_string,
-                                        text_atom,
-                                    ];
+                    loop {
+                        while let Ok(cmd) = rx.try_recv() {
+                            match cmd {
+                                X11ClipCommand::Set(text) => {
+                                    current_text = Some(text);
+                                    ownership_time = 0;
+                                    let _ = conn.set_selection_owner(win, clipboard, x11rb::CURRENT_TIME);
                                     let _ = conn.change_property32(
                                         PropMode::REPLACE,
-                                        req.requestor,
-                                        property,
+                                        win,
+                                        ts_probe,
                                         atom_atom,
-                                        &available_targets,
+                                        &[0],
                                     );
-                                } else if target == timestamp_atom {
-                                    let ts = if ownership_time != 0 {
-                                        ownership_time
-                                    } else {
-                                        req.time
-                                    };
-                                    let _ = conn.change_property32(
-                                        PropMode::REPLACE,
-                                        req.requestor,
-                                        property,
-                                        atom_integer,
-                                        &[ts],
+                                    let _ = conn.flush();
+                                }
+                                X11ClipCommand::Clear => {
+                                    current_text = None;
+                                    ownership_time = 0;
+                                    let _ = conn.set_selection_owner(
+                                        x11rb::NONE,
+                                        clipboard,
+                                        x11rb::CURRENT_TIME,
                                     );
-                                } else if (target == utf8_string
-                                    || target == atom_string
-                                    || target == text_atom)
-                                    && current_text.is_some()
-                                {
-                                    let text = current_text.as_ref().unwrap();
-                                    // 限制说明 (INCR)：
-                                    // MAP 单次选区上限 4 MiB，XWayland 在本地 socket 上支持
-                                    // BIG-REQUESTS 扩展，可直接单次写入，因此按单属性传输，
-                                    // 不使用多轮分块 INCR 机制。
-                                    let _ = conn.change_property8(
-                                        PropMode::REPLACE,
-                                        req.requestor,
-                                        property,
-                                        target,
-                                        text.as_bytes(),
-                                    );
-                                } else {
-                                    property = atom_none;
+                                    let _ = conn.flush();
                                 }
                             }
+                        }
 
-                            let notify = SelectionNotifyEvent {
-                                response_type: SELECTION_NOTIFY_EVENT,
-                                sequence: 0,
-                                time: req.time,
-                                requestor: req.requestor,
-                                selection: req.selection,
-                                target: req.target,
-                                property,
-                            };
-                            let _ = conn.send_event(
-                                false,
-                                req.requestor,
-                                EventMask::NO_EVENT,
-                                notify,
-                            );
-                            let _ = conn.flush();
+                        while let Ok(Some(event)) = conn.poll_for_event() {
+                            match event {
+                                Event::SelectionRequest(req) => {
+                                    if req.selection == clipboard {
+                                        let mut property = req.property;
+                                        if property == atom_none {
+                                            property = req.target;
+                                        }
+
+                                        // ICCCM § 2.2 / § 2.4:
+                                        // req.time == CurrentTime (0) 必须无条件接受。
+                                        // 若 req.time 为具体时间戳且早于获取所有权时间，拒绝转换。
+                                        // 使用 x11_time_is_before 严格处理 32 位时间戳回绕。
+                                        if req.time != x11rb::CURRENT_TIME
+                                            && ownership_time != 0
+                                            && x11_time_is_before(req.time, ownership_time)
+                                        {
+                                            property = atom_none;
+                                        }
+
+                                        if property != atom_none {
+                                            let target = req.target;
+                                            if target == targets {
+                                                let available_targets = [
+                                                    targets,
+                                                    timestamp_atom,
+                                                    utf8_string,
+                                                    atom_string,
+                                                    text_atom,
+                                                ];
+                                                let _ = conn.change_property32(
+                                                    PropMode::REPLACE,
+                                                    req.requestor,
+                                                    property,
+                                                    atom_atom,
+                                                    &available_targets,
+                                                );
+                                            } else if target == timestamp_atom {
+                                                let ts = if ownership_time != 0 {
+                                                    ownership_time
+                                                } else {
+                                                    x11rb::CURRENT_TIME
+                                                };
+                                                let _ = conn.change_property32(
+                                                    PropMode::REPLACE,
+                                                    req.requestor,
+                                                    property,
+                                                    atom_integer,
+                                                    &[ts],
+                                                );
+                                            } else if target == utf8_string
+                                                || target == atom_string
+                                                || target == text_atom
+                                            {
+                                                if let Some(text) = &current_text {
+                                                    // 限制说明 (INCR)：
+                                                    // MAP 单次选区上限 4 MiB，XWayland 在本地 socket 上支持
+                                                    // BIG-REQUESTS 扩展，可直接单次写入，因此按单属性传输，
+                                                    // 不使用多轮分块 INCR 机制。
+                                                    let _ = conn.change_property8(
+                                                        PropMode::REPLACE,
+                                                        req.requestor,
+                                                        property,
+                                                        target,
+                                                        text.as_bytes(),
+                                                    );
+                                                } else {
+                                                    property = atom_none;
+                                                }
+                                            } else {
+                                                property = atom_none;
+                                            }
+                                        }
+
+                                        let notify = SelectionNotifyEvent {
+                                            response_type: SELECTION_NOTIFY_EVENT,
+                                            sequence: 0,
+                                            time: req.time,
+                                            requestor: req.requestor,
+                                            selection: req.selection,
+                                            target: req.target,
+                                            property,
+                                        };
+                                        let _ = conn.send_event(
+                                            false,
+                                            req.requestor,
+                                            EventMask::NO_EVENT,
+                                            notify,
+                                        );
+                                        let _ = conn.flush();
+                                    }
+                                }
+                                Event::SelectionClear(clear) => {
+                                    if clear.selection == clipboard {
+                                        current_text = None;
+                                        ownership_time = 0;
+                                        let _ = clear_notify.send(());
+                                    }
+                                }
+                                Event::PropertyNotify(pn) => {
+                                    if pn.atom == ts_probe && current_text.is_some() && ownership_time == 0 {
+                                        ownership_time = pn.time;
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+
+                        // 阻塞于 X11 连接或唤醒管道，超时设为 1000ms（安全看门狗），彻底消除 250Hz 空转
+                        let mut poll_fds = [
+                            libc::pollfd {
+                                fd: conn_fd,
+                                events: libc::POLLIN,
+                                revents: 0,
+                            },
+                            libc::pollfd {
+                                fd: wake_fd,
+                                events: libc::POLLIN,
+                                revents: 0,
+                            },
+                        ];
+                        let ret = unsafe { libc::poll(poll_fds.as_mut_ptr(), 2, 1000) };
+                        if ret > 0 && (poll_fds[1].revents & libc::POLLIN) != 0 {
+                            let mut drain_buf = [0u8; 32];
+                            let _ = (&wake_reader).read(&mut drain_buf);
                         }
                     }
-                    Ok(Some(Event::SelectionClear(clear))) => {
-                        if clear.selection == clipboard {
-                            current_text = None;
-                            ownership_time = 0;
-                        }
-                    }
-                    Ok(Some(Event::PropertyNotify(pn))) => {
-                        if current_text.is_some() && ownership_time == 0 {
-                            ownership_time = pn.time;
-                        }
-                    }
-                    Ok(Some(_)) => {}
-                    Ok(None) => {}
-                    Err(_) => break,
+                }));
+                if let Err(e) = panic_res {
+                    eprintln!("x11-clipboard thread panicked: {e:?}");
                 }
-                let _ = conn.flush();
-                std::thread::sleep(std::time::Duration::from_millis(4));
-            }
-        });
-        tx
+            })
+            .expect("spawn x11-clipboard thread");
+        sender
     }
 
     pub fn run() -> Result<(), Box<dyn std::error::Error>> {
@@ -2477,7 +2606,10 @@ mod linux {
                                         display_number,
                                         state.xim_active.clone(),
                                     ));
-                                    state.x11_clip_tx = Some(start_x11_clipboard(display_number));
+                                    state.x11_clip_tx = Some(start_x11_clipboard(
+                                        display_number,
+                                        state.x11_clear_tx.clone(),
+                                    ));
                                 }
                                 Err(error) => eprintln!("X11 WM start: {error}"),
                             }
@@ -2506,6 +2638,9 @@ mod linux {
                         state.set_host_clipboard(&text);
                     }
                 }
+            }
+            while let Ok(()) = state.x11_clear_rx.try_recv() {
+                state.host_clipboard = None;
             }
             // 容器内客户端刚换了选区：现在 seat 状态已经稳定，可以读了。
             if let Some(mime) = state.pending_selection_read.take() {
