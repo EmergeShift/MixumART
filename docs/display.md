@@ -267,14 +267,11 @@ A window:
 without keyboard focus — the MAP-level clipboard does not depend on which surface
 happens to be focused.
 
-Two known gaps:
+Known design details:
 
-- **Host → X11 is indirect.** The compositor deliberately does not take the X11
-  selection ownership (`xwm.new_selection`) when the host sets text: doing so makes
-  XFixes swallow later ownership changes, and X11 applications then can no longer
-  copy at all (their `CurrentTime` takeover is rejected). X11 clients see host text
-  only while XWM already proxies the X11 selection (i.e. after a Wayland client has
-  copied something); a first-class path needs a resident X11 clipboard client.
+- **Host → X11 downstream**: To avoid Smithay's `xwm.new_selection` bug where XFixes swallows subsequent X11 ownership changes, the compositor starts an independent resident X11 clipboard service (connected via `x11rb` responding to `SelectionRequest`). On `clipboard.set` it directly provides UTF-8 text to X11 clients, and gracefully yields ownership when an in-container X11 or Wayland client copies, achieving seamless two-way sync.
+  - **Timestamp / CurrentTime**: Conforms to ICCCM § 2.2 / § 2.4. A requester time of `CurrentTime` (0) is accepted unconditionally. If a non-zero timestamp precedes `ownership_time`, the request is refused (`property = None`). `TIMESTAMP` target conversion returns the `ownership_time` as an `INTEGER`.
+  - **INCR limitation**: ICCCM § 2.7.2 multi-chunk INCR transfers are intentionally omitted. MAP limits clipboard payloads to 4 MiB, and XWayland with BIG-REQUESTS enables atomic single-property transfers of this size over the local socket. Payloads exceeding property limits or clients requiring chunked INCR are unsupported.
 - **Window attribution is focus-based**, same as Route A: a selection change from a
   client without a surface (e.g. `wl-copy`) is attributed to the focused window, and
   with several windows and no focus the event is dropped rather than guessed.
