@@ -2273,7 +2273,7 @@ mod linux {
             .spawn(move || {
                 let panic_res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
                     use std::os::fd::AsRawFd;
-                    use x11rb::connection::Connection;
+                    use x11rb::connection::{Connection, RequestConnection as _};
                     use x11rb::protocol::xproto::*;
                     use x11rb::protocol::Event;
                     use x11rb::wrapper::ConnectionExt as _;
@@ -2354,24 +2354,70 @@ mod linux {
                                 X11ClipCommand::Set(text) => {
                                     current_text = Some(text);
                                     ownership_time = 0;
-                                    let _ = conn.set_selection_owner(win, clipboard, x11rb::CURRENT_TIME);
-                                    let _ = conn.change_property32(
-                                        PropMode::REPLACE,
-                                        win,
-                                        ts_probe,
-                                        atom_atom,
-                                        &[0],
-                                    );
-                                    let _ = conn.flush();
+                                    let mut acquired = false;
+                                    for attempt in 1..=2 {
+                                        if let Err(e) = conn.set_selection_owner(
+                                            win,
+                                            clipboard,
+                                            x11rb::CURRENT_TIME,
+                                        ) {
+                                            eprintln!(
+                                                "x11-clipboard: set_selection_owner attempt {attempt} failed: {e}"
+                                            );
+                                        }
+                                        let _ = conn.flush();
+                                        match conn
+                                            .get_selection_owner(clipboard)
+                                            .ok()
+                                            .and_then(|c| c.reply().ok())
+                                        {
+                                            Some(reply) if reply.owner == win => {
+                                                acquired = true;
+                                                break;
+                                            }
+                                            Some(reply) => {
+                                                eprintln!(
+                                                    "x11-clipboard: attempt {attempt} failed to acquire CLIPBOARD (owner is 0x{:x}, expected 0x{:x})",
+                                                    reply.owner, win
+                                                );
+                                            }
+                                            None => {
+                                                eprintln!(
+                                                    "x11-clipboard: attempt {attempt} get_selection_owner failed"
+                                                );
+                                            }
+                                        }
+                                        if attempt == 1 {
+                                            std::thread::sleep(std::time::Duration::from_millis(5));
+                                        }
+                                    }
+                                    if acquired {
+                                        let _ = conn.change_property32(
+                                            PropMode::REPLACE,
+                                            win,
+                                            ts_probe,
+                                            atom_atom,
+                                            &[0],
+                                        );
+                                        let _ = conn.flush();
+                                    } else {
+                                        eprintln!(
+                                            "x11-clipboard: failed to acquire CLIPBOARD ownership; clearing state"
+                                        );
+                                        current_text = None;
+                                        let _ = clear_notify.send(());
+                                    }
                                 }
                                 X11ClipCommand::Clear => {
                                     current_text = None;
                                     ownership_time = 0;
-                                    let _ = conn.set_selection_owner(
+                                    if let Err(e) = conn.set_selection_owner(
                                         x11rb::NONE,
                                         clipboard,
                                         x11rb::CURRENT_TIME,
-                                    );
+                                    ) {
+                                        eprintln!("x11-clipboard: clear selection_owner failed: {e}");
+                                    }
                                     let _ = conn.flush();
                                 }
                             }
@@ -2407,42 +2453,58 @@ mod linux {
                                                     atom_string,
                                                     text_atom,
                                                 ];
-                                                let _ = conn.change_property32(
+                                                if let Err(e) = conn.change_property32(
                                                     PropMode::REPLACE,
                                                     req.requestor,
                                                     property,
                                                     atom_atom,
                                                     &available_targets,
-                                                );
+                                                ) {
+                                                    eprintln!("x11-clipboard: change_property32(TARGETS) failed: {e}");
+                                                    property = atom_none;
+                                                }
                                             } else if target == timestamp_atom {
                                                 let ts = if ownership_time != 0 {
                                                     ownership_time
                                                 } else {
                                                     x11rb::CURRENT_TIME
                                                 };
-                                                let _ = conn.change_property32(
+                                                if let Err(e) = conn.change_property32(
                                                     PropMode::REPLACE,
                                                     req.requestor,
                                                     property,
                                                     atom_integer,
                                                     &[ts],
-                                                );
+                                                ) {
+                                                    eprintln!("x11-clipboard: change_property32(TIMESTAMP) failed: {e}");
+                                                    property = atom_none;
+                                                }
                                             } else if target == utf8_string
                                                 || target == atom_string
                                                 || target == text_atom
                                             {
                                                 if let Some(text) = &current_text {
-                                                    // 限制说明 (INCR)：
-                                                    // MAP 单次选区上限 4 MiB，XWayland 在本地 socket 上支持
-                                                    // BIG-REQUESTS 扩展，可直接单次写入，因此按单属性传输，
-                                                    // 不使用多轮分块 INCR 机制。
-                                                    let _ = conn.change_property8(
+                                                    // 限制说明与 BIG-REQUESTS 校验：
+                                                    // ChangeProperty 请求含 24 字节头部，总长度为 24 + ((len + 3) & !3)。
+                                                    // 若超出连接所支持的单次最大请求字节数（未开启 BIG-REQUESTS 或超限），
+                                                    // 记录日志并拒绝转换（property = atom_none），符合 ICCCM 规范。
+                                                    let max_req = conn.maximum_request_bytes();
+                                                    let needed = 24 + ((text.len() + 3) & !3);
+                                                    if needed > max_req {
+                                                        eprintln!(
+                                                            "x11-clipboard: payload {needed} bytes exceeds maximum request bytes {max_req}; rejecting without INCR"
+                                                        );
+                                                        property = atom_none;
+                                                    } else if let Err(e) = conn.change_property8(
                                                         PropMode::REPLACE,
                                                         req.requestor,
                                                         property,
                                                         target,
                                                         text.as_bytes(),
-                                                    );
+                                                    ) {
+                                                        eprintln!("x11-clipboard: change_property8 failed: {e}");
+                                                        property = atom_none;
+                                                    }
                                                 } else {
                                                     property = atom_none;
                                                 }
